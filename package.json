@@ -1,7 +1,15 @@
 {
-  "name": "pi-auto-approval",
+  "name": "omp-auto-approval",
   "version": "0.1.0",
-  "description": "AI classifier based automatic approval extension for Pi coding agent.",
+  "description": "AI classifier based automatic approval extension for OMP.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HayabusaC/omp-auto-approval.git"
+  },
+  "homepage": "https://github.com/HayabusaC/omp-auto-approval#readme",
+  "bugs": {
+    "url": "https://github.com/HayabusaC/omp-auto-approval/issues"
+  },
   "type": "module",
   "main": "./index.ts",
   "exports": {
@@ -13,15 +21,19 @@
     "tests",
     "config",
     "schemas",
-    "README.md"
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx tests/run-tests.ts && node --import tsx tests/model-selector-width.ts && node --import tsx tests/provider-attribution-telemetry.ts",
-    "smoke:pi": "node --import tsx tests/pi-smoke.ts",
-    "check": "npm run typecheck && npm run test && npm run smoke:pi"
+    "smoke:omp": "node --import tsx tests/omp-smoke.ts",
+    "check": "npm run typecheck && npm run test && npm run smoke:omp"
   },
   "keywords": [
+    "oh-my-pi",
+    "omp",
     "pi-package",
     "pi-extension",
     "pi-coding-agent",
@@ -36,6 +48,14 @@
     "extensions": [
       "./index.ts"
     ]
+  },
+  "omp": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "peerDependencies": {
     "@oh-my-pi/pi-ai": "*",

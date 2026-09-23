@@ -252,7 +252,7 @@ function keyMatches(keybindings: KeybindingsLike, data: string, key: string, fal
 }
 
 async function loadModelItems(ctx: ExtensionContextLike, config: AutoReviewConfig): Promise<ModelItem[]> {
-  ctx.modelRegistry?.refresh?.();
+  await Promise.resolve(ctx.modelRegistry?.refresh?.());
   const available = await Promise.resolve(ctx.modelRegistry?.getAvailable?.() ?? []);
   const currentRef = selectedModelRef(config, ctx.model);
   return sortModels(available.map(normalizeModel).filter((item): item is ModelItem => Boolean(item)), currentRef);
@@ -275,7 +275,7 @@ function createSelectorComponent(
 ) {
   const currentRef = selectedModelRef(config, ctx.model);
   const allItems: ModelItem[] = [
-    { value: null, provider: "auto-approval", id: "current", name: "Use active Pi session model" },
+    { value: null, provider: "auto-approval", id: "current", name: "Use active OMP session model" },
     ...items,
   ];
   let query = "";
@@ -430,7 +430,7 @@ async function selectClassifierModelFallback(ctx: ExtensionContextLike, config: 
       "",
       `Current setting: ${config.classifierModel ?? "current"}`,
       "",
-      "Interactive Pi TUI uses the /model-style searchable selector.",
+      "Interactive OMP TUI uses the /model-style searchable selector.",
     ].join("\n"),
     ["current", ...labels],
   );

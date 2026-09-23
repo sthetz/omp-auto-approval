@@ -1,65 +1,38 @@
-# pi-auto-approval
+# omp-auto-approval
 
 [English](./README.md) | 中文
 
-pi-auto-approval 是一个为 Pi 开发的自动审批扩展，参考了 Claude Code auto mode 和 Codex Auto-review 的思路。
+omp-auto-approval 是 [pi-auto-approval](https://github.com/Europa2061/pi-auto-approval) 的 OMP 分支，提供受 Claude Code auto mode 和 Codex Auto-review 启发的自动审批功能。
 
-当 Pi agent 请求执行工具调用时，扩展会用 AI 分类器判断能否安全放行。低风险动作会自动批准；高风险、拒绝、失败或不确定的动作，会按当前模式回退到人工审批或直接阻止。
+当 OMP agent 请求执行工具调用时，扩展会用 AI 分类器判断能否安全放行。低风险动作会自动批准；高风险、拒绝、失败或不确定的动作，会按当前模式回退到人工审批或直接阻止。
 
 ## 安装
 
-推荐从 npm 安装：
+通过 OMP 安装：
 
 ```bash
-pi install npm:pi-auto-approval
+omp plugin install omp-auto-approval
 ```
 
-安装固定版本：
+安装到当前项目：
 
 ```bash
-pi install npm:pi-auto-approval@0.1.0
+omp plugin install omp-auto-approval --scope project
 ```
 
-只安装到当前项目：
+卸载插件：
 
 ```bash
-pi install -l npm:pi-auto-approval
+omp plugin uninstall omp-auto-approval
 ```
 
-重新加载 Pi 并启用推荐模式：
+重启 OMP RPC 进程并启用推荐模式：
 
 ```text
-/reload
 /auto-approval fallback
 ```
 
-### 从 GitHub 安装迁移到 npm
-
-Pi 会把 GitHub 和 npm 来源视为两个不同的包。使用 npm 包前，请先移除 GitHub 安装，避免扩展被重复加载。
-
-如果需要保留自定义配置，请先运行 `/auto-approval status`，备份其中显示的 `config.jsonc`。默认配置文件位于扩展安装目录内，更换安装来源时不会自动迁移。
-
-用户级安装迁移：
-
-```bash
-pi remove https://github.com/Europa2061/pi-auto-approval
-pi install npm:pi-auto-approval
-```
-
-当前项目安装迁移：
-
-```bash
-pi remove -l https://github.com/Europa2061/pi-auto-approval
-pi install -l npm:pi-auto-approval
-```
-
-重新启动 Pi。需要时，将备份配置恢复到 `/auto-approval status` 显示的新路径，然后运行 `/reload`。即使原来安装的是 `@v0.1.0` 这类固定 Git 标签，也可以使用上面不带标签的移除命令。
-
-仍然可以选择从 GitHub 安装：
-
-```bash
-pi install https://github.com/Europa2061/pi-auto-approval
-```
+此分支和原版都会注册 `/auto-approval` 命令。启用本分支前请移除或禁用原版，避免命令重复注册。如需保留自定义设置，请先备份；本分支使用独立的配置和审计日志路径。
 
 ## 命令
 
@@ -68,21 +41,21 @@ pi install https://github.com/Europa2061/pi-auto-approval
 | 命令 | 效果 |
 | --- | --- |
 | `/auto-approval status` | 显示当前状态、审批分类器模型、配置文件路径和审计日志路径。 |
-| `/auto-approval off` | 关闭自动审批。工具审批回到 Pi 的默认行为。 |
+| `/auto-approval off` | 关闭自动审批。工具审批回到 OMP 的默认行为。 |
 | `/auto-approval fallback` | 开启 AI 审批；当分类器拒绝或失败时，回退到人工审批。 |
 | `/auto-approval auto` | 只使用 AI 审批。分类器拒绝或失败时直接阻止工具调用。 |
 | `/auto-approval model` | 打开审批分类器模型选择器。 |
-| `/auto-approval model current` | 使用当前 Pi 会话模型作为审批分类器模型。 |
+| `/auto-approval model current` | 使用当前 OMP 会话模型作为审批分类器模型。 |
 
 ## 截图
 
-`/auto-approval` 参数补全会直接在 Pi 中展示可用模式和模型选择入口。
+`/auto-approval` 参数补全会直接在 OMP 中展示可用模式和模型选择入口。
 
 ![auto-approval 命令补全](docs/images/auto-approval-command.png)
 
 ## 架构
 
-pi-auto-approval 位于 Pi 工具调用和默认审批路径之间：
+omp-auto-approval 位于 OMP 工具调用和默认审批路径之间：
 
 - 命令层注册 `/auto-approval` 并持久化本地配置；
 - 路由层快速处理关闭、只读、工作区安全、会话已批准等动作；
@@ -95,30 +68,30 @@ pi-auto-approval 位于 Pi 工具调用和默认审批路径之间：
 ```mermaid
 sequenceDiagram
     participant User as 用户
-    participant Pi as Pi Agent
-    participant Ext as pi-auto-approval
+    participant OMP as OMP Agent
+    participant Ext as omp-auto-approval
     participant Store as 会话缓存
     participant Classifier as 审批分类器模型
     participant Human as 人工审批 UI
     participant Tool as 工具
 
-    User->>Pi: 要求 agent 执行任务
-    Pi->>Ext: tool_call 事件
+    User->>OMP: 要求 agent 执行任务
+    OMP->>Ext: tool_call 事件
     Ext->>Ext: 加载配置并构建审批对象
 
     alt 状态为 off
-        Ext-->>Pi: 不做决策，使用 Pi 默认行为
+        Ext-->>OMP: 不做决策，使用 OMP 默认行为
     else 只读工具、工作区内部写入或安全只读 bash 命令
-        Ext-->>Pi: 放行
-        Pi->>Tool: 执行工具调用
+        Ext-->>OMP: 放行
+        OMP->>Tool: 执行工具调用
     else 当前会话已精确批准同一动作
         Store-->>Ext: 返回已有精确批准
-        Ext-->>Pi: 放行
-        Pi->>Tool: 执行工具调用
+        Ext-->>OMP: 放行
+        OMP->>Tool: 执行工具调用
     else 命中分类器放行缓存
         Store-->>Ext: 返回同一 action hash 的缓存放行结果
-        Ext-->>Pi: 放行
-        Pi->>Tool: 执行工具调用
+        Ext-->>OMP: 放行
+        OMP->>Tool: 执行工具调用
     else 需要审批
         Ext->>Ext: 投影精简上下文，包含最近一条用户请求
         Ext->>Classifier: 审查动作风险和用户授权
@@ -126,21 +99,21 @@ sequenceDiagram
 
         alt 分类器允许
             Ext->>Store: 缓存放行结果
-            Ext-->>Pi: 放行
-            Pi->>Tool: 执行工具调用
+            Ext-->>OMP: 放行
+            OMP->>Tool: 执行工具调用
         else fallback 模式且 UI 可用
             Ext->>Human: 请求人工审批
             alt 人工批准
                 Human-->>Ext: 批准，可选择记住精确动作
                 Ext->>Store: 记录批准
-                Ext-->>Pi: 放行
-                Pi->>Tool: 执行工具调用
+                Ext-->>OMP: 放行
+                OMP->>Tool: 执行工具调用
             else 人工拒绝或超时
                 Human-->>Ext: 拒绝
-                Ext-->>Pi: 阻止并返回原因
+                Ext-->>OMP: 阻止并返回原因
             end
         else auto 模式、无 UI 或分类器失败
-            Ext-->>Pi: 阻止并返回原因
+            Ext-->>OMP: 阻止并返回原因
         end
     end
 
@@ -151,7 +124,7 @@ sequenceDiagram
 
 `off` 表示扩展不做自动审批决策。
 
-`fallback` 表示本地 fast path 会先处理已知低风险动作，例如可信只读工具、工作区内写入、显式 allowlist 的安全命令，或当前会话中已批准过的精确动作。其他工具调用会先交给分类器审批。如果分类器允许，工具会执行。如果分类器拒绝、失败、超时，或工具必须人工审批，并且 UI 可用，Pi 会通过审批 UI 询问人工确认。
+`fallback` 表示本地 fast path 会先处理已知低风险动作，例如可信只读工具、工作区内写入、显式 allowlist 的安全命令，或当前会话中已批准过的精确动作。其他工具调用会先交给分类器审批。如果分类器允许，工具会执行。如果分类器拒绝、失败、超时，或工具必须人工审批，并且 UI 可用，OMP 会通过审批 UI 询问人工确认。
 
 `auto` 表示非 fast-path 工具调用由分类器作为审批关口。本地 fast path 仍然可以允许静态可证明低风险或当前会话已批准的动作。对于进入审批的动作，分类器允许时工具执行；分类器拒绝、失败、超时、工具必须人工审批，或连续拒绝过多时，工具调用会被阻止。
 
@@ -163,20 +136,22 @@ sequenceDiagram
 
 ## 分类器模型
 
-默认情况下，审批分类器使用当前 Pi 会话模型。使用 `/auto-approval model` 可以从 Pi 的模型选择器中选择另一个可用模型。
+默认情况下，审批分类器使用当前 OMP 会话模型。使用 `/auto-approval model` 可以从 OMP 的模型选择器中选择另一个可用模型。
 
 选中的值会保存为 `config.jsonc` 中的 `classifierModel`。`null` 表示“使用当前会话模型”。
 
+模型选择器会先刷新 OMP runtime model registry，再读取可用模型，因此也会显示运行时添加的模型和自定义 provider。
+
 ## 参考来源
 
-本扩展是独立的 Pi package。审批工作流和终端交互设计参考了 OpenAI Codex CLI 以及 Claude Code 风格的 coding-agent 权限流程。
+本扩展是独立的 OMP package。审批工作流和终端交互设计参考了 OpenAI Codex CLI 以及 Claude Code 风格的 coding-agent 权限流程。
 
-## Pi Smoke 回归测试
+## OMP Smoke 回归测试
 
-运行本地 Pi 侧 smoke 回归测试：
+运行本地 OMP 侧 smoke 回归测试：
 
 ```bash
-npm run smoke:pi
+npm run smoke:omp
 ```
 
 该脚本会在临时配置和日志目录中运行，验证 `/auto-approval fallback`、`/auto-approval auto`、安全 bash 命令放行、可疑 bash 命令的人工兜底或拒绝，以及 JSONL 审计日志内容。

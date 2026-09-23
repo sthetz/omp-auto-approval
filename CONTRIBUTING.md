@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for improving `pi-auto-approval`.
+Thanks for improving `omp-auto-approval`.
 
 ## Development
 
@@ -16,10 +16,10 @@ Run checks:
 npm run check
 ```
 
-Run the Pi smoke regression:
+Run the OMP smoke regression:
 
 ```bash
-npm run smoke:pi
+npm run smoke:omp
 ```
 
 ## Pull Requests

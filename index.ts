@@ -17,7 +17,7 @@ type ExtensionAPI = {
   ) => void;
 };
 
-const STATUS_KEY = "pi-auto-approval";
+const STATUS_KEY = "omp-auto-approval";
 
 function statusText(config: AutoReviewConfig): string | undefined {
   if (!config.enabled) {
@@ -58,7 +58,7 @@ const COMMAND_ARGUMENTS = [
   { value: "fallback", label: "fallback", description: "AI review, then human approval on failure or denial" },
   { value: "auto", label: "auto", description: "AI review only; fail closed on failure or denial" },
   { value: "model", label: "model", description: "Select approval classifier model" },
-  { value: "model current", label: "model current", description: "Use the active Pi session model for approval" },
+  { value: "model current", label: "model current", description: "Use the active OMP session model for approval" },
 ];
 
 function getAutoReviewArgumentCompletions(argumentPrefix: string): Array<{ value: string; label: string; description: string }> | null {
@@ -69,7 +69,7 @@ function getAutoReviewArgumentCompletions(argumentPrefix: string): Array<{ value
   return filtered.length ? filtered : null;
 }
 
-export default function piAutoApprovalExtension(pi: ExtensionAPI): void {
+export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
   let loadResult = loadConfig();
   let config = loadResult.config;
   const approvals = new SessionApprovalStore();
@@ -92,7 +92,7 @@ export default function piAutoApprovalExtension(pi: ExtensionAPI): void {
   function persist(next: AutoReviewConfig, ctx: ExtensionContextLike): void {
     const saved = saveConfig(next);
     if (!saved.success) {
-      notify(ctx, `Failed to save pi-auto-approval config: ${saved.error ?? "unknown error"}`, "error");
+      notify(ctx, `Failed to save omp-auto-approval config: ${saved.error ?? "unknown error"}`, "error");
       return;
     }
     config = next;
@@ -106,15 +106,15 @@ export default function piAutoApprovalExtension(pi: ExtensionAPI): void {
       case "off":
         persist({ ...config, enabled: false }, ctx);
         approvals.clear();
-        notify(ctx, "pi-auto-approval state: off.");
+        notify(ctx, "omp-auto-approval state: off.");
         break;
       case "fallback":
         persist({ ...config, enabled: true, mode: "fallback" }, ctx);
-        notify(ctx, "pi-auto-approval state: fallback.");
+        notify(ctx, "omp-auto-approval state: fallback.");
         break;
       case "auto":
         persist({ ...config, enabled: true, mode: "auto" }, ctx);
-        notify(ctx, "pi-auto-approval state: auto.");
+        notify(ctx, "omp-auto-approval state: auto.");
         break;
       case "model": {
         if (!rest) {
@@ -149,7 +149,7 @@ export default function piAutoApprovalExtension(pi: ExtensionAPI): void {
     }
   }
 
-  pi.registerCommand?.("auto-approval", {
+  omp.registerCommand?.("auto-approval", {
     description: "args: status | off | fallback | auto | model",
     getArgumentCompletions: getAutoReviewArgumentCompletions,
     handler: async (args, ctx) => {
@@ -157,28 +157,28 @@ export default function piAutoApprovalExtension(pi: ExtensionAPI): void {
     },
   });
 
-  pi.on("session_start", async (_event: unknown, ctx: ExtensionContextLike) => {
+  omp.on("session_start", async (_event: unknown, ctx: ExtensionContextLike) => {
     approvals.clear();
     refresh(ctx);
   });
 
-  pi.on("resources_discover", async (_event: unknown, ctx: ExtensionContextLike) => {
+  omp.on("resources_discover", async (_event: unknown, ctx: ExtensionContextLike) => {
     refresh(ctx ?? lastContext ?? undefined);
   });
 
-  pi.on("session_shutdown", async () => {
+  omp.on("session_shutdown", async () => {
     approvals.clear();
     lastContext?.ui?.setStatus?.(STATUS_KEY, undefined);
     lastContext = null;
   });
 
-  pi.on("tool_call", async (event: ToolCallEventLike, ctx: ExtensionContextLike) => {
+  omp.on("tool_call", async (event: ToolCallEventLike, ctx: ExtensionContextLike) => {
     lastContext = ctx;
     if (loadResult.created || loadResult.warning) {
       refresh(ctx);
     }
     return evaluateToolCall(event, ctx, config, approvals, {
-      tools: pi.getAllTools?.() ?? [],
+      tools: omp.getAllTools?.() ?? [],
     });
   });
 }

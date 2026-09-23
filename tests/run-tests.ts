@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import piAutoApprovalExtension from "../index.js";
+import ompAutoApprovalExtension from "../index.js";
 import { classifyAction, parseReviewDecision } from "../src/classifier.js";
 import { buildProjectedContext } from "../src/context-projection.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logsDir, normalizeConfig } from "../src/extension-config.js";
@@ -187,7 +187,7 @@ async function run(): Promise<void> {
   });
 
   await test("workspace write fast path rejects symlink escape", async () => {
-    const root = mkdtempSync(join(tmpdir(), "pi-auto-approval-symlink-"));
+    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-symlink-"));
     const workspace = join(root, "workspace");
     const outside = join(root, "outside");
     mkdirSync(workspace);
@@ -208,7 +208,7 @@ async function run(): Promise<void> {
   });
 
   await test("workspace write fast path canonicalizes relative and traversal paths", async () => {
-    const root = mkdtempSync(join(tmpdir(), "pi-auto-approval-paths-"));
+    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-paths-"));
     const workspace = join(root, "workspace");
     const outside = join(root, "outside");
     mkdirSync(join(workspace, "src"), { recursive: true });
@@ -304,11 +304,11 @@ async function run(): Promise<void> {
   });
 
   await test("auto-approval model command opens model selector and persists selection", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-auto-approval-config-"));
+    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-config-"));
     const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
     process.env.PI_AUTO_APPROVAL_CONFIG_PATH = join(dir, "config.jsonc");
     const commandHandlers = new Map<string, (args: string, context: ExtensionContextLike) => Promise<void> | void>();
-    piAutoApprovalExtension({
+    ompAutoApprovalExtension({
       on: () => {},
       registerCommand: (name, definition) => {
         commandHandlers.set(name, definition.handler);
@@ -349,12 +349,12 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("auto-approval model command uses Pi-style custom selector in TUI mode", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-auto-approval-config-"));
+  await test("auto-approval model command uses the OMP custom selector in TUI mode", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-config-"));
     const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
     process.env.PI_AUTO_APPROVAL_CONFIG_PATH = join(dir, "config.jsonc");
     const commandHandlers = new Map<string, (args: string, context: ExtensionContextLike) => Promise<void> | void>();
-    piAutoApprovalExtension({
+    ompAutoApprovalExtension({
       on: () => {},
       registerCommand: (name, definition) => {
         commandHandlers.set(name, definition.handler);
@@ -419,11 +419,11 @@ async function run(): Promise<void> {
     assert.equal(truncateVisible("", 10), "");
     assert.equal(truncateVisible("abcdef", 0), "");
 
-    const dir = mkdtempSync(join(tmpdir(), "pi-auto-approval-config-"));
+    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-config-"));
     const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
     process.env.PI_AUTO_APPROVAL_CONFIG_PATH = join(dir, "config.jsonc");
     const commandHandlers = new Map<string, (args: string, context: ExtensionContextLike) => Promise<void> | void>();
-    piAutoApprovalExtension({
+    ompAutoApprovalExtension({
       on: () => {},
       registerCommand: (name, definition) => {
         commandHandlers.set(name, definition.handler);
@@ -483,11 +483,11 @@ async function run(): Promise<void> {
   });
 
   await test("auto-approval model command does not accept model IDs as arguments", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-auto-approval-config-"));
+    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-config-"));
     const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
     process.env.PI_AUTO_APPROVAL_CONFIG_PATH = join(dir, "config.jsonc");
     const commandHandlers = new Map<string, (args: string, context: ExtensionContextLike) => Promise<void> | void>();
-    piAutoApprovalExtension({
+    ompAutoApprovalExtension({
       on: () => {},
       registerCommand: (name, definition) => {
         commandHandlers.set(name, definition.handler);
@@ -516,10 +516,10 @@ async function run(): Promise<void> {
 
   await test("extension registers one slash command with subcommands", () => {
     const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
-    const configPath = join(tmpdir(), `pi-auto-approval-${Date.now()}.jsonc`);
+    const configPath = join(tmpdir(), `omp-auto-approval-${Date.now()}.jsonc`);
     process.env.PI_AUTO_APPROVAL_CONFIG_PATH = configPath;
     const commands: string[] = [];
-    piAutoApprovalExtension({
+    ompAutoApprovalExtension({
       on: () => {},
       registerCommand: (name) => {
         commands.push(name);
@@ -536,11 +536,11 @@ async function run(): Promise<void> {
 
   await test("auto-approval command provides argument completions", async () => {
     const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
-    const configPath = join(tmpdir(), `pi-auto-approval-${Date.now()}.jsonc`);
+    const configPath = join(tmpdir(), `omp-auto-approval-${Date.now()}.jsonc`);
     process.env.PI_AUTO_APPROVAL_CONFIG_PATH = configPath;
     let getArgumentCompletions: ((argumentPrefix: string) => unknown[] | null | Promise<unknown[] | null>) | undefined;
     let description = "";
-    piAutoApprovalExtension({
+    ompAutoApprovalExtension({
       on: () => {},
       registerCommand: (_name, definition) => {
         description = definition.description;
@@ -565,7 +565,7 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("projected context includes latest nested Pi user message", () => {
+  await test("projected context includes the latest nested user message", () => {
     const projected = buildProjectedContext(ctx({
       sessionManager: {
         getBranch: () => [
@@ -573,16 +573,16 @@ async function run(): Promise<void> {
             type: "message",
             message: {
               role: "user",
-              content: [{ type: "text", text: "删除文件：/tmp/pi-auto-approval-test/delete-target.json" }],
+              content: [{ type: "text", text: "删除文件：/tmp/omp-auto-approval-test/delete-target.json" }],
             },
           },
         ],
       },
     }), {
       toolName: "bash",
-      input: { command: "rm /tmp/pi-auto-approval-test/delete-target.json" },
+      input: { command: "rm /tmp/omp-auto-approval-test/delete-target.json" },
       cwd: "/workspace/project",
-      actionSummary: "bash: rm /tmp/pi-auto-approval-test/delete-target.json",
+      actionSummary: "bash: rm /tmp/omp-auto-approval-test/delete-target.json",
       actionHash: "test",
     });
     assert.match(projected, /Latest user request:\n删除文件/);
@@ -592,7 +592,7 @@ async function run(): Promise<void> {
   await test("classifier receives latest user request for current approval", async () => {
     let classifierContext = "";
     const result = await evaluateToolCall(
-      { toolName: "bash", input: { command: "rm /tmp/pi-auto-approval-test/delete-target.json" } },
+      { toolName: "bash", input: { command: "rm /tmp/omp-auto-approval-test/delete-target.json" } },
       ctx({
         cwd: "/workspace/project",
         sessionManager: {
@@ -601,7 +601,7 @@ async function run(): Promise<void> {
               type: "message",
               message: {
                 role: "user",
-                content: [{ type: "text", text: "删除文件：/tmp/pi-auto-approval-test/delete-target.json" }],
+                content: [{ type: "text", text: "删除文件：/tmp/omp-auto-approval-test/delete-target.json" }],
               },
             },
           ],
@@ -968,7 +968,7 @@ async function run(): Promise<void> {
   });
 
   await test("audit logging does not throw", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-auto-approval-test-"));
+    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-test-"));
     process.env.PI_AUTO_APPROVAL_LOGS_DIR = dir;
     await evaluateToolCall(
       { toolName: "bash", input: { command: "git status" } },

@@ -10,7 +10,7 @@ import { buildProjectedContext } from "../src/context-projection.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, logsDir, normalizeConfig, saveConfig } from "../src/extension-config.js";
 import { evaluateToolCall } from "../src/decision.js";
 import { columnWidth, truncateVisible } from "../src/model-selector.js";
-import { pinnedSafeCommand } from "../src/safe-command.js";
+import { planSafeCommand } from "../src/safe-command.js";
 import { recognizeShell } from "../src/shell-syntax.js";
 import { compareRun, pipelinesRun, type ParsedScript } from "./shell-oracle/oracle.js";
 import { SessionApprovalStore } from "../src/session-approval-store.js";
@@ -20,7 +20,7 @@ import type { AutoReviewConfig, ExtensionContextLike } from "../src/types.js";
 // Fast-pathed commands are pinned to a program found on OMP's startup PATH.
 // Stub programs make the tests independent of what this machine has
 // installed; the real PATH stays behind them.
-const STUB_PROGRAMS = ["cat", "dd", "fd", "find", "git", "grep", "ls", "npm", "pwd", "python", "rg", "sort", "tar"];
+const STUB_PROGRAMS = ["cat", "dd", "fd", "find", "git", "grep", "head", "ls", "npm", "pwd", "python", "rg", "sort", "tar"];
 const STUB_BIN = mkdtempSync(join(tmpdir(), "omp-auto-approval-bin-"));
 for (const name of STUB_PROGRAMS) {
   writeFileSync(join(STUB_BIN, name), "#!/bin/sh\n");
@@ -30,7 +30,12 @@ const TEST_PATH = `${STUB_BIN}:${process.env.PATH ?? ""}`;
 process.on("exit", () => rmSync(STUB_BIN, { recursive: true, force: true }));
 
 function isSafeReadOnlyCommand(command: string, cfg: AutoReviewConfig, cwd: string): boolean {
-  return pinnedSafeCommand(command, cfg, cwd, TEST_PATH) !== null;
+  return planSafeCommand(command, cfg, { workspace: cwd, searchPath: TEST_PATH }) !== null;
+}
+
+/** The command a fast-pathed command runs as, or null when it is reviewed. */
+function pinnedCommand(command: string, cfg: AutoReviewConfig, workspace: string, searchPath = TEST_PATH): string | null {
+  return planSafeCommand(command, cfg, { workspace, searchPath })?.command ?? null;
 }
 
 function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -277,6 +282,10 @@ async function run(): Promise<void> {
     // Quoting: single quotes keep everything; inside double quotes a backslash escapes only $ ` " \\ and newline.
     assert.deepEqual(shape(`echo 'a\\b' "src\\/x" "q\\"q" a\\ b a#b`)?.pipelines[0][0].words, ["echo", "a\\b", "src\\/x", 'q"q', "a b", "a#b"]);
 
+    // Each command's span runs from its first word or redirection to its last, redirection targets included.
+    const spans = recognizeShell("  2>/dev/null git status && ls -l > out # note")!.pipelines.flat().map(({ start, end }) => [start, end]);
+    assert.deepEqual(spans, [[2, 24], [28, 39]]);
+
     const words = recognizeShell("  \"git\" ~/x a=~/k 'a'=~ *.ts X=1")!.pipelines[0][0].words;
     assert.deepEqual(words.map(({ text, expands, quoted, assignment, start, end }) => [text, expands, quoted, assignment, start, end]), [
       ["git", false, true, false, 2, 7],
@@ -346,16 +355,91 @@ async function run(): Promise<void> {
     symlinkSync(join(workspace, "bin", "git"), join(root, "links", "git"));
     const cfg = config({ safeCommandAllowlist: ["rg *", "./scripts/check.sh"] });
     try {
-      assert.equal(pinnedSafeCommand("git status --short", cfg, workspace, TEST_PATH), `${STUB_BIN}/git status --short`);
-      assert.equal(pinnedSafeCommand('  "git" log -1', cfg, workspace, TEST_PATH), `  ${STUB_BIN}/git log -1`);
-      assert.equal(pinnedSafeCommand("pwd", cfg, workspace, TEST_PATH), `${STUB_BIN}/pwd`);
+      assert.equal(pinnedCommand("git status --short", cfg, workspace, TEST_PATH), `${STUB_BIN}/git status --short`);
+      assert.equal(pinnedCommand('  "git" log -1', cfg, workspace, TEST_PATH), `  ${STUB_BIN}/git log -1`);
+      assert.equal(pinnedCommand("pwd", cfg, workspace, TEST_PATH), `${STUB_BIN}/pwd`);
       // Directories and links inside the workspace are skipped: the agent writes there without review.
-      assert.equal(pinnedSafeCommand("git status", cfg, workspace, `${join(workspace, "bin")}:${join(root, "links")}:${STUB_BIN}`), `${STUB_BIN}/git status`);
-      assert.equal(pinnedSafeCommand("git status", cfg, workspace, `relative/bin:${join(workspace, "bin")}`), null);
-      assert.equal(pinnedSafeCommand("rg needle", cfg, workspace, spaced), `'${join(spaced, "rg")}' needle`);
-      assert.equal(pinnedSafeCommand("rg needle", cfg, workspace, join(root, "missing")), null);
-      assert.equal(pinnedSafeCommand("./scripts/check.sh", cfg, workspace, ""), "./scripts/check.sh");
-      assert.equal(pinnedSafeCommand("git diff -- secrets*", cfg, workspace, TEST_PATH), null);
+      assert.equal(pinnedCommand("git status", cfg, workspace, `${join(workspace, "bin")}:${join(root, "links")}:${STUB_BIN}`), `${STUB_BIN}/git status`);
+      assert.equal(pinnedCommand("git status", cfg, workspace, `relative/bin:${join(workspace, "bin")}`), null);
+      assert.equal(pinnedCommand("rg needle", cfg, workspace, spaced), `'${join(spaced, "rg")}' needle`);
+      assert.equal(pinnedCommand("rg needle", cfg, workspace, join(root, "missing")), null);
+      assert.equal(pinnedCommand("./scripts/check.sh", cfg, workspace, ""), "./scripts/check.sh");
+      assert.equal(pinnedCommand("git diff -- secrets*", cfg, workspace, TEST_PATH), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test("the fast path reads chains and pipelines, safe redirections, and a leading cd", () => {
+    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-chain-"));
+    const workspace = join(root, "workspace");
+    mkdirSync(join(workspace, "sub"), { recursive: true });
+    writeFileSync(join(workspace, "notes.txt"), "notes\n");
+    writeFileSync(join(workspace, ".env"), "TOKEN=x\n");
+    writeFileSync(join(root, "outside.txt"), "outside\n");
+    const cfg = config({ safeCommandAllowlist: ["rg", "head", "cat"] });
+    const plan = (command: string) => planSafeCommand(command, cfg, { workspace, searchPath: TEST_PATH });
+    try {
+      for (const command of [
+        "git status && git log -1",
+        "git status; git diff --stat",
+        "git log --oneline | head -5",
+        "git status 2>&1 | head -20",
+        "git diff 2>/dev/null || git status",
+        "rg needle >/dev/null 2>&1",
+        "git status &>/dev/null",
+        "cat < notes.txt",
+        "head -3 </dev/null",
+        "# check\ngit status\ngit log -1",
+        "cd sub && git status",
+        "cd sub && cat ../notes.txt",
+        "cd sub && cd .. && git diff -- notes.txt",
+      ]) {
+        assert.notEqual(plan(command), null, command);
+      }
+      for (const command of [
+        "git status && rm -rf tmp",
+        "git status | sh",
+        "git log > log.txt",
+        "git log >> log.txt",
+        "git log &> log.txt",
+        "git log 2>log.txt",
+        "git status >&3",
+        "git status 3>&1",
+        "cat < .env",
+        `cat < ${join(root, "outside.txt")}`,
+        "cd sub && git diff ../.env",
+        "cd .. && git status",
+        "cd /etc && git status",
+        "cd missing && git status",
+        "cd notes.txt && git status",
+        "cd - && git status",
+        "cd -P sub && git status",
+        "cd 'su'* && git status",
+        "cd sub",
+        "cd sub; git status",
+        "cd sub || git status",
+        "git status && cd sub",
+        "cd sub && git status && cd .. && git status",
+      ]) {
+        assert.equal(plan(command), null, command);
+      }
+
+      // Every program is pinned; a leading cd becomes the call's directory.
+      assert.deepEqual(plan("git status && git log -1 | head -3 2>&1"), {
+        command: `${STUB_BIN}/git status && ${STUB_BIN}/git log -1 | ${STUB_BIN}/head -3 2>&1`,
+      });
+      assert.deepEqual(plan("cd sub && git status"), { command: `${STUB_BIN}/git status`, cwd: join(workspace, "sub") });
+      assert.deepEqual(plan("cd sub &&\n  cd ..  &&  2>/dev/null git status # done"), {
+        command: `2>/dev/null ${STUB_BIN}/git status # done`,
+        cwd: workspace,
+      });
+      assert.deepEqual(planSafeCommand("cd .. && git status", cfg, { workspace, cwd: join(workspace, "sub"), searchPath: TEST_PATH }), {
+        command: `${STUB_BIN}/git status`,
+        cwd: workspace,
+      });
+      // Every program must be found: one unknown program sends the whole chain to review.
+      assert.equal(pinnedCommand("git status | head", cfg, workspace, `${STUB_BIN}/missing:${join(root, "none")}`), null);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -369,8 +453,15 @@ async function run(): Promise<void> {
       assert.deepEqual(await evaluateToolCall(event, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), classifierDenyOptions()), {});
       assert.match(String(event.input.command), /^\/\S*\/git status --short$/);
 
-      const inside = { toolName: "bash", input: { command: "git status", cwd: "sub" } };
+      const inside = { toolName: "bash", input: { command: "git status", cwd: "sub" } as Record<string, unknown> };
       assert.deepEqual(await evaluateToolCall(inside, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), classifierDenyOptions()), {});
+      assert.equal(inside.input.cwd, "sub");
+
+      // A leading cd is not run in the shell, where an earlier call may have redefined it; the call moves instead.
+      const moved = { toolName: "bash", input: { command: "cd sub && git log -1 2>/dev/null" } as Record<string, unknown> };
+      assert.deepEqual(await evaluateToolCall(moved, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), classifierDenyOptions()), {});
+      assert.match(String(moved.input.command), /^\/\S*\/git log -1 2>\/dev\/null$/);
+      assert.equal(moved.input.cwd, join(workspace, "sub"));
       const outside = { toolName: "bash", input: { command: "git status", cwd: "/etc" } };
       assert.deepEqual(
         await evaluateToolCall(outside, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), classifierDenyOptions()),
@@ -1324,6 +1415,8 @@ async function run(): Promise<void> {
       assert.match(await routeFor("deploy {}"), /tool: deploy \(extension\)[\s\S]*route: classifier review/);
       assert.match(await routeFor("ls -la"), /note: no tool named "ls" in this session; explained as a bash command[\s\S]*tool: bash\n[\s\S]*arguments: \{"command":"ls -la"\}/);
       assert.match(await routeFor("git status"), /arguments: \{"command":"git status"\}[\s\S]*route: allowed without review: built-in or allowlisted read-only command/);
+      assert.match(await routeFor("git status 2>&1 && git log -1"), /route: allowed without review[\s\S]*runs as: \/\S+\/git status 2>&1 && \/\S+\/git log -1/);
+      assert.match(await routeFor(`bash cd ${tmpdir()} && git status`), /route: classifier review/);
       assert.match(await routeFor("read {bad"), /not valid JSON/);
       writeFileSync(configFile, JSON.stringify({ enabled: true, mode: "auto", blockCommands: ["git push --force"] }));
       assert.match(await routeFor("bash git push origin --force"), /route: blocked: matches a blockCommands rule/);

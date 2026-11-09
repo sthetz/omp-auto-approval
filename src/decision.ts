@@ -2,7 +2,7 @@ import type { AuditEntry, AutoReviewConfig, ExtensionContextLike, ReviewDecision
 import { matchBlockedCommand } from "./block-commands.js";
 import { classifyAction, type ClassifierClient } from "./classifier.js";
 import { writeAudit } from "./logging.js";
-import { pinnedSafeCommand } from "./safe-command.js";
+import { planSafeCommand, type SafeCommandPlan } from "./safe-command.js";
 import { SessionApprovalStore } from "./session-approval-store.js";
 import {
   createReviewSubject,
@@ -116,12 +116,11 @@ function bashCommand(toolName: string, input: unknown): string | undefined {
 }
 
 /**
- * The command a bash call would run in place of a read-only command that
- * skips review (see pinnedSafeCommand), or null. OMP's bash tool accepts a
- * `cwd`; paths are checked against it, and a directory outside the workspace
- * gets no fast path.
+ * How a bash call that skips review runs (see planSafeCommand), or null. OMP's
+ * bash tool accepts a `cwd`; relative paths are resolved from it, and a
+ * directory outside the workspace gets no fast path.
  */
-export function pinnedBashCommand(toolName: string, input: unknown, cwd: string, config: AutoReviewConfig): string | null {
+export function planBashCommand(toolName: string, input: unknown, cwd: string, config: AutoReviewConfig): SafeCommandPlan | null {
   const command = bashCommand(toolName, input);
   if (!command) {
     return null;
@@ -131,7 +130,12 @@ export function pinnedBashCommand(toolName: string, input: unknown, cwd: string,
   if (relativePathWithin(workingDirectory, cwd) === null) {
     return null;
   }
-  return pinnedSafeCommand(command, config, workingDirectory);
+  return planSafeCommand(command, config, { workspace: cwd, cwd: workingDirectory });
+}
+
+/** The input a planned bash call runs with: the plan's command, and its directory when a leading `cd` moved it. */
+export function plannedInput(input: unknown, plan: SafeCommandPlan): Record<string, unknown> {
+  return { ...toRecord(input), command: plan.command, ...(plan.cwd ? { cwd: plan.cwd } : {}) };
 }
 
 /**
@@ -172,7 +176,7 @@ export function selectFastPath(
   if (isManualOnlyTool(toolName, toolDefinition)) {
     return "manual_only";
   }
-  if (pinnedBashCommand(toolName, input, cwd, config) !== null) {
+  if (planBashCommand(toolName, input, cwd, config) !== null) {
     return "safe_command";
   }
   return null;
@@ -265,12 +269,15 @@ export async function evaluateToolCall(
   if (route) {
     if (route === "safe_command") {
       store.recordNonDenial();
-      const pinned = pinnedBashCommand(toolName, input, cwd, config);
-      if (pinned !== null && pinned !== bashCommand(toolName, input)) {
+      const plan = planBashCommand(toolName, input, cwd, config);
+      if (plan) {
         // OMP runs the call with the input as the tool_call handlers leave it.
-        toRecord(input).command = pinned;
-        await audit({ route, outcome: "allow", pinnedCommand: pinned });
-        return {};
+        const record = toRecord(input);
+        if (plan.command !== record.command || plan.cwd) {
+          Object.assign(record, plannedInput(input, plan));
+          await audit({ route, outcome: "allow", pinnedCommand: plan.command, ...(plan.cwd ? { pinnedCwd: plan.cwd } : {}) });
+          return {};
+        }
       }
     }
     await audit({ route, outcome: "allow" });

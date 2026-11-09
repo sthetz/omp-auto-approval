@@ -39,6 +39,10 @@ export interface ShellRedirect {
 export interface ShellCommand {
   words: ShellWord[];
   redirects: ShellRedirect[];
+  // Where the command, from its first word or redirection to its last, sits
+  // in the command string.
+  start: number;
+  end: number;
 }
 
 export type ShellConnector = "&&" | "||" | ";";
@@ -66,10 +70,11 @@ function isControl(char: string): boolean {
   return (code < 0x20 && char !== "\t" && char !== "\n") || code === 0x7f;
 }
 
-type Token =
+type Token = { start: number; end: number } & (
   | { type: "word"; word: ShellWord }
   | { type: "operator"; operator: "&&" | "||" | ";" | "|" | "\n" }
-  | { type: "redirect"; redirects: (Omit<ShellRedirect, "target"> & { target?: string })[]; needsTarget: boolean };
+  | { type: "redirect"; redirects: (Omit<ShellRedirect, "target"> & { target?: string })[]; needsTarget: boolean }
+);
 
 class Lexer {
   private index = 0;
@@ -97,23 +102,23 @@ class Lexer {
           this.index += 1;
         }
       } else if (char === "\n") {
-        this.tokens.push({ type: "operator", operator: "\n" });
-        this.index += 1;
+        this.operator("\n", 1);
       } else if (char === ";") {
         if (this.peek(1) === ";" || this.peek(1) === "&") {
           throw new Reject();
         }
-        this.tokens.push({ type: "operator", operator: ";" });
-        this.index += 1;
+        this.operator(";", 1);
       } else if (char === "&") {
         if (this.peek(1) === "&") {
-          this.tokens.push({ type: "operator", operator: "&&" });
-          this.index += 2;
+          this.operator("&&", 2);
         } else if (this.peek(1) === ">") {
           // `&>file` and `&>>file`: stdout and stderr to the same file.
+          const start = this.index;
           const append = this.peek(2) === ">";
           this.index += append ? 3 : 2;
           this.tokens.push({
+            start,
+            end: this.index,
             type: "redirect",
             redirects: [{ fd: 1, kind: append ? "append" : "write" }, { fd: 2, kind: "duplicate", target: "1" }],
             needsTarget: true,
@@ -123,16 +128,14 @@ class Lexer {
         }
       } else if (char === "|") {
         if (this.peek(1) === "|") {
-          this.tokens.push({ type: "operator", operator: "||" });
-          this.index += 2;
+          this.operator("||", 2);
         } else if (this.peek(1) === "&") {
           throw new Reject();
         } else {
-          this.tokens.push({ type: "operator", operator: "|" });
-          this.index += 1;
+          this.operator("|", 1);
         }
       } else if (char === "<" || char === ">") {
-        this.redirect(null);
+        this.redirect(null, this.index);
       } else if (char === "(" || char === ")") {
         throw new Reject();
       } else {
@@ -142,8 +145,19 @@ class Lexer {
     return this.tokens;
   }
 
-  /** A redirection operator at the current position, applying to `fd` or the default. */
-  private redirect(fd: number | null): void {
+  private operator(operator: "&&" | "||" | ";" | "|" | "\n", length: number): void {
+    this.tokens.push({ start: this.index, end: this.index + length, type: "operator", operator });
+    this.index += length;
+  }
+
+  /**
+   * A redirection operator at the current position, applying to `fd` or the
+   * default; `start` is where it begins, fd number included.
+   */
+  private redirect(fd: number | null, start: number): void {
+    const push = (redirects: (Omit<ShellRedirect, "target"> & { target?: string })[], needsTarget: boolean) => {
+      this.tokens.push({ start, end: this.index, type: "redirect", redirects, needsTarget });
+    };
     const char = this.peek();
     const next = this.peek(1);
     if (char === "<") {
@@ -152,7 +166,7 @@ class Lexer {
         throw new Reject();
       }
       this.index += 1;
-      this.tokens.push({ type: "redirect", redirects: [{ fd: fd ?? 0, kind: "read" }], needsTarget: true });
+      push([{ fd: fd ?? 0, kind: "read" }], true);
       return;
     }
     if (next === "(" || next === "|") {
@@ -160,7 +174,7 @@ class Lexer {
     }
     if (next === ">") {
       this.index += 2;
-      this.tokens.push({ type: "redirect", redirects: [{ fd: fd ?? 1, kind: "append" }], needsTarget: true });
+      push([{ fd: fd ?? 1, kind: "append" }], true);
       return;
     }
     if (next === "&") {
@@ -170,22 +184,18 @@ class Lexer {
       if (digits && (after === "" || METACHARACTERS.has(after))) {
         // `>&2`: duplicate an fd.
         this.index += digits.length;
-        this.tokens.push({ type: "redirect", redirects: [{ fd: fd ?? 1, kind: "duplicate", target: digits }], needsTarget: false });
+        push([{ fd: fd ?? 1, kind: "duplicate", target: digits }], false);
         return;
       }
       if (fd !== null || this.peek() === "-" || this.peek() === " " || this.peek() === "\t") {
         throw new Reject();
       }
       // `>&file` is `&>file`.
-      this.tokens.push({
-        type: "redirect",
-        redirects: [{ fd: 1, kind: "write" }, { fd: 2, kind: "duplicate", target: "1" }],
-        needsTarget: true,
-      });
+      push([{ fd: 1, kind: "write" }, { fd: 2, kind: "duplicate", target: "1" }], true);
       return;
     }
     this.index += 1;
-    this.tokens.push({ type: "redirect", redirects: [{ fd: fd ?? 1, kind: "write" }], needsTarget: true });
+    push([{ fd: fd ?? 1, kind: "write" }], true);
   }
 
   private word(): void {
@@ -257,7 +267,7 @@ class Lexer {
     if ((after === "<" || after === ">") && !quoted && text !== "") {
       if (/^[0-9]+$/.test(text)) {
         // An fd number: only digits, directly before the operator.
-        this.redirect(Number(text));
+        this.redirect(Number(text), start);
         return;
       }
       if (/^\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(text)) {
@@ -265,7 +275,7 @@ class Lexer {
         throw new Reject();
       }
     }
-    this.tokens.push({ type: "word", word: { text, expands, quoted, assignment, start, end: this.index } });
+    this.tokens.push({ start, end: this.index, type: "word", word: { text, expands, quoted, assignment, start, end: this.index } });
   }
 
   private doubleQuoted(): string {
@@ -302,7 +312,14 @@ class Lexer {
 function buildScript(tokens: Token[]): ShellScript {
   const script: ShellScript = { pipelines: [], connectors: [] };
   let pipeline: ShellCommand[] = [];
-  let command: ShellCommand = { words: [], redirects: [] };
+  const newCommand = (): ShellCommand => ({ words: [], redirects: [], start: -1, end: -1 });
+  let command = newCommand();
+  const extend = (token: Token) => {
+    if (command.start < 0) {
+      command.start = token.start;
+    }
+    command.end = token.end;
+  };
   // After `|`, `&&` or `||` bash keeps reading across newlines.
   let continuing = false;
 
@@ -316,7 +333,7 @@ function buildScript(tokens: Token[]): ShellScript {
       throw new Reject();
     }
     pipeline.push(command);
-    command = { words: [], redirects: [] };
+    command = newCommand();
   };
   const finishPipeline = () => {
     finishCommand();
@@ -329,8 +346,10 @@ function buildScript(tokens: Token[]): ShellScript {
     const token = tokens[index];
     if (token.type === "word") {
       command.words.push(token.word);
+      extend(token);
       continuing = false;
     } else if (token.type === "redirect") {
+      extend(token);
       let target: string | undefined;
       if (token.needsTarget) {
         const next = tokens[index + 1];
@@ -338,6 +357,7 @@ function buildScript(tokens: Token[]): ShellScript {
           throw new Reject();
         }
         target = next.word.text;
+        extend(next);
         index += 1;
       }
       for (const redirect of token.redirects) {

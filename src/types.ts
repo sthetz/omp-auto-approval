@@ -121,5 +121,7 @@ export interface AuditEntry {
   reason?: string;
   // The command that ran instead, for a bash command pinned to its program's path.
   pinnedCommand?: string;
+  // The directory a leading `cd` in the command moved the call to.
+  pinnedCwd?: string;
   durationMs?: number;
 }

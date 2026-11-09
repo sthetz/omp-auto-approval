@@ -13,7 +13,7 @@ import { PARSERS } from "./parsers.js";
  * The corpus is every `shell-corpus*.jsonl` in ~/.cache/omp-auto-approval,
  * or one file given with --corpus.
  *
- *   node --import tsx tests/shell-oracle/run.ts [--parser baseline] [--corpus FILE | --no-corpus]
+ *   node --import tsx tests/shell-oracle/run.ts [--parser recognizer] [--corpus FILE | --no-corpus]
  *     [--fuzz N] [--seed N] [--jobs N] [--show N]
  *
  * Exits non-zero if bash disagrees with any command the parser accepts.
@@ -119,7 +119,7 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  const parserName = option(args, "--parser") ?? "baseline";
+  const parserName = option(args, "--parser") ?? "recognizer";
   const parser = PARSERS[parserName];
   if (!parser) {
     console.error(`unknown parser ${parserName}; known: ${Object.keys(PARSERS).join(", ")}`);

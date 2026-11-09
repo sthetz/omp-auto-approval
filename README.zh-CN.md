@@ -167,22 +167,37 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
   - 任意层级、解析符号链接后的受保护条目：`.git`、`.omp`、`.pi`、`.claude`、`.mcp.json`、`.cursor`、`.envrc`、`.vscode`、`.idea`、`.husky`、`.devcontainer`。它们的内容之后会被直接执行或信任：`.git/config` 中的 `core.fsmonitor` 会在 `git status` 时运行，`.claude/settings.json` 中的 Claude Code hooks 会执行 shell 命令；
   - 上文读取部分列出的凭据类文件，例如 `.env` 或 `*.pem`；
   - 创建或修改程序的写入：内容以 `#!` 开头（OMP 的 `write` 工具会把这样的文件设为可执行），或目标文件已经可执行。工作区中的程序可能在 shell 的 PATH 上遮蔽某个命令。
-- **安全 bash 命令**：`pwd`、`git status`、`git log`、`git diff`、`git show`、`git rev-parse`、仅列出分支的 `git branch`，以及 `safeCommandAllowlist` 中的条目。它们可以用 `&&`、`||`、`;`、换行和管道连接，每条命令会被单独检查：当 `head` 在 allowlist 中时，`git status && git log -1 | head -5` 无需审批。只有一个很小的 bash 子集会走这条路径，本扩展对它的解读与 bash 完全一致（已用 bash 本身测试，见 `CONTRIBUTING.md`）：普通单词和带引号的单词、上述操作符、注释，以及以下重定向：
+- **安全 bash 命令**：只读 git 命令、`grep`、`cat`、`head`、`ls`、`sed -n`、`jq` 等常见只读程序（见[内置只读程序](#内置只读程序)），以及 `safeCommandAllowlist` 中的条目。它们可以用 `&&`、`||`、`;`、换行和管道连接，每条命令会被单独检查：`git log --oneline | grep -i fix | head -5` 无需审批。只有一个很小的 bash 子集会走这条路径，本扩展对它的解读与 bash 完全一致（已用 bash 本身测试，见 `CONTRIBUTING.md`）：普通单词和带引号的单词、上述操作符、注释，以及以下重定向：
   - 标准输入、标准输出和标准错误之间的复制（`2>&1`）；
   - `/dev/null`（`2>/dev/null`、`&>/dev/null`、`</dev/null`）；
   - 对 fast path 本来就能读取的文件使用 `< file`。
 
   其他一切都需要审批，包括 `$` 和反引号、子 shell 和 `{ }` 分组、后台 `&`、heredoc、`if`/`for`/`while`、`VAR=value command`，以及写入文件的重定向（`> out.txt`）。
 
-  开头的 `cd <dir> &&` 在 `<dir>` 是工作目录内已存在的目录时允许：`cd src && git status`。这个 `cd` 不会在 shell 中运行。命令的其余部分会在 bash 调用的 `cwd` 设为该目录后运行，因此之前调用留下的 `cd` 函数或 `CDPATH` 无法把它带到别处，其相对路径也从该目录检查。出现在其他位置的 `cd`，或目标为 `-`、通配符或选项的 `cd`，都需要审批。
+  开头的 `cd <dir> &&`（或 `cd <dir>;`）在 `<dir>` 是工作目录内已存在的目录时允许：`cd src && git status`。这个 `cd` 不会在 shell 中运行。命令的其余部分会在 bash 调用的 `cwd` 设为该目录后运行，因此之前调用留下的 `cd` 函数或 `CDPATH` 无法把它带到别处，其相对路径也从该目录检查。出现在其他位置的 `cd`，或目标为 `-`、通配符或选项的 `cd`，都需要审批。
 
-  以下 git 命令仍需审批：
-  - 使用 `--output`、`--ext-diff` 或 `--no-index`；
+  只读 git 命令包括 `status`、`log`、`diff`、`show`、`rev-parse`、`grep`、`ls-files`、`ls-tree`、`rev-list`、`blame`、`shortlog`、`describe`、`merge-base`、`show-ref`、`cat-file`、`check-ignore`、`check-attr`、`name-rev`、`count-objects`、仅列出的 `branch` 和 `tag`、`remote [-v]`、`remote get-url` 以及 `stash list`/`show`，前面可以有 `--no-pager` 和 `-C <dir>`（工作目录内的目录）。以下 git 命令仍需审批：
+  - 使用 `--output`、`--ext-diff`、`--no-index`，或 `grep -O`/`--open-files-in-pager`；
   - 指定工作目录之外的路径（即使不加 `--no-index`，git 也会比较工作树之外的文件，因此 `git diff /etc/passwd /dev/null` 会输出该文件）；
   - 指定凭据类路径，包括 `git show HEAD:.env` 这类 `rev:path` 对象；
   - 包含未加引号的通配符（`git diff -- secrets*`）。
 
-  OMP 在每个会话中用同一个持久 shell 运行所有 bash 调用，因此之前的调用可能留下别名、函数，或把工作区目录加入 PATH，让 `git status` 变成别的东西。因此走 fast path 的命令会被改写为按绝对路径运行其中的每个程序：在 OMP 启动时的 PATH 中查找，并跳过工作区内的目录，例如 `git status` 以 `/run/current-system/sw/bin/git status` 运行。如果在那里找不到某个程序，命令需要审批。改写后的命令会出现在对话记录中，并以 `pinnedCommand` 写入审计日志；如果开头的 `cd` 改变了目录，还会写入 `pinnedCwd`。用 `bash -lc` 包装的命令需要审批，因为包装层自己的 `bash` 会在那个 PATH 上查找。`cwd` 位于工作目录之外的 bash 调用需要审批；位于其内的调用会从该目录检查路径。之前调用导出的变量（`GIT_EXTERNAL_DIFF`、`LD_PRELOAD` 等）仍会传给固定路径的程序，但设置它们需要一次经过审批的调用。
+  OMP 在每个会话中用同一个持久 shell 运行所有 bash 调用，因此之前的调用可能留下别名、函数，或把工作区目录加入 PATH，让 `git status` 变成别的东西。因此走 fast path 的命令会被改写为按绝对路径运行其中的每个程序：在 OMP 启动时的 PATH 中查找，并跳过工作区内的目录，例如 `git status` 以 `/run/current-system/sw/bin/git status` 运行。开头的 `~` 也会被写成 OMP 的主目录，因为 bash 从 shell 的 `HOME` 展开它，而之前的调用可以修改 `HOME`。如果在那里找不到某个程序，命令需要审批。改写后的命令会出现在对话记录中，并以 `pinnedCommand` 写入审计日志；如果开头的 `cd` 改变了目录，还会写入 `pinnedCwd`。用 `bash -lc` 包装的命令需要审批，因为包装层自己的 `bash` 会在那个 PATH 上查找。`cwd` 位于工作目录之外的 bash 调用需要审批；位于其内的调用会从该目录检查路径。之前调用导出的变量（`GIT_EXTERNAL_DIFF`、`LD_PRELOAD` 等）仍会传给固定路径的程序，但设置它们需要一次经过审批的调用。
+
+### 内置只读程序
+
+以下程序无需任何配置即可免审批：`cat`、`head`、`tail`、`wc`、`ls`、`grep`、`sed`、`cut`、`sort`、`uniq`、`tr`、`tac`、`paste`、`base64`、`diff`、`du`、`stat`、`file`、`readlink`、`realpath`、`jq`、`find`、`timeout`、`echo`、`printf`、`true`、`false`、`pwd`、`basename`、`dirname`、`date`、`sleep`、`seq`、`which`、`uname`、`whoami`、`id`、`hostname` 和 `nproc`。每个程序都有一张允许使用的选项表。表中列出的是已知只读的选项，而不是已知危险的选项：表外的任何选项，包括 `--incl` 这类缩写的长选项，都会让命令进入审批。选项按 GNU getopt 的方式解析（组合短选项、紧贴的值、操作数之后的选项）。由于 PATH 可能解析到任何一种实现，选项的挑选标准是在 GNU、BSD 和 busybox 中都只读，`grep` 的选项在 GNU grep 和 ugrep 中也只读；`CONTRIBUTING.md` 中的 oracle 会用本地安装的实现检查它们。例如以下内容不在表中：
+- 写文件或运行程序的选项：`sort -o/-T/--compress-program`、`sed -i/-f`、`diff -l`、`file -z`、`jq -f/-L`、`find -exec/-delete/-fprint`、`date -s`、`hostname` 的操作数、`uniq` 的第二个操作数（它的输出文件）；
+- 永不结束或沿符号链接离开目录树的选项：`tail -f`、`ls -L`、`du -L`、`grep -R`、`find -L`；
+- `egrep` 和 `fgrep`：它们是从 shell 当前的 PATH 中运行 `grep` 的脚本。
+
+程序读取的文件，无论是操作数还是选项值（`grep -f`、`diff --from-file`），都必须位于工作目录或 `readRoots` 内且不是凭据类文件；其他任何指向已存在文件的单词也一样，不管程序如何理解它。有些程序需要更多处理：
+- **通配符**可以用在文件操作数中（`wc -l src/*.ts`）：通配符可能匹配的每个文件都会被检查，不论之前的调用设置了哪些通配选项（`dotglob`、`nocaseglob`、`globskipdots`），因此目录中有 `.env` 时 `cat *` 需要审批。不匹配任何文件、可能匹配以 `-` 开头的名称，或使用花括号或 `**` 的通配符需要审批。其他位置的通配符需要审批，除非它在一个没有文件匹配的 `--name=value` 选项中。
+- **递归读取**：`grep -r`（以及传给 `grep` 或 `diff` 的任何目录）会先遍历目录树，如果其中有搜索会读到的凭据类文件就需要审批，因此在含有 `.env` 的目录中 `grep -rn TODO .` 需要审批。带引号的 `--include` 和 `--exclude-dir` 过滤会被考虑：`grep -rn TODO --include='*.ts' .` 无需审批。遍历中遇到的符号链接会被跳过，与 `grep -r` 一致。超过 20,000 个条目的目录树需要审批。
+- **`sed`** 脚本只能打印、删除、退出和替换：地址、`!`、`p d q Q = l P n N g G h H x z D`，以及不带 `e` 和 `w` 标志的 `s`。读写文件（`r R w W`）、运行程序（`e`）、插入文本、跳转或分组的命令需要审批。
+- **`jq`** 既不能写文件也不能运行程序，但过滤器可以读取环境（`env`、`$ENV`）或加载模块（`import`、`include`），这些需要审批。
+- **`timeout`** 运行时长之后的命令，该命令本身必须安全；它的程序也会被固定为绝对路径。
+- **`find`** 只接受已知的测试（`-name`、`-type`、`-path`、`-maxdepth`、`-newer`、`-printf` 等）；表达式中任何位置的通配符都需要审批，因为匹配到的文件名可能变成一个动作。
 
 ### allowlist 中的命令
 
@@ -192,7 +207,7 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 - 参数指向工作目录和 `readRoots` 之外的已存在路径，或凭据类路径。这也包括紧跟在选项后的值和 `name=value` 形式的参数：`cat ~/.ssh/id_ed25519`、`cat .env`、`rg TOKEN --file=../x`、`grep -f/etc/x`、`dd if=../x`；
 - 参数会被 shell 展开，因为其最终形式未知：未加引号的通配符或花括号、`~user`，或 `name=value` 形式中 `=` 或 `:` 之后的 `~`（bash 会展开它，例如 `dd if=~/key`）。`cat secrets*` 需要审批，`find . -name '*.ts'` 不需要。
 
-有些条目会被忽略，`/auto-approval status` 会提示：参数本身就是脚本或命令行的程序（`sed`、`awk`、`xargs`、`parallel`）的任何条目，以及 shell、解释器和包装命令（`bash`、`python`、`node`、`env`、`sudo`、`timeout` 等）的裸条目，因为它们等于允许任意代码。请改为写出具体调用，例如 `"python -m pytest"` 或 `"npm test"`。除这些规则外，条目仍然信任该程序：`npm test` 会运行 `test` 脚本中的任何内容。
+内置表拒绝的命令仍可以由条目按以下规则允许。有些条目会被忽略，`/auto-approval status` 会提示：参数本身就是脚本或命令行的程序（`sed`、`awk`、`xargs`、`parallel`；只读的 `sed` 脚本由其内置表覆盖）的任何条目，以及 shell、解释器和包装命令（`bash`、`python`、`node`、`env`、`sudo`、`timeout` 等）的裸条目，因为它们等于允许任意代码。请改为写出具体调用，例如 `"python -m pytest"` 或 `"npm test"`。除这些规则外，条目仍然信任该程序：`npm test` 会运行 `test` 脚本中的任何内容。
 
 ### 额外的可读目录
 

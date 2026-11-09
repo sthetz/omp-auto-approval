@@ -2,11 +2,16 @@ import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { relativePathWithin, resolvePathForCwd, resolveReadRoots, type ReadRoots } from "./common.js";
+import { boundedGlobMatches, isTreeClean } from "./path-expansion.js";
+import { hasProgramRule, isSafeByProgramRule, opensNoFiles, type RuleContext } from "./program-rules.js";
 import { isSensitivePath } from "./sensitive-paths.js";
 import { recognizeShell, type ShellCommand, type ShellRedirect, type ShellWord } from "./shell-syntax.js";
 import type { AutoReviewConfig } from "./types.js";
 
-const SAFE_GIT_SUBCOMMANDS = new Set(["status", "log", "diff", "show", "rev-parse"]);
+const SAFE_GIT_SUBCOMMANDS = new Set([
+  "status", "log", "diff", "show", "rev-parse", "grep", "ls-files", "ls-tree", "rev-list", "blame", "shortlog", "describe",
+  "merge-base", "show-ref", "cat-file", "check-ignore", "check-attr", "name-rev", "count-objects",
+]);
 const SAFE_GIT_BRANCH_FLAGS = new Set(["--show-current", "--list", "--all", "--merged", "--no-merged", "-a", "-r", "-v", "-vv"]);
 // Positional arguments are branch-name patterns only in list mode; otherwise
 // `git branch <name>` creates a branch.
@@ -14,7 +19,7 @@ const GIT_BRANCH_LIST_MODE_FLAGS = new Set(["--list", "--merged", "--no-merged"]
 // Long options that make otherwise read-only git commands write files, run
 // external programs, or compare arbitrary files outside the repository. Git
 // accepts unambiguous abbreviations, so prefixes match too.
-const UNSAFE_GIT_LONG_OPTIONS = ["--output", "--ext-diff", "--no-index"];
+const UNSAFE_GIT_LONG_OPTIONS = ["--output", "--ext-diff", "--no-index", "--open-files-in-pager"];
 
 // safeCommandAllowlist entries are prefixes, so allowlisting a program would
 // otherwise allow every option it has. Options that execute other programs or
@@ -164,19 +169,25 @@ function isInsideReadRoots(absolute: string, roots: ReadRoots): boolean {
 }
 
 /**
- * An argument of an allowlisted command that names nothing outside the
- * workspace or read roots and nothing credential-like. Arguments the shell
- * expands (unquoted globs, braces, `~user`, `name=~/…`) are not fast-pathed,
- * since their final form is unknown; a leading `~` or `~/` is expanded here.
- * A literal candidate is only treated as a path when it exists, so search
- * patterns such as `/api/users` do not count.
+ * Whether bash expands a leading `~` or `~/` in the word. It does so from
+ * the shell's HOME, which an earlier call may have changed, so the plan
+ * writes OMP's own home directory in its place (see pinTilde).
  */
-function isAllowlistedArgumentSafe(word: ShellWord, place: Place): boolean {
-  const text = word.text;
-  if (word.expands) {
-    const homeRelative = (text === "~" || text.startsWith("~/")) && !/[*?[{]/.test(text);
-    return homeRelative && isInsideReadRoots(join(homedir(), text.slice(1)), place.roots);
-  }
+function expandsHome(word: ShellWord, check: Check): boolean {
+  return word.expands && check.source[word.start] === "~" && (word.text === "~" || word.text.startsWith("~/"));
+}
+
+function pinTilde(word: ShellWord, check: Check): void {
+  check.pins.push({ start: word.start, end: word.start + 1, text: shellQuote(homedir()) });
+}
+
+/**
+ * Whether a word that may name a file names nothing outside the workspace or
+ * read roots and nothing credential-like. A literal candidate is only treated
+ * as a path when it exists, so search patterns such as `/api/users` do not
+ * count.
+ */
+function namesNoUnreadableFile(text: string, place: Place): boolean {
   const candidates = pathCandidates(text);
   return candidates !== null && candidates.every((candidate) => {
     if (!candidate) {
@@ -185,6 +196,23 @@ function isAllowlistedArgumentSafe(word: ShellWord, place: Place): boolean {
     const absolute = resolvePathForCwd(candidate, place.directory);
     return !existsSync(absolute) || isInsideReadRoots(absolute, place.roots);
   });
+}
+
+/**
+ * An argument of an allowlisted command that names nothing outside the
+ * workspace or read roots and nothing credential-like. Arguments the shell
+ * expands (unquoted globs, braces, `~user`, `name=~/…`) are not fast-pathed,
+ * since their final form is unknown; a leading `~` or `~/` is pinned.
+ */
+function isAllowlistedArgumentSafe(word: ShellWord, check: Check): boolean {
+  if (!word.expands) {
+    return namesNoUnreadableFile(word.text, check.place);
+  }
+  if (!expandsHome(word, check) || /[*?[{]/.test(word.text) || !isInsideReadRoots(join(homedir(), word.text.slice(1)), check.place.roots)) {
+    return false;
+  }
+  pinTilde(word, check);
+  return true;
 }
 
 /**
@@ -202,37 +230,64 @@ export function allowlistEntryProblem(entry: string): string | null {
   return null;
 }
 
+/**
+ * A read-only git command: `--no-pager` and `-C <dir>` (a workspace
+ * directory) before one of SAFE_GIT_SUBCOMMANDS, a listing-only `branch` or
+ * `tag`, `remote [-v]`, `remote get-url`, or `stash list/show`. Every operand
+ * must stay inside the workspace (see isWorkspaceGitOperand).
+ */
 function isBuiltinSafeCommand(words: ShellWord[], place: Place): boolean {
   // `git diff -- secrets*` names whatever the glob matches.
-  if (words.some((word) => word.expands)) {
+  if (words.some((word) => word.expands) || words[0].text !== "git") {
     return false;
   }
   const tokens = words.map((word) => word.text);
-  const [program, subcommand, ...rest] = tokens;
-  if (program === "pwd" && tokens.length === 1) {
-    return true;
+  let index = 1;
+  let gitPlace = place;
+  while (tokens[index] === "--no-pager" || tokens[index] === "-P" || tokens[index] === "-C") {
+    if (tokens[index] === "-C") {
+      const directory = directoryWithin(tokens[index + 1] ?? "", gitPlace);
+      if (!directory) {
+        return false;
+      }
+      gitPlace = { ...gitPlace, directory };
+      index += 1;
+    }
+    index += 1;
   }
-  if (program !== "git" || !subcommand) {
+  const [subcommand, ...rest] = tokens.slice(index);
+  if (!subcommand) {
     return false;
   }
-  if (rest.some(isUnsafeGitOption)) {
+  // `git grep -O<pager>` opens the matching files in a program.
+  if (rest.some(isUnsafeGitOption) || (subcommand === "grep" && rest.some((arg) => /^-[^-]*O/.test(arg)))) {
     return false;
   }
   const endOfOptions = rest.indexOf("--");
   const operands = rest.filter((arg, index) => (endOfOptions >= 0 && index > endOfOptions) || (arg !== "--" && !arg.startsWith("-")));
-  if (!operands.every((operand) => isWorkspaceGitOperand(operand, place))) {
+  if (!operands.every((operand) => isWorkspaceGitOperand(operand, gitPlace))) {
     return false;
   }
   if (SAFE_GIT_SUBCOMMANDS.has(subcommand)) {
     return true;
   }
-  if (subcommand !== "branch") {
-    return false;
-  }
   const flags = rest.filter((arg) => arg.startsWith("-"));
   const hasPositional = flags.length < rest.length;
-  return flags.every((flag) => SAFE_GIT_BRANCH_FLAGS.has(flag))
-    && (!hasPositional || flags.some((flag) => GIT_BRANCH_LIST_MODE_FLAGS.has(flag)));
+  switch (subcommand) {
+    case "branch":
+      return flags.every((flag) => SAFE_GIT_BRANCH_FLAGS.has(flag))
+        && (!hasPositional || flags.some((flag) => GIT_BRANCH_LIST_MODE_FLAGS.has(flag)));
+    case "tag":
+      // `git tag <name>` creates a tag; patterns are listed only with -l.
+      return flags.every((flag) => ["-l", "--list"].includes(flag) || /^-n\d*$/.test(flag) || /^--(sort|format)=/.test(flag))
+        && (!hasPositional || flags.some((flag) => flag === "-l" || flag === "--list"));
+    case "remote":
+      return rest.every((arg) => arg === "-v" || arg === "--verbose") || rest[0] === "get-url";
+    case "stash":
+      return rest[0] === "list" || rest[0] === "show";
+    default:
+      return false;
+  }
 }
 
 function matchesAllowlistEntry(command: string, entry: string): boolean {
@@ -246,11 +301,11 @@ function matchesAllowlistEntry(command: string, entry: string): boolean {
   return command === trimmed || command.startsWith(`${trimmed} `);
 }
 
-function isUserAllowlisted(words: ShellWord[], source: string, config: AutoReviewConfig, place: Place): boolean {
+function isUserAllowlisted(words: ShellWord[], check: Check): boolean {
   // Entries match the command as written, quotes included, without its
   // redirections.
-  const written = normalizeCommand(words.map((word) => source.slice(word.start, word.end)).join(" "));
-  if (!config.safeCommandAllowlist.some((entry) => matchesAllowlistEntry(written, entry))) {
+  const written = normalizeCommand(words.map((word) => check.source.slice(word.start, word.end)).join(" "));
+  if (!check.config.safeCommandAllowlist.some((entry) => matchesAllowlistEntry(written, entry))) {
     return false;
   }
   const [first, ...args] = words;
@@ -258,7 +313,7 @@ function isUserAllowlisted(words: ShellWord[], source: string, config: AutoRevie
   if (first.expands || SCRIPT_PROGRAMS.has(program) || hasUnsafeOption(program, args.map((word) => word.text))) {
     return false;
   }
-  return args.every((word) => isAllowlistedArgumentSafe(word, place));
+  return args.every((word) => isAllowlistedArgumentSafe(word, check));
 }
 
 /**
@@ -313,13 +368,18 @@ function resolveStartupProgram(program: string, workspace: string, searchPath: s
  */
 function cdTarget(command: ShellCommand, place: Place): string | null {
   const [program, target, ...rest] = command.words;
-  if (program?.text !== "cd" || !target || rest.length || command.redirects.length) {
+  if (program?.text !== "cd" || !target || rest.length || command.redirects.length || target.expands) {
     return null;
   }
-  if (target.expands || !target.text || target.text.startsWith("-")) {
+  return directoryWithin(target.text, place);
+}
+
+/** The existing workspace directory `text` names, from `place`, or null. */
+function directoryWithin(text: string, place: Place): string | null {
+  if (!text || text.startsWith("-")) {
     return null;
   }
-  const directory = resolvePathForCwd(target.text, place.directory);
+  const directory = resolvePathForCwd(text, place.directory);
   try {
     if (!statSync(directory).isDirectory()) {
       return null;
@@ -328,6 +388,110 @@ function cdTarget(command: ShellCommand, place: Place): string | null {
     return null;
   }
   return relativePathWithin(directory, place.workspace) === null ? null : directory;
+}
+
+/** A command being planned, and the rewrites its plan makes so far. */
+interface Check {
+  source: string;
+  config: AutoReviewConfig;
+  place: Place;
+  searchPath: string;
+  // Text to put in place of `source.slice(start, end)`.
+  pins: { start: number; end: number; text: string }[];
+}
+
+/** What a program table may ask about the place a command runs in (see RuleContext). */
+function ruleContext(check: Check): RuleContext {
+  const { place } = check;
+  const readable = (absolute: string) => isInsideReadRoots(absolute, place.roots);
+  return {
+    directory: place.directory,
+    operandPaths(word) {
+      const text = word.text;
+      if (text === "-") {
+        return [];
+      }
+      if (!word.expands) {
+        const absolute = resolvePathForCwd(text, place.directory);
+        return readable(absolute) ? [absolute] : null;
+      }
+      const home = expandsHome(word, check);
+      if (word.assignment || (check.source[word.start] === "~" && !home)) {
+        return null;
+      }
+      if (home && !/[*?[{]/.test(text)) {
+        const absolute = join(homedir(), text.slice(1));
+        if (!readable(absolute)) {
+          return null;
+        }
+        pinTilde(word, check);
+        return [absolute];
+      }
+      const matches = boundedGlobMatches(text, place.directory, home ? homedir() : undefined);
+      // No match at all is reviewed: under nullglob bash would drop the word.
+      if (!matches?.length) {
+        return null;
+      }
+      // A match is passed as a separate word; one starting with `-` would be
+      // read as an option.
+      if (matches.some((match) => match.word.startsWith("-") || !readable(match.absolute))) {
+        return null;
+      }
+      if (home) {
+        pinTilde(word, check);
+      }
+      return matches.map((match) => match.absolute);
+    },
+    readablePath: (text) => readable(resolvePathForCwd(text, place.directory)),
+    matchesNothing: (word) => boundedGlobMatches(word.text, place.directory)?.length === 0,
+    treeIsClean: (path, filter) => isTreeClean(path, filter),
+    command: (words) => isSafeCommand(words, check),
+  };
+}
+
+/**
+ * Whether one simple command is safe on its own, by the built-in git rules,
+ * a program table, or a safeCommandAllowlist entry; its program is then
+ * pinned (see planSafeCommand).
+ */
+function isSafeCommand(words: ShellWord[], check: Check): boolean {
+  const [program] = words;
+  if (program.expands) {
+    return false;
+  }
+  // A failed attempt leaves no rewrites behind.
+  const attempt = (safe: () => boolean): boolean => {
+    const pins = check.pins.length;
+    if (safe()) {
+      return true;
+    }
+    check.pins.length = pins;
+    return false;
+  };
+  const byTable = () => isSafeByProgramRule(words, ruleContext(check))
+    // Whatever the table says each word is, none may name an unreadable file.
+    && (opensNoFiles(program.text) || words.slice(1).every((word) => word.expands || namesNoUnreadableFile(word.text, check.place)));
+  const safe = attempt(() => isBuiltinSafeCommand(words, check.place))
+    || (!program.text.includes("/") && hasProgramRule(program.text) && attempt(byTable))
+    || attempt(() => isUserAllowlisted(words, check));
+  return safe && pinProgram(program, check);
+}
+
+/**
+ * Replace a program named without a path by its absolute path on OMP's
+ * startup PATH. One named by a path is kept: bash looks up neither aliases,
+ * functions, nor PATH for it.
+ */
+function pinProgram(word: ShellWord, check: Check): boolean {
+  if (word.text.includes("/")) {
+    return true;
+  }
+  const resolved = resolveStartupProgram(word.text, check.place.workspace, check.searchPath);
+  if (!resolved) {
+    return false;
+  }
+  check.pins.push({ start: word.start, end: word.end, text: shellQuote(resolved) });
+  return true;
 }
 
 export interface SafeCommandPlan {
@@ -354,7 +518,7 @@ export interface SafeCommandPlan {
  * workspace directory on PATH, or set CDPATH. Each program is therefore
  * replaced by its absolute path from OMP's startup PATH; one already named by
  * a path is kept as written, since bash looks up neither aliases, functions,
- * nor PATH for it. Leading `cd <dir> &&` commands are not run in the shell at
+ * nor PATH for it. Leading `cd <dir> &&` (or `;`) commands are not run in the shell at
  * all: the plan runs the rest in that directory through the call's `cwd`,
  * which OMP applies itself.
  */
@@ -373,7 +537,9 @@ export function planSafeCommand(
     roots: resolveReadRoots(options.workspace, config.readRoots),
   };
   let first = 0;
-  while (first < script.pipelines.length - 1 && script.connectors[first] === "&&" && script.pipelines[first].length === 1) {
+  // After `cd <dir>;` the rest runs even if cd fails; the directory is known
+  // to exist, and OMP fails the call rather than run it elsewhere.
+  while (first < script.pipelines.length - 1 && script.connectors[first] !== "||" && script.pipelines[first].length === 1) {
     const directory = cdTarget(script.pipelines[first][0], place);
     if (directory === null) {
       break;
@@ -382,26 +548,18 @@ export function planSafeCommand(
     first += 1;
   }
   const commands = script.pipelines.slice(first).flat();
-  const pins: { start: number; end: number; path: string }[] = [];
+  const check: Check = { source: command, config, place, searchPath: options.searchPath ?? STARTUP_PATH, pins: [] };
   for (const shellCommand of commands) {
-    const { words } = shellCommand;
     if (!shellCommand.redirects.every((redirect) => isSafeRedirect(redirect, place))) {
       return null;
     }
-    if (!isBuiltinSafeCommand(words, place) && !isUserAllowlisted(words, command, config, place)) {
+    if (!isSafeCommand(shellCommand.words, check)) {
       return null;
-    }
-    if (!words[0].text.includes("/")) {
-      const resolved = resolveStartupProgram(words[0].text, place.workspace, options.searchPath ?? STARTUP_PATH);
-      if (!resolved) {
-        return null;
-      }
-      pins.push({ start: words[0].start, end: words[0].end, path: resolved });
     }
   }
   let pinned = command;
-  for (const { start, end, path } of pins.reverse()) {
-    pinned = `${pinned.slice(0, start)}${shellQuote(path)}${pinned.slice(end)}`;
+  for (const { start, end, text } of [...check.pins].sort((a, b) => b.start - a.start)) {
+    pinned = `${pinned.slice(0, start)}${text}${pinned.slice(end)}`;
   }
   return first === 0 ? { command: pinned } : { command: pinned.slice(commands[0].start), cwd: place.directory };
 }

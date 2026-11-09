@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import ompAutoApprovalExtension, { SYSTEM_PROMPT_NOTE } from "../index.js";
 import { applyDecisionPolicy, classifyAction, parseReviewDecision } from "../src/classifier.js";
 import { matchBlockedCommand } from "../src/block-commands.js";
@@ -11,6 +11,7 @@ import { configPath, DEFAULT_CONFIG, loadConfig, logPath, logsDir, normalizeConf
 import { evaluateToolCall } from "../src/decision.js";
 import { columnWidth, truncateVisible } from "../src/model-selector.js";
 import { planSafeCommand } from "../src/safe-command.js";
+import { isSafeSedScript } from "../src/program-rules.js";
 import { recognizeShell } from "../src/shell-syntax.js";
 import { compareRun, pipelinesRun, type ParsedScript } from "./shell-oracle/oracle.js";
 import { SessionApprovalStore } from "../src/session-approval-store.js";
@@ -20,7 +21,10 @@ import type { AutoReviewConfig, ExtensionContextLike } from "../src/types.js";
 // Fast-pathed commands are pinned to a program found on OMP's startup PATH.
 // Stub programs make the tests independent of what this machine has
 // installed; the real PATH stays behind them.
-const STUB_PROGRAMS = ["cat", "dd", "fd", "find", "git", "grep", "head", "ls", "npm", "pwd", "python", "rg", "sort", "tar"];
+const STUB_PROGRAMS = [
+  "basename", "cat", "cut", "date", "dd", "diff", "du", "echo", "fd", "find", "git", "grep", "head", "jq", "ls", "npm",
+  "printf", "pwd", "python", "rg", "sed", "sleep", "sort", "stat", "tail", "tar", "timeout", "tr", "uname", "uniq", "wc", "which",
+];
 const STUB_BIN = mkdtempSync(join(tmpdir(), "omp-auto-approval-bin-"));
 for (const name of STUB_PROGRAMS) {
   writeFileSync(join(STUB_BIN, name), "#!/bin/sh\n");
@@ -183,10 +187,10 @@ async function run(): Promise<void> {
   });
 
   await test("safe command user allowlist remains explicit", () => {
-    const cfg = config({ safeCommandAllowlist: ["rg *", "cat README.md"] });
+    const cfg = config({ safeCommandAllowlist: ["rg *", "npm test"] });
     assert.equal(isSafeReadOnlyCommand("rg needle src", cfg, "/tmp/workspace"), true);
-    assert.equal(isSafeReadOnlyCommand("cat README.md", cfg, "/tmp/workspace"), true);
-    assert.equal(isSafeReadOnlyCommand("cat package.json", cfg, "/tmp/workspace"), false);
+    assert.equal(isSafeReadOnlyCommand("npm test", cfg, "/tmp/workspace"), true);
+    assert.equal(isSafeReadOnlyCommand("npm install", cfg, "/tmp/workspace"), false);
   });
 
   await test("allowlisted commands never fast-path exec, write, or out-of-workspace arguments", () => {
@@ -394,6 +398,10 @@ async function run(): Promise<void> {
         "cd sub && git status",
         "cd sub && cat ../notes.txt",
         "cd sub && cd .. && git diff -- notes.txt",
+        "cd sub; git status",
+        "git -C sub log -1 && git --no-pager -C sub -C .. diff -- notes.txt",
+        "git grep -n needle -- '*.ts'", "git ls-files", "git tag", "git tag -l 'v*'", "git remote -v", "git stash list",
+        "git blame notes.txt", "git cat-file -p HEAD:notes.txt",
       ]) {
         assert.notEqual(plan(command), null, command);
       }
@@ -417,10 +425,13 @@ async function run(): Promise<void> {
         "cd -P sub && git status",
         "cd 'su'* && git status",
         "cd sub",
-        "cd sub; git status",
         "cd sub || git status",
         "git status && cd sub",
         "cd sub && git status && cd .. && git status",
+        "git -C .. status", "git -C missing status", "git -C sub diff ../.env", "git -c core.pager=sh log", "git -C",
+        "git grep -O needle", "git grep -nOless needle", "git grep --open-files-in-pager needle",
+        "git tag v1", "git tag -d v1", "git tag -a v1 -m x", "git remote add x y", "git stash", "git stash pop",
+        "git fetch", "git config --get user.name",
       ]) {
         assert.equal(plan(command), null, command);
       }
@@ -442,6 +453,92 @@ async function run(): Promise<void> {
       assert.equal(pinnedCommand("git status | head", cfg, workspace, `${STUB_BIN}/missing:${join(root, "none")}`), null);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test("common read-only programs skip review by their option tables", () => {
+    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-programs-"));
+    const workspace = join(root, "workspace");
+    for (const file of ["notes.txt", "src/a.ts", "src/b.ts", ".env", "app/index.ts", "app/node_modules/pkg/.env", "dash/-o.txt", "dash/x.txt"]) {
+      mkdirSync(dirname(join(workspace, file)), { recursive: true });
+      writeFileSync(join(workspace, file), "x\n");
+    }
+    writeFileSync(join(root, "outside.txt"), "outside\n");
+    const cfg = config();
+    const safe = (command: string, cwd?: string) => planSafeCommand(command, cfg, { workspace, cwd, searchPath: TEST_PATH }) !== null;
+    try {
+      for (const command of [
+        "cat notes.txt", "cat -n src/a.ts", "head -20 notes.txt", "head -n 5 notes.txt", "tail -n +2 notes.txt", "tail -3 notes.txt",
+        "wc -l src/*.ts", "ls", "ls -la src", "ls src/*.ts", "ls --color=auto -1", "du -sh src", "stat -c %s notes.txt",
+        "grep -n foo notes.txt", "grep -rn foo src", "grep -rn -A3 -e foo -e bar src", "grep -c foo src/a.ts src/b.ts",
+        "grep -rn foo --include='*.ts' .", "grep -rn foo --include=*.ts src", "grep -rn foo --exclude-dir=node_modules app",
+        "grep -rln foo --exclude-dir='node_*' app",
+        "git log --oneline | grep -iE 'fix|feat' | head -5",
+        "sed -n '1,5p' notes.txt", "sed 's/a/b/g' notes.txt", "sed -n '/start/,/end/p' notes.txt", "sed -E -e 's|x|y|' -e '3q' notes.txt",
+        "cut -c1-20 notes.txt", "sort -u notes.txt | uniq -c", "sort -k2,2 -t: -rn notes.txt", "tr -d x < notes.txt",
+        "jq -r '.name' src/a.ts", "jq '.spec.env' src/a.ts", "jq -n --arg v 1 '$v'",
+        "find src -name '*.ts' -type f", "find . -maxdepth 2 \\( -name x -o -name y \\) -print", "find . -newer notes.txt",
+        "echo --- && git status", "printf '%s\\n' a b", "date +%s", "date -u", "sleep 1", "basename /a/b.ts .ts", "which git", "uname -a",
+        "timeout 10 git status", "timeout -s KILL 5 grep -n x notes.txt", "diff notes.txt src/a.ts", "diff -u src/a.ts src/b.ts",
+        "pwd -P",
+      ]) {
+        assert.equal(safe(command), true, command);
+      }
+      for (const command of [
+        // Credential-like or outside files, directly or through a glob, a directory, or a recursive read.
+        "cat .env", "cat ../outside.txt", `head ${join(root, "outside.txt")}`, "cat *", "cat .e*", "head -c 5 ~/.ssh/id_rsa",
+        "grep -rn foo .", "grep -rn foo", "grep -n foo .", "grep -rn foo app", "grep -rn foo --include=*.ts .",
+        "grep -rn foo --exclude-dir='[n]ode_modules' app", "grep -rn foo src/*.nothing", "diff -r app src", "diff app src",
+        "cat src/*.nothing", "ls ..", "ls .*", "find .. -name x", "find . -newer ../outside.txt", "grep -f .env notes.txt",
+        // Options outside the tables: writes, programs, symlink following, unknowns, abbreviations.
+        "tail -f notes.txt", "sort -o out.txt notes.txt", "sort -T /tmp notes.txt", "uniq notes.txt out.txt", "grep -R foo src",
+        "grep -z foo notes.txt", "grep --incl='*.ts' foo src", "grep -A x foo notes.txt", "ls -L", "cat --unknown notes.txt",
+        "diff -l notes.txt src/a.ts", "date -s 2020-01-01", "date 0101", "hostname evil", "printf -v x y", "du -L src",
+        "sed -i s/a/b/ notes.txt", "sed 's/a/b/w out' notes.txt", "sed 's/a/b/e' notes.txt", "sed 'e ls' notes.txt",
+        "sed '1r /etc/passwd' notes.txt", "sed -f script.sed notes.txt",
+        "jq -n env", "jq -n '$ENV.HOME'", "jq 'import \"x\" as x; .' src/a.ts", "jq -f prog.jq src/a.ts",
+        "find . -exec rm {} +", "find . -delete", "find -L . -name x", "find . -name *.ts", "find . -fprint out",
+        "echo *", "timeout 5 rm notes.txt", "timeout 5 sh -c 'rm x'", "timeout 5", "timeout x git status",
+        "./cat notes.txt",
+      ]) {
+        assert.equal(safe(command), false, command);
+      }
+      // A glob match that starts with `-` would be read as an option.
+      assert.equal(safe("cat *.txt", join(workspace, "dash")), false);
+      assert.equal(safe("cat ./*.txt", join(workspace, "dash")), true);
+
+      assert.equal(pinnedCommand("timeout 5 git status | head -3", cfg, workspace), `${STUB_BIN}/timeout 5 ${STUB_BIN}/git status | ${STUB_BIN}/head -3`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test("a leading ~ is pinned to OMP's home directory, since the shell's HOME can change", () => {
+    const home = mkdtempSync(join(tmpdir(), "omp-auto-approval-home-"));
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    writeFileSync(join(home, "notes.txt"), "x\n");
+    try {
+      const cfg = config({ readRoots: ["~"], safeCommandAllowlist: ["rg"] });
+      const workspace = join(home, "workspace");
+      mkdirSync(workspace);
+      assert.equal(pinnedCommand("cat ~/notes.txt", cfg, workspace), `${STUB_BIN}/cat ${home}/notes.txt`);
+      assert.equal(pinnedCommand("ls -d ~/*.txt", cfg, workspace), `${STUB_BIN}/ls -d ${home}/*.txt`);
+      assert.equal(pinnedCommand("rg x ~/notes.txt", cfg, workspace), `${STUB_BIN}/rg x ${home}/notes.txt`);
+      assert.equal(pinnedCommand("cat '~/notes.txt'", cfg, workspace), `${STUB_BIN}/cat '~/notes.txt'`);
+      assert.equal(pinnedCommand("cat ~root/x", cfg, workspace), null);
+    } finally {
+      process.env.HOME = previousHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  await test("sed scripts are fast-pathed only when they cannot read, write, or run anything", () => {
+    for (const script of ["p", "1,5p", "$p", "/a/,/b/p", "1~2p", "/x/,+3d", "s/a/b/g", "s|a/b|c|", "s/a\\/b/c/2", "1!d", "3q", "q5", "=", "1,5p;10q", "s/a/b/;s/c/d/", "/re/I,$ p", " p ; p ;", "y"]) {
+      assert.equal(isSafeSedScript(script), script !== "y", script);
+    }
+    for (const script of ["w x", "s/a/b/w x", "s/a/b/gw x", "s/a/b/e", "e", "e ls", "r x", "1r x", "R x", "W x", "a text", "1i\\", "y/ab/cd/", "s/a/b", "#n", "s/[/]/x/", "p\nw x", "1{p}", ":a", "b", "s/a/b/\nw x", "1,", "/a"]) {
+      assert.equal(isSafeSedScript(script), false, script);
     }
   });
 
@@ -560,7 +657,7 @@ async function run(): Promise<void> {
 
   await test("allowlist entries for script programs and bare interpreters are ignored and reported", () => {
     const cfg = config({ safeCommandAllowlist: ["sed -n", "xargs", "awk *", "python", "bash *", "env", "python -m pytest", "npm test"] });
-    for (const command of ["sed -n 1p notes.txt", "sed -n 'w /tmp/x' notes.txt", "xargs rm", "awk '{system(\"rm x\")}'", "python -c 'import os'", "bash -c 'rm -rf x'", "env rm x"]) {
+    for (const command of ["sed -n -i 1p notes.txt", "sed -n 'w /tmp/x' notes.txt", "xargs rm", "awk '{system(\"rm x\")}'", "python -c 'import os'", "bash -c 'rm -rf x'", "env rm x"]) {
       assert.equal(isSafeReadOnlyCommand(command, cfg, "/tmp/workspace"), false, command);
     }
     assert.equal(isSafeReadOnlyCommand("python -m pytest tests", cfg, "/tmp/workspace"), true);

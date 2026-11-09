@@ -33,6 +33,17 @@ npm run oracle:shell -- --fuzz 20000 --seed 7 # more fuzz
 
 Real agent commands make the best test input. `npm run oracle:corpus` collects the bash commands from your local Claude Code transcripts and OMP sessions into `~/.cache/omp-auto-approval/shell-corpus.jsonl` (readable only by you), and `oracle:shell` picks it up from there, together with any other `shell-corpus*.jsonl` file in that directory, such as commands collected on another machine. Those commands can contain hostnames, paths, or secrets: never commit the corpus or paste its divergence reports publicly. The report shows only the start of each corpus command for that reason.
 
+### Program table oracle
+
+The built-in program tables (`src/program-rules.ts`) claim that every option they list is read-only. `tests/program-oracle/` checks that claim: it builds random commands from the tables, and runs each one the fast path accepts, pinned, under `strace` in a bubblewrap sandbox with a read-only workspace. Starting a program the plan did not pin, opening a file for writing, changing the filesystem, or reading outside the workspace and system directories is reported. It needs `bwrap`, `strace` and `bash` on `PATH`, and checks the implementations installed locally (GNU on most Linux systems).
+
+```bash
+npm run oracle:programs -- --self-test          # each planted side effect must be caught
+npm run oracle:programs -- --count 4000 --seed 2
+```
+
+When adding an option, also check it against the program's `--help` and, where it differs, against BSD and busybox: the tables must hold for whichever implementation is on `PATH`.
+
 ## Pull Requests
 
 Before opening a PR:

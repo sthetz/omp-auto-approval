@@ -1,0 +1,85 @@
+{
+  "name": "omp-auto-approval",
+  "version": "0.1.0",
+  "description": "AI classifier based automatic approval extension for OMP.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HayabusaC/omp-auto-approval.git"
+  },
+  "homepage": "https://github.com/HayabusaC/omp-auto-approval#readme",
+  "bugs": {
+    "url": "https://github.com/HayabusaC/omp-auto-approval/issues"
+  },
+  "type": "module",
+  "main": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "files": [
+    "index.ts",
+    "src",
+    "tests",
+    "config",
+    "schemas",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx tests/run-tests.ts && node --import tsx tests/model-selector-width.ts && node --import tsx tests/provider-attribution-telemetry.ts",
+    "smoke:omp": "node --import tsx tests/omp-smoke.ts",
+    "check": "npm run typecheck && npm run test && npm run smoke:omp"
+  },
+  "keywords": [
+    "oh-my-pi",
+    "omp",
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "auto-approval",
+    "permissions"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "omp": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-ai": "*",
+    "@oh-my-pi/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@oh-my-pi/pi-ai": {
+      "optional": true
+    },
+    "@oh-my-pi/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0"
+  }
+}

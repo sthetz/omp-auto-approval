@@ -1,5 +1,8 @@
-import { getString, relativePathWithin, sha256, stableStringify, toRecord, truncateInline } from "./common.js";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
+import { getString, relativePathWithin, resolvePathForCwd, sha256, stableStringify, toRecord, truncateInline } from "./common.js";
 import { normalizeCommand } from "./safe-command.js";
+import { isSensitivePath } from "./sensitive-paths.js";
 import type { ReviewSubject, ToolCallEventLike } from "./types.js";
 
 const LOCAL_STATE_TOOLS: Record<string, true> = { todo: true, wait: true };
@@ -30,41 +33,6 @@ const READ_TARGET_KEYS = [...PATH_KEYS, "paths"];
 // out, xd), or user secrets and settings (vault, cfg), and stay reviewed.
 const LOCAL_READ_SCHEMES = new Set(["skill", "rule", "agent", "artifact", "memory", "local", "omp"]);
 
-// Directories and file names that commonly hold credentials. Reads that touch
-// them always go to review, wherever they sit in the tree.
-const SENSITIVE_DIRECTORIES = new Set([
-  ".ssh",
-  ".gnupg",
-  ".aws",
-  ".azure",
-  ".kube",
-  ".docker",
-  ".password-store",
-  "secrets",
-  ".secrets",
-  "credentials",
-]);
-const SENSITIVE_FILE_NAMES = new Set([
-  ".envrc",
-  ".npmrc",
-  ".pypirc",
-  ".netrc",
-  "_netrc",
-  ".pgpass",
-  ".git-credentials",
-  ".htpasswd",
-  ".dockercfg",
-  ".vault-token",
-  "kubeconfig",
-]);
-const SENSITIVE_FILE_PATTERNS = [
-  /^\.env(\..+)?$/,
-  /^id_(rsa|dsa|ecdsa|ed25519)(_sk)?$/,
-  /^(credentials|secrets?)(\.[^.]+)?$/,
-  /\.(pem|key|p12|pfx|jks|keystore|kdbx|tfstate|tfvars)$/,
-  /\.tfstate\.backup$/,
-];
-const NON_SECRET_ENV_SUFFIXES = new Set(["example", "sample", "template", "dist", "defaults"]);
 
 // Keys that can name a write destination anywhere in a write/edit payload,
 // e.g. OMP's patch-mode edit `{ path, edits: [{ rename }] }`.
@@ -146,21 +114,6 @@ export function isReadOnlyTool(toolName: string): boolean {
   return READ_ONLY_TOOLS.has(toolName.trim().toLowerCase());
 }
 
-export function isSensitivePath(relativePath: string): boolean {
-  const segments = relativePath.split(/[\\/]/).filter(Boolean).map((segment) => segment.toLowerCase());
-  const fileName = segments.at(-1) ?? "";
-  if (segments.slice(0, -1).some((segment) => SENSITIVE_DIRECTORIES.has(segment)) || SENSITIVE_DIRECTORIES.has(fileName)) {
-    return true;
-  }
-  if (SENSITIVE_FILE_NAMES.has(fileName)) {
-    return true;
-  }
-  if (fileName.startsWith(".env.") && NON_SECRET_ENV_SUFFIXES.has(fileName.slice(".env.".length))) {
-    return false;
-  }
-  return SENSITIVE_FILE_PATTERNS.some((pattern) => pattern.test(fileName));
-}
-
 function parseJsonStringArray(value: string): string[] | null {
   try {
     const parsed: unknown = JSON.parse(value);
@@ -172,30 +125,35 @@ function parseJsonStringArray(value: string): string[] | null {
 
 /**
  * A read target that may skip review: a session-local internal URL, or a local
- * path inside the workspace that is not credential-like. OMP reads URLs
- * (`http(s)://`, `www.`), internal schemes (`ssh://`, `mcp://`, ...), strips
- * `@` and `:` prefixes, expands `~`, unquotes `"…"`, and accepts JSON-array
- * strings as several scopes. Every form other than a plain path or a JSON
+ * path inside the workspace or a configured read root that is not
+ * credential-like below that directory. OMP reads URLs (`http(s)://`,
+ * `www.`), internal schemes (`ssh://`, `mcp://`, ...), strips `@` and `:`
+ * prefixes, unquotes `"…"`, and accepts JSON-array strings as several scopes.
+ * Apart from `~/` expansion, every form other than a plain path or a JSON
  * array of plain paths is left to review instead of being re-implemented here.
  */
-function isWorkspaceReadTarget(value: unknown, cwd: string, depth = 0): boolean {
+function isReadTarget(value: unknown, roots: ReadRoots, depth = 0): boolean {
   if (Array.isArray(value)) {
-    return depth === 0 && value.length > 0 && value.every((item) => isWorkspaceReadTarget(item, cwd, depth + 1));
+    return depth === 0 && value.length > 0 && value.every((item) => isReadTarget(item, roots, depth + 1));
   }
   if (typeof value !== "string") {
     return false;
   }
-  const trimmed = value.trim();
+  let trimmed = value.trim();
   if (!trimmed) {
     return false;
   }
   if (trimmed.startsWith("[")) {
     const entries = depth === 0 ? parseJsonStringArray(trimmed) : null;
-    return entries !== null && isWorkspaceReadTarget(entries, cwd, depth);
+    return entries !== null && isReadTarget(entries, roots, depth);
   }
   const scheme = trimmed.match(/^([a-z][a-z0-9+.-]*):\/\//i)?.[1]?.toLowerCase();
   if (scheme) {
     return LOCAL_READ_SCHEMES.has(scheme);
+  }
+  // OMP expands `~` and `~/…` to the home directory; `~user` stays reviewed.
+  if (trimmed === "~" || trimmed.startsWith("~/")) {
+    trimmed = join(homedir(), trimmed.slice(1));
   }
   if (/^[@:"'~]/.test(trimmed) || /^www\./i.test(trimmed) || /[?#]/.test(trimmed) || trimmed.includes("://")) {
     return false;
@@ -209,25 +167,44 @@ function isWorkspaceReadTarget(value: unknown, cwd: string, depth = 0): boolean 
   // `path:selector` reads lines from `path`; check both spellings.
   const withoutSelector = trimmed.replace(/:[^:\\/]*$/, "");
   return [trimmed, withoutSelector].every((candidate) => {
-    const relative = relativePathWithin(candidate, cwd);
-    return relative !== null && !isSensitivePath(relative);
+    // Resolve against the session cwd first: that is where OMP resolves it.
+    const absolute = resolvePathForCwd(candidate, roots.cwd);
+    return [roots.cwd, ...roots.extra].some((root) => {
+      const relative = relativePathWithin(absolute, root);
+      return relative !== null && !isSensitivePath(relative);
+    });
   });
+}
+
+/** Directories reads may target without review: the workspace plus `readRoots`. */
+export interface ReadRoots {
+  cwd: string;
+  extra: string[];
+}
+
+/** Absolute `readRoots` entries, with `~/` expanded. Relative entries are ignored. */
+export function resolveReadRoots(cwd: string, readRoots: string[]): ReadRoots {
+  const extra = readRoots
+    .map((root) => root.trim())
+    .map((root) => (root === "~" || root.startsWith("~/") ? join(homedir(), root.slice(1)) : root))
+    .filter((root) => isAbsolute(root));
+  return { cwd, extra };
 }
 
 /**
  * Read fast path: every target named in the payload must pass
- * isWorkspaceReadTarget. A call naming no target reads the workspace itself.
+ * isReadTarget. A call naming no target reads the workspace itself.
  * OMP's grep and glob include hidden files but honour .gitignore, which keeps
  * the usual ignored `.env` out of a workspace-wide search; a search that turns
  * that off is reviewed.
  */
-export function isWorkspaceReadFastPath(input: unknown, cwd: string): boolean {
+export function isWorkspaceReadFastPath(input: unknown, roots: ReadRoots): boolean {
   const record = toRecord(input);
   if (record.gitignore === false) {
     return false;
   }
   const targets = READ_TARGET_KEYS.filter((key) => record[key] !== undefined && record[key] !== null).map((key) => record[key]);
-  return targets.every((target) => isWorkspaceReadTarget(target, cwd));
+  return targets.every((target) => isReadTarget(target, roots));
 }
 
 export function getPathFromInput(input: unknown): string | null {

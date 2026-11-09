@@ -3,6 +3,7 @@ import { configPath, DEFAULT_CONFIG, loadConfig, logPath, saveConfig } from "./s
 import { evaluateToolCall, selectFastPath, type FastPathRoute } from "./src/decision.js";
 import { toRecord } from "./src/common.js";
 import { findToolDefinition } from "./src/tool-routing.js";
+import { assistantText } from "./src/context-projection.js";
 import { SessionApprovalStore } from "./src/session-approval-store.js";
 import { selectClassifierModel } from "./src/model-selector.js";
 
@@ -31,10 +32,11 @@ export const SYSTEM_PROMPT_NOTE = [
 ].join(" ");
 
 const ROUTE_EXPLANATIONS: Record<FastPathRoute, string> = {
+  blocked_command: "blocked: matches a blockCommands rule, never auto-approved or asked",
   local_state: "allowed without review: local session state (todo, wait)",
   ui_only: "allowed without review: interactive ask with no remote content",
   tool_allowlist: "allowed without review: tool is listed in reviewExemptTools",
-  readonly: "allowed without review: read-only builtin tool, every target is a non-sensitive workspace path",
+  readonly: "allowed without review: read-only builtin tool, every target is a non-sensitive path in the workspace or readRoots",
   workspace_write: "allowed without review: write inside the workspace, outside protected entries",
   safe_command: "allowed without review: built-in or allowlisted read-only command",
   manual_only: "needs manual approval: this tool cannot be auto-approved",
@@ -110,6 +112,8 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
   let config = loadResult.config;
   const approvals = new SessionApprovalStore();
   let lastContext: ExtensionContextLike | null = null;
+  // Latest assistant text in the current agent run, for the classifier.
+  let agentMessage: string | undefined;
 
   function refresh(ctx?: ExtensionContextLike, options: { announce?: boolean } = {}): void {
     if (ctx) {
@@ -237,11 +241,13 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
 
   omp.on("session_start", async (_event: unknown, ctx: ExtensionContextLike) => {
     approvals.clear();
+    agentMessage = undefined;
     refresh(ctx, { announce: true });
   });
 
   // OMP passes the system prompt as an array of sections, Pi as one string.
   omp.on("before_agent_start", async (event: unknown) => {
+    agentMessage = undefined;
     if (!config.enabled) {
       return undefined;
     }
@@ -272,8 +278,21 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
     }
     return evaluateToolCall(event, ctx, config, approvals, {
       tools: omp.getAllTools?.() ?? [],
+      agentMessage,
     });
   });
+
+  // OMP fires tool_call while the assistant message that issued it is still
+  // streaming (before message_end), so track its text from message_update.
+  // A message with only tool calls keeps the previous text.
+  const trackAgentMessage = async (event: unknown) => {
+    const message = toRecord(toRecord(event).message);
+    if (message.role === "assistant") {
+      agentMessage = assistantText(message.content) ?? agentMessage;
+    }
+  };
+  omp.on("message_update", trackAgentMessage);
+  omp.on("message_end", trackAgentMessage);
 }
 
 export { DEFAULT_CONFIG };

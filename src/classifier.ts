@@ -91,9 +91,34 @@ export function parseReviewDecision(text: string | undefined): ReviewDecision {
   return decision;
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+/**
+ * Deterministic guard on the classifier's own risk assessment: an "allow" for
+ * an action it rates high risk needs high user authorization, and a critical
+ * one is never allowed without it. Catches a model that contradicts itself,
+ * for example after being steered by text inside the action.
+ */
+export function applyDecisionPolicy(decision: ReviewDecision): ReviewDecision {
+  if (decision.outcome !== "allow") {
+    return decision;
+  }
+  const risky = decision.risk_level === "high" || decision.risk_level === "critical";
+  if (!risky || decision.user_authorization === "high") {
+    return decision;
+  }
+  const authorization = decision.user_authorization ?? "unstated";
+  return {
+    ...decision,
+    outcome: "deny",
+    rationale: `The reviewer rated this ${decision.risk_level} risk with ${authorization} user authorization, which needs explicit approval.${decision.rationale ? ` Reviewer note: ${decision.rationale}` : ""}`,
+  };
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, controller?: AbortController): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`classifier timed out after ${timeoutMs}ms`)), timeoutMs);
+    const timer = setTimeout(() => {
+      controller?.abort();
+      reject(new Error(`classifier timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
     promise.then(
       (value) => {
         clearTimeout(timer);
@@ -188,6 +213,7 @@ export async function classifyAction(
   config: AutoReviewConfig,
   subject: ReviewSubject,
   client?: ClassifierClient,
+  context: { agentMessage?: string } = {},
 ): Promise<ReviewDecision> {
   let completeSimple = client;
   let codingAgentPackage: string | undefined;
@@ -212,19 +238,22 @@ export async function classifyAction(
     auth.headers = headers;
   }
 
+  const controller = new AbortController();
   const response = await withTimeout(
     completeSimple(model, {
       systemPrompt: buildSystemPrompt(config),
       messages: [{
         role: "user",
-        content: buildProjectedContext(ctx, subject),
+        content: buildProjectedContext(ctx, subject, context),
         timestamp: Date.now(),
       }],
     }, {
       temperature: 0,
       ...auth,
+      signal: controller.signal,
     }),
     config.classifierTimeoutSeconds * 1000,
+    controller,
   );
 
   const responseText = extractAssistantText(response);
@@ -238,5 +267,5 @@ export async function classifyAction(
     }
     throw new Error("Classifier returned no text.");
   }
-  return parseReviewDecision(responseText);
+  return applyDecisionPolicy(parseReviewDecision(responseText));
 }

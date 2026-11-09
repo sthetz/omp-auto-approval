@@ -4,17 +4,95 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "enabled": { "type": "boolean", "default": false },
-    "mode": { "type": "string", "enum": ["fallback", "auto"], "default": "fallback" },
-    "classifierModel": { "type": ["string", "null"], "default": null },
-    "approvalTimeoutSeconds": { "type": "number", "exclusiveMinimum": 0, "default": 30 },
-    "classifierTimeoutSeconds": { "type": "number", "exclusiveMinimum": 0, "default": 90 },
-    "maxConsecutiveDenials": { "type": "number", "exclusiveMinimum": 0, "default": 3 },
-    "safeCommandAllowlist": { "type": "array", "items": { "type": "string" }, "default": [] },
-    "reviewExemptTools": { "type": "array", "items": { "type": "string" }, "default": [] },
-    "allow": { "type": "array", "items": { "type": "string" }, "default": [] },
-    "deny": { "type": "array", "items": { "type": "string" }, "default": [] },
-    "environment": { "type": "string", "default": "" },
-    "audit": { "type": "boolean", "default": true }
+    "$schema": {
+      "type": "string"
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": false
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "fallback",
+        "auto"
+      ],
+      "default": "fallback"
+    },
+    "classifierModel": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "approvalTimeoutSeconds": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 30
+    },
+    "classifierTimeoutSeconds": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 25,
+      "description": "Keep below OMP's extensionHandlers.toolCallTimeoutMs (30 s by default). 90, the pre-0.3.0 default, is read as 25."
+    },
+    "maxConsecutiveDenials": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 3
+    },
+    "safeCommandAllowlist": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "blockCommands": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Bash commands that are always blocked without review or prompt. Words in order (\"git push --force\") or /regex/flags."
+    },
+    "readRoots": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Absolute or ~/ directories outside the workspace whose non-sensitive files read-only tools may read without review."
+    },
+    "reviewExemptTools": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "allow": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "deny": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "environment": {
+      "type": "string",
+      "default": ""
+    },
+    "audit": {
+      "type": "boolean",
+      "default": true
+    }
   }
 }

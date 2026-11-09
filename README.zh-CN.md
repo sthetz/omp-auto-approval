@@ -34,6 +34,8 @@ omp plugin uninstall omp-auto-approval
 /auto-approval fallback
 ```
 
+OMP 自带审批设置 `tools.approvalMode`，它在本扩展放行调用之后运行。默认值 `yolo` 不会额外询问。若设为 `always-ask`、`always-ask-cached` 或 `write`，OMP 仍会对本扩展已批准的调用再次询问你。
+
 此分支和原版都会注册 `/auto-approval` 命令。启用本分支前请移除或禁用原版，避免命令重复注册。如需保留自定义设置，请先备份；本分支使用独立的配置和审计日志路径。
 
 ## 命令
@@ -42,7 +44,7 @@ omp plugin uninstall omp-auto-approval
 
 | 命令 | 效果 |
 | --- | --- |
-| `/auto-approval status` | 显示当前状态、审批分类器模型、配置文件路径和审计日志路径。 |
+| `/auto-approval status` | 显示当前状态、审批分类器模型、配置文件路径、审计日志路径以及配置问题。 |
 | `/auto-approval off` | 关闭自动审批。工具审批回到 OMP 的默认行为。 |
 | `/auto-approval fallback` | 开启 AI 审批；当分类器拒绝或失败时，回退到人工审批。 |
 | `/auto-approval auto` | 只使用 AI 审批。分类器拒绝或失败时直接阻止工具调用。 |
@@ -85,6 +87,8 @@ sequenceDiagram
 
     alt 状态为 off
         Ext-->>OMP: 不做决策，使用 OMP 默认行为
+    else bash 命令匹配 blockCommands
+        Ext-->>OMP: 直接阻止，不审批也不询问
     else 工作区读取、工作区内部写入或安全只读 bash 命令
         Ext-->>OMP: 放行
         OMP->>Tool: 执行工具调用
@@ -130,7 +134,13 @@ sequenceDiagram
 
 `fallback` 表示本地 fast path 会先处理已知低风险动作，例如非敏感的工作区读取、工作区内写入、显式 allowlist 的安全命令，或当前会话中已批准过的精确动作。其他工具调用会先交给分类器审批。如果分类器允许，工具会执行。如果分类器拒绝、失败、超时，或工具必须人工审批，并且 UI 可用，OMP 会通过审批 UI 询问人工确认。
 
-`auto` 表示非 fast-path 工具调用由分类器作为审批关口。本地 fast path 仍然可以允许静态可证明低风险或当前会话已批准的动作。对于进入审批的动作，分类器允许时工具执行；分类器拒绝、失败、超时、工具必须人工审批，或连续拒绝过多时，工具调用会被阻止。
+`auto` 表示非 fast-path 工具调用由分类器作为审批关口。本地 fast path 仍然可以允许静态可证明低风险或当前会话已批准的动作。对于进入审批的动作，分类器允许时工具执行；分类器拒绝、失败、超时，或工具必须人工审批时，工具调用会被阻止。
+
+### 结束当前轮次
+
+连续出现 `maxConsecutiveDenials` 次自动拒绝（默认 3 次：分类器拒绝或失败，以及 `blockCommands` 阻止）后，扩展会直接结束代理的当前轮次，而不是指望代理自己停下。`fallback` 模式下的人工审批界面也提供 **Reject and Stop the Turn**。
+
+自动审批开启时，系统提示词中会追加一段简短说明，要求代理在调用被阻止时向你报告，而不是换一种方式重试。
 
 ## 安全提示
 
@@ -142,18 +152,47 @@ sequenceDiagram
 
 Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 
-- **工作区读取**：宿主自带的只读工具（`read`、`grep`、`find`、`glob`、`ast_grep`、`ls` 等），且其指定的每个路径（解析符号链接后）都位于工作目录内、并且不像凭据文件。以下情况始终进入分类器审批：
-  - 工作目录之外的路径，包括 `~/…`；
+- **工作区读取**：宿主自带的只读工具（`read`、`grep`、`find`、`glob`、`ast_grep`、`ls` 等），且其指定的每个路径（解析符号链接后）都位于工作目录或 `readRoots` 目录内、并且不像凭据文件。以下情况始终进入分类器审批：
+  - 工作目录和 `readRoots` 之外的路径；
   - URL（`http(s)://`、`www.`）以及远程或敏感的内部 URL（`ssh://`、`mcp://`、`pr://`、`issue://`、`mr://`、`vault://`、`cfg://`、`proc://` 等）。只有会话本地 URL（`skill://`、`rule://`、`agent://`、`artifact://`、`memory://`、`local://`、`omp://`）可以跳过审批；
   - 目录树中任意位置的凭据类文件和目录：`.env` 和 `.env.*`（`.example`、`.sample`、`.template`、`.dist`、`.defaults` 除外）、`.envrc`、`.npmrc`、`.pypirc`、`.netrc`、`.pgpass`、`.git-credentials`、`.htpasswd`、`kubeconfig`、`id_rsa`/`id_ed25519` 类私钥、`credentials.*`、`secret(s).*`、`*.pem`、`*.key`、`*.p12`、`*.pfx`、`*.jks`、`*.keystore`、`*.kdbx`、`*.tfstate`、`*.tfvars`，以及 `.ssh`、`.gnupg`、`.aws`、`.azure`、`.kube`、`.docker`、`.password-store`、`secrets`、`.secrets`、`credentials` 目录下的任何内容；
-  - OMP 会在使用前改写的路径形式（开头的 `@`、`:`、`"` 或 `~`，`file://`，`?query`，`#fragment`）；
+  - OMP 会在使用前改写的路径形式（开头的 `@`、`:` 或 `"`，`~user`，`file://`，`?query`，`#fragment`）；
   - 设置了 `gitignore: false` 的搜索。OMP 的 `grep` 会搜索隐藏文件，但遵守 `.gitignore`，因此通常不会在全工作区搜索中读到 `.env`。*未*被 gitignore 的密钥文件仍可能出现在 grep 结果中。
 
   `web_search` 始终需要分类器审批，因为它的查询会发送给第三方，可能把数据带出会话。
 
   只有宿主报告为自身工具（`sourceInfo.source` 为 `builtin`）时才按工具名匹配。扩展、SDK 或 MCP 工具即使复用了只读工具名也需要审批。工具自行声明的元数据（`isReadOnly`、`readOnlyHint`、MCP `annotations.readOnlyHint`）会被忽略，因为 MCP 规范说明这些提示不可信。
 - **工作区写入**：`write` 和 `edit` 调用的所有目标路径（包括 `edit` 的重命名目标）都必须是工作目录内的普通路径。OMP 会在使用前改写的路径（`[path]`、`~/…`、`scheme://…`）以及受保护条目（任意层级、解析符号链接后的 `.git`、`.omp`、`.pi`、`.envrc`、`.vscode`）始终进入分类器审批，因为它们的内容会被直接执行或信任。例如 `.git/config` 中的 `core.fsmonitor` 会在 `git status` 时运行。
-- **安全 bash 命令**：`pwd`、`git status`、`git log`、`git diff`、`git show`、`git rev-parse`、仅列出分支的 `git branch`，以及 `safeCommandAllowlist` 中的条目。包含换行、`&`、`|`、`;`、`<`、`>`、`` ` `` 或 `$` 的命令，以及使用 `--output` 或 `--ext-diff` 的 git 命令，永远不会走 fast path。
+- **安全 bash 命令**：`pwd`、`git status`、`git log`、`git diff`、`git show`、`git rev-parse`、仅列出分支的 `git branch`，以及 `safeCommandAllowlist` 中的条目。包含换行、`&`、`|`、`;`、`<`、`>`、`` ` `` 或 `$` 的命令永远不会走 fast path。以下 git 命令也不会：
+  - 使用 `--output`、`--ext-diff` 或 `--no-index`；
+  - 指定工作目录之外的路径（即使不加 `--no-index`，git 也会比较工作树之外的文件，因此 `git diff /etc/passwd /dev/null` 会输出该文件）；
+  - 指定凭据类路径，包括 `git show HEAD:.env` 这类 `rev:path` 对象。
+
+### 额外的可读目录
+
+工作目录之外的读取需要审批，因此读取依赖源码等内容时会多一次分类器调用。可以把允许代理自由读取的目录写入 `readRoots`：
+
+```json
+{
+  "readRoots": ["/nix/store", "~/.cargo/registry", "~/go/pkg/mod"]
+}
+```
+
+条目必须是绝对路径或以 `~/` 开头。可读目录下的凭据类文件仍需审批。`readRoots` 只作用于只读工具，不作用于 bash 命令。
+
+## 阻止的命令
+
+`blockCommands` 列出的 bash 命令在任何模式下都会被直接阻止，既不询问分类器，也不询问你。它优先于所有 fast path、`safeCommandAllowlist` 和 `reviewExemptTools`。`deny` 只是给分类器的指导，而这里的阻止无法被说服。
+
+```json
+{
+  "blockCommands": ["git push --force", "git push -f", "terraform apply", "/curl[^|]*\\|\\s*(ba)?sh/"]
+}
+```
+
+模式可以是 `/regex/flags`（对整条命令做匹配），也可以是一串单词：第一个单词是程序名，其余单词需按顺序出现在同一条命令中。`git push --force` 能匹配 `git push origin main --force`、`/usr/bin/git push --force`、`cd repo && git push --force` 和 `bash -lc "git push --force"`，但不匹配 `git push --force-with-lease`。参数按字面比较，因此 `-f` 需要单独列出。匹配倾向于阻止：这些单词作为其他命令的参数出现时（例如 `echo git push --force`）也会匹配。
+
+这只是针对你绝不希望无人值守执行的命令的尽力而为的绊线，而不是沙箱：足够“有创意”的命令（变量、别名、脚本）仍可能绕过它，此时会照常由分类器审批。
 
 ## 工具审批豁免
 
@@ -171,7 +210,7 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 }
 ```
 
-工具名不区分大小写。这是确定性的豁免，即使工具原本需要人工审批也会绕过，因此只应加入你允许其不经 AI 审批就执行的工具。相比之下，`allow` 只向分类器提示词添加指导，并不保证放行。
+工具名不区分大小写。这是确定性的豁免，即使工具原本需要人工审批也会绕过，因此只应加入你允许其不经 AI 审批就执行的工具。相比之下，`allow` 只向分类器提示词添加指导，并不保证放行。`blockCommands` 对豁免工具同样生效。
 
 ## 分类器模型
 
@@ -182,6 +221,35 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 分类器请求通过宿主自带的 `pi-ai` 包发出，并使用与 OMP 普通模型调用相同的 provider 鉴权，因此无需额外安装任何包。
 
 模型选择器会先刷新 OMP runtime model registry，再读取可用模型，因此也会显示运行时添加的模型和自定义 provider。
+
+分类器能看到最新的用户请求、最多六条较早的用户消息、代理的最新消息以及待审批的动作。授权只能来自你的消息。代理的消息用于说明意图，但被标记为不可信。工具输出（文件内容、命令输出、抓取的网页）完全不会提供给分类器，因为提示词注入正是从这里来的。
+
+如果分类器放行了一个它自己评为 `high` 风险、但用户授权不是 `high` 的动作，或任何未获 `high` 授权的 `critical` 风险动作，扩展会将其视为拒绝。
+
+### 分类器超时
+
+当扩展的 `tool_call` 处理器运行时间超过 `extensionHandlers.toolCallTimeoutMs`（默认 30 秒）时，OMP 会直接阻止该工具调用：分类器还没给出结果，即使在 `fallback` 模式下也不会询问你。根据该设置的说明，在 OMP 自身对话框（例如审批界面）中等待的时间不计入。因此 `classifierTimeoutSeconds` 默认是 25 秒：较慢的分类器会先超时，于是 `fallback` 会询问你，`auto` 会给出明确原因并阻止。
+
+如果使用较慢的分类器模型，请同时调高两者：OMP 的 `extensionHandlers.toolCallTimeoutMs`，以及低于它的 `classifierTimeoutSeconds`。当 `classifierTimeoutSeconds` 为 30 秒或更长时，`/auto-approval status` 会给出警告。0.3.0 之前默认值是 90 秒，并且会写入每个配置文件；现在读取到的 90 会被视为 25。
+
+## 配置
+
+`config.jsonc` 位于扩展目录中，或由 `PI_AUTO_APPROVAL_CONFIG_PATH` 指定。只保存与默认值不同的配置，因此以后默认值的变化会生效。`/auto-approval status` 会报告未知的键（例如拼写错误）。完整 schema 见 [`schemas/config.schema.json`](schemas/config.schema.json)，带注释的示例见 [`config/config.example.jsonc`](config/config.example.jsonc)。
+
+| 键 | 默认值 | 含义 |
+| --- | --- | --- |
+| `enabled`、`mode` | `false`、`"fallback"` | 由 `/auto-approval off / fallback / auto` 设置。 |
+| `classifierModel` | `null` | `provider/model`，或 `null` 表示使用会话模型。 |
+| `classifierTimeoutSeconds` | `25` | 见[分类器超时](#分类器超时)。 |
+| `approvalTimeoutSeconds` | `30` | 人工审批界面等待多久后视为拒绝。 |
+| `maxConsecutiveDenials` | `3` | 连续自动拒绝多少次后结束当前轮次。 |
+| `safeCommandAllowlist` | `[]` | 额外允许免审批的 bash 命令：完全匹配、前缀加空格，或 `prefix*`。 |
+| `blockCommands` | `[]` | 见[阻止的命令](#阻止的命令)。 |
+| `readRoots` | `[]` | 见[额外的可读目录](#额外的可读目录)。 |
+| `reviewExemptTools` | `[]` | 完全跳过审批的工具名。 |
+| `allow`、`deny` | `[]` | 给分类器提示词的额外指导。 |
+| `environment` | `""` | 给分类器的自由格式环境说明。 |
+| `audit` | `true` | 将决策以 JSONL 写入审计日志。 |
 
 ## 参考来源
 

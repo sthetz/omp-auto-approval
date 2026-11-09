@@ -16,6 +16,8 @@ export interface AutoReviewConfig {
   classifierTimeoutSeconds: number;
   maxConsecutiveDenials: number;
   safeCommandAllowlist: string[];
+  blockCommands: string[];
+  readRoots: string[];
   reviewExemptTools: string[];
   allow: string[];
   deny: string[];
@@ -58,6 +60,8 @@ export interface ExtensionContextLike {
     notify?: (message: string, type?: "info" | "warning" | "error") => void;
     setStatus?: (key: string, value: string | undefined) => void;
   };
+  // Ends the current agent turn (OMP and Pi extension contexts).
+  abort?: () => void;
   model?: unknown;
   modelRegistry?: {
     refresh?: () => void;
@@ -99,7 +103,8 @@ export type RouteName =
   | "classifier_cache"
   | "classifier"
   | "human"
-  | "manual_only";
+  | "manual_only"
+  | "blocked_command";
 
 export interface AuditEntry {
   event: string;

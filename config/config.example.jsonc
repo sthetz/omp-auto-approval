@@ -1,11 +1,17 @@
 {
-  "enabled": false,
+  // Only values that differ from the defaults need to be listed.
+  "enabled": true,
   "mode": "fallback",
   "classifierModel": null,
   "approvalTimeoutSeconds": 30,
-  "classifierTimeoutSeconds": 90,
+  // Keep below OMP's extensionHandlers.toolCallTimeoutMs (30 s by default).
+  "classifierTimeoutSeconds": 25,
   "maxConsecutiveDenials": 3,
   "safeCommandAllowlist": [],
+  // Always blocked, never reviewed or asked: words in order, or /regex/flags.
+  "blockCommands": ["git push --force", "git push -f", "terraform apply"],
+  // Read-only tools may read non-sensitive files here without review.
+  "readRoots": ["/nix/store", "~/.cargo/registry"],
   "reviewExemptTools": [],
   "allow": [],
   "deny": [],

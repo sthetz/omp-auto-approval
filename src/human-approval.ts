@@ -2,12 +2,13 @@ import type { ExtensionContextLike, ReviewDecision, ReviewSubject } from "./type
 
 export type HumanDecision =
   | { approved: true; persistence: "once" | "exact" }
-  | { approved: false; reason?: string; state: "reject" | "timeout" | "unavailable" };
+  | { approved: false; reason?: string; state: "reject" | "stop" | "timeout" | "unavailable" };
 
 const ALLOW_ONCE = "Allow Once";
 const ALLOW_EXACT = "Allow Always This Exact Action";
 const REJECT = "Reject";
 const REJECT_WITH_REASON = "Reject With Reason";
+const REJECT_AND_STOP = "Reject and Stop the Turn";
 
 function formatDecision(decision?: ReviewDecision): string {
   if (!decision) {
@@ -48,9 +49,10 @@ export async function requestHumanApproval(
     "Override this decision?",
   ].filter((line) => line !== null).join("\n");
 
+  const choices = [ALLOW_ONCE, ALLOW_EXACT, REJECT, REJECT_WITH_REASON, ...(ctx.abort ? [REJECT_AND_STOP] : [])];
   const selected = await ctx.ui.select(
     `${options.title ?? "Auto Approval"}\n${details}`,
-    [ALLOW_ONCE, ALLOW_EXACT, REJECT, REJECT_WITH_REASON],
+    choices,
     { timeout: options.timeoutSeconds * 1000 },
   );
 
@@ -59,6 +61,9 @@ export async function requestHumanApproval(
   }
   if (selected === ALLOW_EXACT) {
     return { approved: true, persistence: "exact" };
+  }
+  if (selected === REJECT_AND_STOP) {
+    return { approved: false, state: "stop" };
   }
   if (selected === REJECT_WITH_REASON && ctx.ui.input) {
     const reason = await ctx.ui.input("Reject With Reason", "Reason shown back to the agent");

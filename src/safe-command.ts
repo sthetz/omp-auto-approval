@@ -1,3 +1,5 @@
+import { relativePathWithin } from "./common.js";
+import { isSensitivePath } from "./sensitive-paths.js";
 import type { AutoReviewConfig } from "./types.js";
 
 const SAFE_GIT_SUBCOMMANDS = new Set(["status", "log", "diff", "show", "rev-parse"]);
@@ -5,9 +7,10 @@ const SAFE_GIT_BRANCH_FLAGS = new Set(["--show-current", "--list", "--all", "--m
 // Positional arguments are branch-name patterns only in list mode; otherwise
 // `git branch <name>` creates a branch.
 const GIT_BRANCH_LIST_MODE_FLAGS = new Set(["--list", "--merged", "--no-merged"]);
-// Long options that make otherwise read-only git commands write files or run
-// external programs. Git accepts unambiguous abbreviations, so prefixes match too.
-const UNSAFE_GIT_LONG_OPTIONS = ["--output", "--ext-diff"];
+// Long options that make otherwise read-only git commands write files, run
+// external programs, or compare arbitrary files outside the repository. Git
+// accepts unambiguous abbreviations, so prefixes match too.
+const UNSAFE_GIT_LONG_OPTIONS = ["--output", "--ext-diff", "--no-index"];
 
 // Command separators, background jobs, pipes, redirections, and expansions.
 // Newlines and a single `&` both start a new command in bash.
@@ -31,6 +34,26 @@ function isUnsafeGitOption(arg: string): boolean {
   return UNSAFE_GIT_LONG_OPTIONS.some((option) => (
     name.startsWith(option) || (name.length > 2 && option.startsWith(name))
   ));
+}
+
+/**
+ * A git operand (revision, `rev:path`, or path) that stays inside the
+ * workspace and away from credential-like files. Git compares files outside
+ * the work tree even without `--no-index` (`git diff /etc/passwd /dev/null`),
+ * so any operand that resolves outside the workspace is reviewed.
+ */
+function isWorkspaceGitOperand(operand: string, cwd: string): boolean {
+  const colon = operand.indexOf(":");
+  if (colon >= 0) {
+    // `HEAD:path` or `:path` reads a blob; `path` is relative to the repo root.
+    const blobPath = operand.slice(colon + 1);
+    return !blobPath.startsWith("/") && !blobPath.split(/[\\/]/).includes("..") && !isSensitivePath(blobPath);
+  }
+  if (operand.startsWith("/") || operand.startsWith("~")) {
+    return false;
+  }
+  const relative = relativePathWithin(operand, cwd);
+  return relative !== null && !isSensitivePath(relative);
 }
 
 function tokenizeSimpleCommand(command: string): string[] | null {
@@ -80,7 +103,7 @@ function tokenizeSimpleCommand(command: string): string[] | null {
   return tokens;
 }
 
-function isBuiltinSafeCommand(command: string): boolean {
+function isBuiltinSafeCommand(command: string, cwd: string): boolean {
   const tokens = tokenizeSimpleCommand(command);
   if (!tokens?.length) {
     return false;
@@ -94,6 +117,11 @@ function isBuiltinSafeCommand(command: string): boolean {
     return false;
   }
   if (rest.some(isUnsafeGitOption)) {
+    return false;
+  }
+  const endOfOptions = rest.indexOf("--");
+  const operands = rest.filter((arg, index) => (endOfOptions >= 0 && index > endOfOptions) || (arg !== "--" && !arg.startsWith("-")));
+  if (!operands.every((operand) => isWorkspaceGitOperand(operand, cwd))) {
     return false;
   }
   if (SAFE_GIT_SUBCOMMANDS.has(subcommand)) {
@@ -121,7 +149,7 @@ function isUserAllowlisted(command: string, config: AutoReviewConfig): boolean {
   });
 }
 
-export function isSafeReadOnlyCommand(command: string, config: AutoReviewConfig): boolean {
+export function isSafeReadOnlyCommand(command: string, config: AutoReviewConfig, cwd: string): boolean {
   // Check the raw command: the bash -lc payload is a substring of it.
   if (UNSAFE_SHELL_CHARACTERS.test(command)) {
     return false;
@@ -130,5 +158,5 @@ export function isSafeReadOnlyCommand(command: string, config: AutoReviewConfig)
   if (!simple) {
     return false;
   }
-  return isBuiltinSafeCommand(simple) || isUserAllowlisted(simple, config);
+  return isBuiltinSafeCommand(simple, cwd) || isUserAllowlisted(simple, config);
 }

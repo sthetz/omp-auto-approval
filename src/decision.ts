@@ -1,4 +1,5 @@
-import type { AutoReviewConfig, ExtensionContextLike, ReviewDecision, ToolCallEventLike } from "./types.js";
+import type { AuditEntry, AutoReviewConfig, ExtensionContextLike, ReviewDecision, ToolCallEventLike } from "./types.js";
+import { matchBlockedCommand } from "./block-commands.js";
 import { classifyAction, type ClassifierClient } from "./classifier.js";
 import { writeAudit } from "./logging.js";
 import { isSafeReadOnlyCommand } from "./safe-command.js";
@@ -15,6 +16,7 @@ import {
   isReadOnlyTool,
   isWorkspaceReadFastPath,
   isWorkspaceWriteFastPath,
+  resolveReadRoots,
 } from "./tool-routing.js";
 import { getString, toRecord } from "./common.js";
 import { requestHumanApproval } from "./human-approval.js";
@@ -70,11 +72,19 @@ async function handleHumanFallback(
     return {};
   }
 
-  store.recordDenial();
-  const reason = human.reason
-    ?? auditBase.classifierDecision?.rationale
-    ?? auditBase.failureReason
-    ?? "Manual approval was rejected.";
+  if (human.state === "stop") {
+    // The user ended the turn; the next one starts with a clean count.
+    store.recordNonDenial();
+    ctx.abort?.();
+  } else {
+    store.recordDenial();
+  }
+  const reason = human.state === "stop"
+    ? "The user rejected this action and stopped the turn. Wait for the user's next message."
+    : human.reason
+      ?? auditBase.classifierDecision?.rationale
+      ?? auditBase.failureReason
+      ?? "Manual approval was rejected.";
   await writeAudit(config, {
     event: "decision",
     route: "human",
@@ -92,6 +102,7 @@ async function handleHumanFallback(
 }
 
 export type FastPathRoute =
+  | "blocked_command"
   | "local_state"
   | "ui_only"
   | "tool_allowlist"
@@ -100,10 +111,15 @@ export type FastPathRoute =
   | "safe_command"
   | "manual_only";
 
+function bashCommand(toolName: string, input: unknown): string | undefined {
+  return toolName === "bash" ? getString(toRecord(input).command) : undefined;
+}
+
 /**
  * The route a tool call takes before any classifier or session state is
- * consulted: a fast path that allows it, "manual_only", or null for review.
- * Name-based fast paths apply only to the host's own builtin tools.
+ * consulted: "blocked_command", a fast path that allows it, "manual_only", or
+ * null for review. Name-based fast paths apply only to the host's own builtin
+ * tools.
  */
 export function selectFastPath(
   toolName: string,
@@ -114,7 +130,11 @@ export function selectFastPath(
   const toolDefinition = findToolDefinition(toolName, tools);
   const builtin = isBuiltinTool(toolDefinition, tools.length > 0);
   const normalizedToolName = toolName.trim().toLowerCase();
+  const command = bashCommand(toolName, input);
 
+  if (command && matchBlockedCommand(command, config.blockCommands)) {
+    return "blocked_command";
+  }
   if (builtin && isLocalStateTool(toolName)) {
     return "local_state";
   }
@@ -124,7 +144,7 @@ export function selectFastPath(
   if (config.reviewExemptTools.some((name) => name.trim().toLowerCase() === normalizedToolName)) {
     return "tool_allowlist";
   }
-  if (builtin && isReadOnlyTool(toolName) && isWorkspaceReadFastPath(input, cwd)) {
+  if (builtin && isReadOnlyTool(toolName) && isWorkspaceReadFastPath(input, resolveReadRoots(cwd, config.readRoots))) {
     return "readonly";
   }
   if ((toolName === "write" || toolName === "edit") && isWorkspaceWriteFastPath(input, cwd)) {
@@ -133,13 +153,35 @@ export function selectFastPath(
   if (isManualOnlyTool(toolName, toolDefinition)) {
     return "manual_only";
   }
-  if (toolName === "bash") {
-    const command = getString(toRecord(input).command);
-    if (command && isSafeReadOnlyCommand(command, config)) {
-      return "safe_command";
-    }
+  if (command && isSafeReadOnlyCommand(command, config, cwd)) {
+    return "safe_command";
   }
   return null;
+}
+
+/**
+ * Block without asking anyone, and end the turn once `maxConsecutiveDenials`
+ * automatic denials have happened in a row, instead of trusting the agent to
+ * stop on its own.
+ */
+function automaticDeny(
+  ctx: ExtensionContextLike,
+  config: AutoReviewConfig,
+  store: SessionApprovalStore,
+  reason: string,
+): ToolCallDecision {
+  const denials = store.recordDenial();
+  if (denials < config.maxConsecutiveDenials) {
+    return deny(reason);
+  }
+  store.recordNonDenial();
+  if (ctx.abort) {
+    // The agent never sees this reason once the turn ends; tell the user why.
+    ctx.ui?.notify?.(`omp-auto-approval stopped the turn after ${denials} rejected actions in a row. Last: ${reason}`, "warning");
+    ctx.abort();
+    return deny(`${reason} Auto-approval rejected ${denials} actions in a row and stopped the turn. Wait for the user's next message.`);
+  }
+  return deny(`${reason} Auto-approval rejected ${denials} actions in a row; stop and ask the user for guidance.`);
 }
 
 export async function evaluateToolCall(
@@ -150,6 +192,8 @@ export async function evaluateToolCall(
   options: {
     tools?: unknown[];
     classifierClient?: ClassifierClient;
+    // Text of the assistant message that issued this call, if known.
+    agentMessage?: string;
   } = {},
 ): Promise<ToolCallDecision> {
   const started = Date.now();
@@ -170,6 +214,22 @@ export async function evaluateToolCall(
     tools: options.tools ?? [],
     hasUI: ctx.hasUI === true,
   });
+  const audit = (entry: Omit<AuditEntry, "event" | "mode" | "toolName" | "actionSummary" | "actionHash" | "durationMs">) => writeAudit(config, {
+    event: "decision",
+    mode: config.mode,
+    toolName,
+    actionSummary: subject.actionSummary,
+    actionHash: subject.actionHash,
+    durationMs: Date.now() - started,
+    ...entry,
+  });
+
+  if (route === "blocked_command") {
+    const pattern = matchBlockedCommand(bashCommand(toolName, input) ?? "", config.blockCommands);
+    const reason = `This command matches the blockCommands rule "${pattern}" and is never auto-approved. Do not retry it in another form; tell the user what you wanted to run and why.`;
+    await audit({ route, outcome: "deny", reason });
+    return automaticDeny(ctx, config, store, reason);
+  }
 
   if (route === "manual_only") {
     if (config.mode === "fallback" && ctx.hasUI) {
@@ -179,17 +239,7 @@ export async function evaluateToolCall(
         failureReason: "This tool requires explicit user interaction and cannot be auto-approved.",
       });
     }
-    await writeAudit(config, {
-      event: "decision",
-      route: "manual_only",
-      mode: config.mode,
-      toolName,
-      actionSummary: subject.actionSummary,
-      actionHash: subject.actionHash,
-      outcome: "deny",
-      reason: "Manual-only tool cannot be auto-approved.",
-      durationMs: Date.now() - started,
-    });
+    await audit({ route, outcome: "deny", reason: "Manual-only tool cannot be auto-approved." });
     return deny("This tool requires explicit user approval and cannot be auto-approved.");
   }
 
@@ -197,129 +247,52 @@ export async function evaluateToolCall(
     if (route === "safe_command") {
       store.recordNonDenial();
     }
-    await writeAudit(config, {
-      event: "decision",
-      route,
-      mode: config.mode,
-      toolName,
-      actionSummary: subject.actionSummary,
-      actionHash: subject.actionHash,
-      outcome: "allow",
-      durationMs: Date.now() - started,
-    });
+    await audit({ route, outcome: "allow" });
     return {};
   }
 
   if (store.isExactApproved(subject.actionHash)) {
-    await writeAudit(config, {
-      event: "decision",
-      route: "session_approval",
-      mode: config.mode,
-      toolName,
-      actionSummary: subject.actionSummary,
-      actionHash: subject.actionHash,
-      outcome: "allow",
-      durationMs: Date.now() - started,
-    });
+    await audit({ route: "session_approval", outcome: "allow" });
     return {};
   }
 
+  const askHuman = config.mode === "fallback" && ctx.hasUI === true;
   const cached = store.getCachedDecision(subject.actionHash);
+  if (cached?.outcome === "allow") {
+    store.recordNonDenial();
+    await audit({ route: "classifier_cache", outcome: "allow", classifierDecision: cached });
+    return {};
+  }
   if (cached) {
-    if (cached.outcome === "allow") {
-      store.recordNonDenial();
-      await writeAudit(config, {
-        event: "decision",
-        route: "classifier_cache",
-        mode: config.mode,
-        toolName,
-        actionSummary: subject.actionSummary,
-        actionHash: subject.actionHash,
-        outcome: "allow",
-        classifierDecision: cached,
-        durationMs: Date.now() - started,
-      });
-      return {};
+    if (askHuman) {
+      return handleHumanFallback(ctx, config, store, subject, { started, route: "classifier", classifierDecision: cached });
     }
-    if (config.mode === "fallback" && ctx.hasUI) {
-      return handleHumanFallback(ctx, config, store, subject, {
-        started,
-        route: "classifier",
-        classifierDecision: cached,
-      });
-    }
-    store.recordDenial();
-    return deny(classifierDenyReason(cached));
+    await audit({ route: "classifier_cache", outcome: "deny", classifierDecision: cached, reason: cached.rationale });
+    return automaticDeny(ctx, config, store, classifierDenyReason(cached));
   }
 
-  let classifierDecision: ReviewDecision | undefined;
+  let classifierDecision: ReviewDecision;
   try {
-    classifierDecision = await classifyAction(ctx, config, subject, options.classifierClient);
+    classifierDecision = await classifyAction(ctx, config, subject, options.classifierClient, { agentMessage: options.agentMessage });
     store.cacheDecision(subject.actionHash, classifierDecision);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    if (config.mode === "fallback" && ctx.hasUI) {
-      return handleHumanFallback(ctx, config, store, subject, {
-        started,
-        route: "classifier",
-        failureReason: reason,
-      });
+    if (askHuman) {
+      return handleHumanFallback(ctx, config, store, subject, { started, route: "classifier", failureReason: reason });
     }
-    store.recordDenial();
-    await writeAudit(config, {
-      event: "decision",
-      route: "classifier",
-      mode: config.mode,
-      toolName,
-      actionSummary: subject.actionSummary,
-      actionHash: subject.actionHash,
-      outcome: "deny",
-      reason,
-      durationMs: Date.now() - started,
-    });
-    return deny(failureDenyReason(reason));
+    await audit({ route: "classifier", outcome: "deny", reason });
+    return automaticDeny(ctx, config, store, failureDenyReason(reason));
   }
 
   if (classifierDecision.outcome === "allow") {
     store.recordNonDenial();
-    await writeAudit(config, {
-      event: "decision",
-      route: "classifier",
-      mode: config.mode,
-      toolName,
-      actionSummary: subject.actionSummary,
-      actionHash: subject.actionHash,
-      outcome: "allow",
-      classifierDecision,
-      durationMs: Date.now() - started,
-    });
+    await audit({ route: "classifier", outcome: "allow", classifierDecision });
     return {};
   }
 
-  const denials = store.recordDenial();
-  if (config.mode === "fallback" && ctx.hasUI) {
-    return handleHumanFallback(ctx, config, store, subject, {
-      started,
-      route: "classifier",
-      classifierDecision,
-    });
+  if (askHuman) {
+    return handleHumanFallback(ctx, config, store, subject, { started, route: "classifier", classifierDecision });
   }
-
-  await writeAudit(config, {
-    event: "decision",
-    route: "classifier",
-    mode: config.mode,
-    toolName,
-    actionSummary: subject.actionSummary,
-    actionHash: subject.actionHash,
-    outcome: "deny",
-    classifierDecision,
-    reason: classifierDecision.rationale,
-    durationMs: Date.now() - started,
-  });
-
-  if (denials >= config.maxConsecutiveDenials) {
-    return deny(`${classifierDenyReason(classifierDecision)} Auto-approval rejected ${denials} consecutive requests; stop and ask the user for guidance.`);
-  }
-  return deny(classifierDenyReason(classifierDecision));
+  await audit({ route: "classifier", outcome: "deny", classifierDecision, reason: classifierDecision.rationale });
+  return automaticDeny(ctx, config, store, classifierDenyReason(classifierDecision));
 }

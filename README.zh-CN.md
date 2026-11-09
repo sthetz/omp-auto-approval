@@ -175,9 +175,9 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 
 `safeCommandAllowlist` 条目是前缀（`"rg *"`、`"find"`、`"npm test"`），单靠它会信任该程序的所有选项。即使条目匹配，以下命令仍需审批：
 
-- 使用会运行其他程序或写文件的选项：`find -exec/-execdir/-ok/-okdir/-delete/-fprint*/-fls`、`fd -x/-X/--exec*`、`rg --pre`、`sort -o/--output/--compress-program`、`tar -I/-F/--to-command/--checkpoint-action/--use-compress-program/...`；
-- 参数指向工作目录和 `readRoots` 之外的已存在路径，或凭据类路径（`cat ~/.ssh/id_ed25519`、`cat .env`、`rg TOKEN --file=../x`）；
-- 参数会被 shell 展开（未加引号的通配符或花括号，或 `~user`），因为其最终形式未知：`cat secrets*` 需要审批，`find . -name '*.ts'` 不需要。
+- 使用会运行其他程序或写文件的选项：`find -exec/-execdir/-ok/-okdir/-delete/-fprint*/-fls`、`fd -x/-X/--exec*`（包括 `-Hx` 这样的组合）、`rg --pre`、`sort -o/--output/--compress-program`、`tar -I/-F/--to-command/--checkpoint-action/--use-compress-program/...`，以及解包或写入归档的 `tar`（`x`、`c`、`r`、`u`、`A`、`--extract`、`--delete` 等）。GNU 工具接受缩写的长选项，因此 `sort --outp=x` 等同于 `--output`；
+- 参数指向工作目录和 `readRoots` 之外的已存在路径，或凭据类路径。这也包括紧跟在选项后的值和 `name=value` 形式的参数：`cat ~/.ssh/id_ed25519`、`cat .env`、`rg TOKEN --file=../x`、`grep -f/etc/x`、`dd if=../x`；
+- 参数会被 shell 展开，因为其最终形式未知：未加引号的通配符或花括号、`~user`，或 `name=value` 形式中 `=` 或 `:` 之后的 `~`（bash 会展开它，例如 `dd if=~/key`）。`cat secrets*` 需要审批，`find . -name '*.ts'` 不需要。
 
 有些条目会被忽略，`/auto-approval status` 会提示：参数本身就是脚本或命令行的程序（`sed`、`awk`、`xargs`、`parallel`）的任何条目，以及 shell、解释器和包装命令（`bash`、`python`、`node`、`env`、`sudo`、`timeout` 等）的裸条目，因为它们等于允许任意代码。请改为写出具体调用，例如 `"python -m pytest"` 或 `"npm test"`。除这些规则外，条目仍然信任该程序：`npm test` 会运行 `test` 脚本中的任何内容。
 

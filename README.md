@@ -179,9 +179,9 @@ Fast paths approve without classifier review, so they are deliberately narrow:
 
 A `safeCommandAllowlist` entry is a prefix (`"rg *"`, `"find"`, `"npm test"`), so on its own it would trust every option of the program. Even when an entry matches, a command is still reviewed if:
 
-- it uses an option that runs another program or writes files: `find -exec/-execdir/-ok/-okdir/-delete/-fprint*/-fls`, `fd -x/-X/--exec*`, `rg --pre`, `sort -o/--output/--compress-program`, `tar -I/-F/--to-command/--checkpoint-action/--use-compress-program/...`;
-- an argument names an existing path outside the working directory and `readRoots`, or a credential-like path (`cat ~/.ssh/id_ed25519`, `cat .env`, `rg TOKEN --file=../x`);
-- an argument is expanded by the shell (an unquoted glob or brace, or `~user`), since its final form is unknown: `cat secrets*` is reviewed, `find . -name '*.ts'` is not.
+- it uses an option that runs another program or writes files: `find -exec/-execdir/-ok/-okdir/-delete/-fprint*/-fls`, `fd -x/-X/--exec*` (also inside a group such as `-Hx`), `rg --pre`, `sort -o/--output/--compress-program`, `tar -I/-F/--to-command/--checkpoint-action/--use-compress-program/...`, and `tar` extracting or writing archives (`x`, `c`, `r`, `u`, `A`, `--extract`, `--delete`, …). GNU tools accept shortened long options, so `sort --outp=x` counts as `--output`;
+- an argument names an existing path outside the working directory and `readRoots`, or a credential-like path. This covers values glued to an option and `name=value` arguments: `cat ~/.ssh/id_ed25519`, `cat .env`, `rg TOKEN --file=../x`, `grep -f/etc/x`, `dd if=../x`;
+- an argument is expanded by the shell, since its final form is unknown: an unquoted glob or brace, `~user`, or `~` after `=` or `:` in a `name=value` word, which bash expands (`dd if=~/key`). `cat secrets*` is reviewed, `find . -name '*.ts'` is not.
 
 Some entries are ignored, and `/auto-approval status` says so: any entry for programs whose arguments are a script or command line (`sed`, `awk`, `xargs`, `parallel`), and bare entries for shells, interpreters and wrappers (`bash`, `python`, `node`, `env`, `sudo`, `timeout`, …), which would allow any code. Name a specific invocation instead, such as `"python -m pytest"` or `"npm test"`. Beyond those rules, an entry still trusts the program: `npm test` runs whatever the `test` script says.
 

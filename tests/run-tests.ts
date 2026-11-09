@@ -227,6 +227,62 @@ async function run(): Promise<void> {
     }
   });
 
+  await test("allowlisted commands see through abbreviations, glued values, and name=value arguments", () => {
+    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-argv-"));
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    writeFileSync(join(workspace, "notes.txt"), "notes\n");
+    writeFileSync(join(workspace, "patterns.txt"), "notes\n");
+    writeFileSync(join(workspace, ".env"), "TOKEN=x\n");
+    const outside = join(root, "outside.txt");
+    writeFileSync(outside, "outside\n");
+    const cfg = config({ safeCommandAllowlist: ["sort *", "rg *", "fd *", "grep *", "dd *", "tar *", "cat *"] });
+    try {
+      for (const command of [
+        "sort -k2 -t, notes.txt",
+        "sort --reverse notes.txt",
+        "rg --passthru needle notes.txt",
+        "fd -H -e ts",
+        "grep -fpatterns.txt notes.txt",
+        "grep -rn needle .",
+        "grep -e/api/users notes.txt",
+        "dd if=notes.txt",
+        "cat a=b",
+        'cat "a"=~/notes.txt',
+        "tar -tf archive.tar",
+        "tar tvf archive.tar",
+        "tar --list -f archive.tar",
+      ]) {
+        assert.equal(isSafeReadOnlyCommand(command, cfg, workspace), true, command);
+      }
+      for (const command of [
+        "sort --outp=x.txt notes.txt",
+        "sort --compress-prog=sh notes.txt",
+        "sort --o=x.txt notes.txt",
+        "rg --pr=./x.sh needle",
+        "fd -Hx rm",
+        "fd -HX rm",
+        `grep -f${outside} notes.txt`,
+        "grep -f.env notes.txt",
+        `dd if=${outside}`,
+        "dd if=.env",
+        "dd if=~/notes.txt",
+        "cat a=x:~/notes.txt",
+        "tar -xf archive.tar",
+        "tar xf archive.tar",
+        "tar -czf out.tar notes.txt",
+        "tar --extract -f archive.tar",
+        "tar --ext -f archive.tar",
+        "tar --delete -f archive.tar notes.txt",
+        `grep -${"r".repeat(600)} needle`,
+      ]) {
+        assert.equal(isSafeReadOnlyCommand(command, cfg, workspace), false, command);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   await test("allowlist entries for script programs and bare interpreters are ignored and reported", () => {
     const cfg = config({ safeCommandAllowlist: ["sed -n", "xargs", "awk *", "python", "bash *", "env", "python -m pytest", "npm test"] });
     for (const command of ["sed -n 1p notes.txt", "sed -n 'w /tmp/x' notes.txt", "xargs rm", "awk '{system(\"rm x\")}'", "python -c 'import os'", "bash -c 'rm -rf x'", "env rm x"]) {

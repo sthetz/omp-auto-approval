@@ -20,20 +20,26 @@ const UNSAFE_GIT_LONG_OPTIONS = ["--output", "--ext-diff", "--no-index"];
 // write files never take the fast path, whichever entry matched.
 interface UnsafeOptions {
   exact?: string[];
-  // Long options, also matched as `--name=value`.
+  // Long options, also matched as `--name=value` and, because GNU getopt
+  // accepts any unambiguous abbreviation (`sort --outp=x`), as a prefix.
   prefixes?: string[];
   // Letters that are unsafe anywhere in a short-option group (`-xIf`).
   shortLetters?: string;
 }
 const UNSAFE_PROGRAM_OPTIONS: Record<string, UnsafeOptions> = {
   find: { exact: ["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"] },
-  fd: { exact: ["-x", "-X"], prefixes: ["--exec"] },
-  fdfind: { exact: ["-x", "-X"], prefixes: ["--exec"] },
+  // fd groups short flags (`-Hx rm`).
+  fd: { prefixes: ["--exec"], shortLetters: "xX" },
+  fdfind: { prefixes: ["--exec"], shortLetters: "xX" },
   rg: { prefixes: ["--pre"] },
   sort: { prefixes: ["--compress-program", "--output"], shortLetters: "o" },
+  // Running, extracting, or writing archives: x, c, r, u and A write files.
   tar: {
-    prefixes: ["--to-command", "--checkpoint-action", "--use-compress-program", "--info-script", "--new-volume-script", "--rsh-command"],
-    shortLetters: "IF",
+    prefixes: [
+      "--to-command", "--checkpoint-action", "--use-compress-program", "--info-script", "--new-volume-script", "--rsh-command",
+      "--extract", "--get", "--create", "--append", "--update", "--concatenate", "--catenate", "--delete",
+    ],
+    shortLetters: "IFxcruA",
   },
 };
 
@@ -97,16 +103,24 @@ function isWorkspaceGitOperand(operand: string, cwd: string): boolean {
 
 interface Token {
   text: string;
-  // Contains an unquoted glob or brace character, or starts with an unquoted
-  // `~`: the shell rewrites it before the program sees it.
+  // Contains an unquoted glob or brace character, or an unquoted `~` that
+  // bash expands: at the start of the word, or after `=` or `:` in a word
+  // shaped like an assignment (`if=~/key`). The shell rewrites it before the
+  // program sees it.
   expands: boolean;
 }
+
+const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function tokenizeWords(command: string): Token[] | null {
   const tokens: Token[] = [];
   let current = "";
   let expands = false;
   let started = false;
+  // Bash treats `name=value` arguments like assignments only when `name` is
+  // written without quotes or escapes.
+  let quotedPrefix = false;
+  let assignment = false;
   let quote: "'" | "\"" | null = null;
   let escaped = false;
   const finish = () => {
@@ -116,6 +130,8 @@ function tokenizeWords(command: string): Token[] | null {
     current = "";
     expands = false;
     started = false;
+    quotedPrefix = false;
+    assignment = false;
   };
 
   for (const char of command) {
@@ -127,6 +143,7 @@ function tokenizeWords(command: string): Token[] | null {
     if (char === "\\" && quote !== "'") {
       escaped = true;
       started = true;
+      quotedPrefix = true;
       continue;
     }
     if (quote) {
@@ -140,13 +157,17 @@ function tokenizeWords(command: string): Token[] | null {
     if (char === "'" || char === "\"") {
       quote = char;
       started = true;
+      quotedPrefix = true;
       continue;
     }
     if (/\s/.test(char)) {
       finish();
       continue;
     }
-    if (/[*?[{]/.test(char) || (char === "~" && current === "")) {
+    if (char === "=" && !assignment && !quotedPrefix && IDENTIFIER.test(current)) {
+      assignment = true;
+    }
+    if (/[*?[{]/.test(char) || (char === "~" && (current === "" || (assignment && /[=:]$/.test(current))))) {
       expands = true;
     }
     current += char;
@@ -179,7 +200,7 @@ function hasUnsafeOption(program: string, args: string[]): boolean {
     }
     if (arg.startsWith("--")) {
       const name = arg.split("=", 1)[0];
-      return unsafe.prefixes?.some((option) => name.startsWith(option)) ?? false;
+      return unsafe.prefixes?.some((option) => name.startsWith(option) || (name.length > 2 && option.startsWith(name))) ?? false;
     }
     // tar also takes old-style option letters without a dash as its first argument.
     const group = arg.startsWith("-") ? arg.slice(1) : program === "tar" && index === 0 ? arg : "";
@@ -187,37 +208,59 @@ function hasUnsafeOption(program: string, args: string[]): boolean {
   });
 }
 
+const ASSIGNMENT_PREFIX = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const MAX_SHORT_OPTION_GROUP = 512;
+
 /**
- * An argument of an allowlisted command that names nothing outside the
- * workspace or read roots and nothing credential-like. Arguments the shell
- * expands (unquoted globs, braces, `~user`) are not fast-pathed, since their
- * final form is unknown; `~/` is expanded here. A literal argument is only
- * treated as a path when it exists, so search patterns such as `/api/users`
- * do not count.
+ * The parts of an argument that a program might open as a file: the value of
+ * `--name=value`; any tail of a short-option group, since a value can be
+ * glued to an option (`-f/path`) and which letters take one depends on the
+ * program; both the whole word and the value of `name=value` (`dd if=/path`);
+ * otherwise the argument itself.
  */
-function isAllowlistedArgumentSafe(token: Token, roots: ReadRoots): boolean {
-  let value = token.text;
-  if (value.startsWith("-")) {
-    const equals = value.indexOf("=");
-    if (equals < 0) {
-      return true;
+function pathCandidates(text: string): string[] | null {
+  if (text.startsWith("--")) {
+    const equals = text.indexOf("=");
+    return equals < 0 ? [] : [text.slice(equals + 1)];
+  }
+  if (text.startsWith("-")) {
+    if (text.length > MAX_SHORT_OPTION_GROUP) {
+      return null;
     }
-    value = value.slice(equals + 1);
+    return Array.from({ length: Math.max(0, text.length - 2) }, (_, index) => text.slice(index + 2));
   }
-  if (!value) {
-    return true;
-  }
-  const homeRelative = token.expands && (value === "~" || value.startsWith("~/")) && !/[*?[{]/.test(value);
-  if (token.expands && !homeRelative) {
-    return false;
-  }
-  const absolute = resolvePathForCwd(homeRelative ? join(homedir(), value.slice(1)) : value, roots.cwd);
-  if (!homeRelative && !existsSync(absolute)) {
-    return true;
-  }
+  const assignment = text.match(ASSIGNMENT_PREFIX);
+  return assignment ? [text, text.slice(assignment[0].length)] : [text];
+}
+
+function isInsideReadRoots(absolute: string, roots: ReadRoots): boolean {
   return [roots.cwd, ...roots.extra].some((root) => {
     const relative = relativePathWithin(absolute, root);
     return relative !== null && !isSensitivePath(relative);
+  });
+}
+
+/**
+ * An argument of an allowlisted command that names nothing outside the
+ * workspace or read roots and nothing credential-like. Arguments the shell
+ * expands (unquoted globs, braces, `~user`, `name=~/…`) are not fast-pathed,
+ * since their final form is unknown; a leading `~` or `~/` is expanded here.
+ * A literal candidate is only treated as a path when it exists, so search
+ * patterns such as `/api/users` do not count.
+ */
+function isAllowlistedArgumentSafe(token: Token, roots: ReadRoots): boolean {
+  const text = token.text;
+  if (token.expands) {
+    const homeRelative = (text === "~" || text.startsWith("~/")) && !/[*?[{]/.test(text);
+    return homeRelative && isInsideReadRoots(resolvePathForCwd(join(homedir(), text.slice(1)), roots.cwd), roots);
+  }
+  const candidates = pathCandidates(text);
+  return candidates !== null && candidates.every((candidate) => {
+    if (!candidate) {
+      return true;
+    }
+    const absolute = resolvePathForCwd(candidate, roots.cwd);
+    return !existsSync(absolute) || isInsideReadRoots(absolute, roots);
   });
 }
 

@@ -1,14 +1,17 @@
 import { existsSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { SHELL_CASES } from "./cases.js";
-import { DEFAULT_CORPUS, loadCorpus } from "./extract-corpus.js";
+import { DEFAULT_CORPUS, loadCorpus, loadCorpusDirectory } from "./extract-corpus.js";
 import { fuzzCommands } from "./fuzz.js";
-import { compareRun, findEnvironment, runOracle, type OracleEnvironment, type ParsedScript, type ShellParser } from "./oracle.js";
+import { compareRun, findEnvironment, OracleSetupError, redirectionFiles, runOracle, type OracleEnvironment, type ParsedScript, type ShellParser } from "./oracle.js";
 import { PARSERS } from "./parsers.js";
 
 /**
  * Check a shell parser against bash on hand-written cases, the local corpus
  * of real agent commands (see extract-corpus.ts), and seeded fuzz.
+ *
+ * The corpus is every `shell-corpus*.jsonl` in ~/.cache/omp-auto-approval,
+ * or one file given with --corpus.
  *
  *   node --import tsx tests/shell-oracle/run.ts [--parser baseline] [--corpus FILE | --no-corpus]
  *     [--fuzz N] [--seed N] [--jobs N] [--show N]
@@ -37,13 +40,27 @@ function option(args: string[], name: string): string | undefined {
 // (inside the sandbox) and leave no record. A program named by a path is not
 // looked up on PATH, and the prelude needs the real `builtin` to record
 // anything.
+// A redirection to a directory, or through a file as if it were one, fails
+// before the command runs. The command is still accepted correctly; bash just
+// has nothing to show.
 function unverifiable(script: ParsedScript): string | undefined {
-  const programs = script.pipelines.flat().map((command) => command.words[0]?.text ?? "");
-  if (programs.some((program) => program.includes("/"))) {
-    return "a program named by path would really run";
+  const commands = script.pipelines.flat();
+  const programs = commands.map((command) => command.words[0]);
+  if (programs.some((program) => program?.expands || program?.text.includes("/"))) {
+    return "a program named by path, or by an expansion, would really run";
   }
-  return programs.includes("builtin") ? "the oracle cannot record `builtin`" : undefined;
+  if (programs.some((program) => program?.text === "builtin")) {
+    return "the oracle cannot record `builtin`";
+  }
+  const files = commands.flatMap((command) => command.redirects.filter((redirect) => !redirect.duplicate).map((redirect) => redirect.target));
+  if (files.some((file) => file.endsWith("/") || ["", ".", "..", "/"].includes(file) || /(^|\/)\.\.?$/.test(file) || WORKSPACE_DIRECTORIES.has(file))) {
+    return "a redirection names a directory";
+  }
+  return undefined;
 }
+
+// Directories in the oracle's working directory (see oracle.ts).
+const WORKSPACE_DIRECTORIES = new Set(["dir"]);
 
 async function check(env: OracleEnvironment, parser: ShellParser, item: Item): Promise<Outcome> {
   const script = parser(item.command);
@@ -57,7 +74,16 @@ async function check(env: OracleEnvironment, parser: ShellParser, item: Item): P
   const branches = script.connectors.some((connector) => connector !== ";") ? [0, 1] : [0];
   const problems: string[] = [];
   for (const status of branches) {
-    const divergence = compareRun(script, status, await runOracle(env, item.command, status));
+    let run;
+    try {
+      run = await runOracle(env, item.command, status, { files: redirectionFiles(script) });
+    } catch (error) {
+      if (error instanceof OracleSetupError) {
+        return { item, accepted: true, skipped: error.message };
+      }
+      throw error;
+    }
+    const divergence = compareRun(script, status, run);
     if (divergence) {
       problems.push(`[every command exits ${status}]\n${divergence}`);
     }
@@ -102,13 +128,13 @@ async function main(): Promise<void> {
   }
   const seed = Number(option(args, "--seed") ?? 1);
   const items: Item[] = SHELL_CASES.map((command) => ({ source: "case", command }));
-  const corpusFile = option(args, "--corpus") ?? DEFAULT_CORPUS;
   if (!args.includes("--no-corpus")) {
-    if (existsSync(corpusFile)) {
-      items.push(...loadCorpus(corpusFile).map((entry) => ({ source: `corpus:${entry.source}`, command: entry.command })));
-    } else {
-      console.log(`no corpus at ${corpusFile}; run extract-corpus.ts to build one`);
+    const corpusFile = option(args, "--corpus");
+    const corpus = corpusFile ? (existsSync(corpusFile) ? loadCorpus(corpusFile) : []) : loadCorpusDirectory(DEFAULT_CORPUS);
+    if (!corpus.length) {
+      console.log(`no corpus at ${corpusFile ?? DEFAULT_CORPUS}; run extract-corpus.ts to build one`);
     }
+    items.push(...corpus.map((entry) => ({ source: `corpus:${entry.source}`, command: entry.command })));
   }
   items.push(...fuzzCommands(Number(option(args, "--fuzz") ?? 3000), seed).map((command) => ({ source: `fuzz:${seed}`, command })));
 

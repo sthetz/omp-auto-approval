@@ -11,6 +11,7 @@ import { configPath, DEFAULT_CONFIG, loadConfig, logPath, logsDir, normalizeConf
 import { evaluateToolCall } from "../src/decision.js";
 import { columnWidth, truncateVisible } from "../src/model-selector.js";
 import { pinnedSafeCommand } from "../src/safe-command.js";
+import { recognizeShell } from "../src/shell-syntax.js";
 import { compareRun, pipelinesRun, type ParsedScript } from "./shell-oracle/oracle.js";
 import { SessionApprovalStore } from "../src/session-approval-store.js";
 import { getProviderAttributionHeaders } from "../src/provider-attribution.js";
@@ -245,6 +246,61 @@ async function run(): Promise<void> {
     }
   });
 
+  await test("shell recognizer reads lists, pipelines, redirections and comments like bash", () => {
+    const shape = (command: string) => {
+      const script = recognizeShell(command);
+      return script && {
+        connectors: script.connectors,
+        pipelines: script.pipelines.map((pipeline) => pipeline.map(({ words, redirects }) => ({
+          words: words.map((word) => word.text),
+          redirects: redirects.map(({ fd, kind, target }) => `${fd}${kind}:${target}`),
+        }))),
+      };
+    };
+    assert.deepEqual(shape("cd sub && git status --short 2>/dev/null | head -5 || echo none # why\n"), {
+      connectors: ["&&", "||"],
+      pipelines: [
+        [{ words: ["cd", "sub"], redirects: [] }],
+        [{ words: ["git", "status", "--short"], redirects: ["2write:/dev/null"] }, { words: ["head", "-5"], redirects: [] }],
+        [{ words: ["echo", "none"], redirects: [] }],
+      ],
+    });
+    assert.deepEqual(shape("ls |\n  wc -l;\n\npwd;"), {
+      connectors: [";"],
+      pipelines: [[{ words: ["ls"], redirects: [] }, { words: ["wc", "-l"], redirects: [] }], [{ words: ["pwd"], redirects: [] }]],
+    });
+    assert.deepEqual(shape("make &>/dev/null")?.pipelines[0][0].redirects, ["1write:/dev/null", "2duplicate:1"]);
+    assert.deepEqual(shape("ls a2>x 2>>log >&2 <in")?.pipelines[0][0], {
+      words: ["ls", "a2"],
+      redirects: ["1write:x", "2append:log", "1duplicate:2", "0read:in"],
+    });
+    // Quoting: single quotes keep everything; inside double quotes a backslash escapes only $ ` " \\ and newline.
+    assert.deepEqual(shape(`echo 'a\\b' "src\\/x" "q\\"q" a\\ b a#b`)?.pipelines[0][0].words, ["echo", "a\\b", "src\\/x", 'q"q', "a b", "a#b"]);
+
+    const words = recognizeShell("  \"git\" ~/x a=~/k 'a'=~ *.ts X=1")!.pipelines[0][0].words;
+    assert.deepEqual(words.map(({ text, expands, quoted, assignment, start, end }) => [text, expands, quoted, assignment, start, end]), [
+      ["git", false, true, false, 2, 7],
+      ["~/x", true, false, false, 8, 11],
+      ["a=~/k", true, false, true, 12, 17],
+      ["a=~", false, true, false, 18, 23],
+      ["*.ts", true, false, false, 24, 28],
+      ["X=1", false, false, true, 29, 32],
+    ]);
+
+    for (const command of [
+      "echo $HOME", "echo \"$HOME\"", "echo `pwd`", "echo $'x'", "cat <(ls)", "cat <<EOF\nx\nEOF", "cat <<< x",
+      "( ls )", "{ ls; }", "f() { ls; }", "ls &", "ls & pwd", "a |& b", "ls ;; pwd", "; ls", "ls &&", "| ls",
+      "time ls", "! ls", "if true; then ls; fi", "for f in a; do ls; done", "[[ -f x ]]",
+      "X=1 ls", "X=\"1\" ls", "X+=1 ls", "a[0]=1 ls", "%1", "'%' x",
+      "ls >&-", "ls >& 2", "ls {fd}>/dev/null", "ls > *.log", "ls >", ">/dev/null", "echo 'open", "echo \"open", "ls\r",
+      "ls trailing\\", "", "   ", "# only a comment",
+    ]) {
+      assert.equal(recognizeShell(command), null, JSON.stringify(command));
+    }
+    assert.notEqual(recognizeShell('"time" ls'), null);
+    assert.notEqual(recognizeShell("ls X=1"), null);
+  });
+
   await test("shell oracle follows && and || and matches pipelines in any order", () => {
     const word = (text: string, expands = false) => ({ text, expands });
     const command = (...texts: string[]) => ({ words: texts.map((text) => word(text)), redirects: [] });
@@ -268,7 +324,7 @@ async function run(): Promise<void> {
     ])) ?? "", /bash ran \["d","x"\]/);
 
     const redirected: ParsedScript = {
-      pipelines: [[{ words: [word("ls"), word("*", true)], redirects: [{ fd: 1, target: "/dev/null" }, { fd: 2, target: "&1" }] }]],
+      pipelines: [[{ words: [word("ls"), word("*", true)], redirects: [{ fd: 1, target: "/dev/null" }, { fd: 2, target: "1", duplicate: true }] }]],
       connectors: [],
     };
     assert.equal(compareRun(redirected, 0, run([record(["ls", "a", "b.txt"], ["stdin", "/dev/null", "/dev/null"])])), null);

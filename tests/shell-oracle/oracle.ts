@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -23,8 +23,11 @@ export interface ParsedWord {
 
 export interface ParsedRedirect {
   fd: number;
-  // "/dev/null", "&1"/"&2" for duplication, or a file path.
+  // A file path, or for a duplication the fd it copies.
   target: string;
+  duplicate?: boolean;
+  // `<`: the file is opened for reading (any fd).
+  read?: boolean;
 }
 
 export interface ParsedCommand {
@@ -112,7 +115,9 @@ function parseRecords(log: Buffer, root: string): OracleRecord[] {
         return name;
       }
     }
-    return target;
+    // Files redirected to inside the run's directory, relative to the
+    // working directory as the command named them.
+    return target.startsWith(`${root}/`) ? relative(join(root, "work"), target) : target;
   };
   const records: OracleRecord[] = [];
   let index = 0;
@@ -130,7 +135,75 @@ function parseRecords(log: Buffer, root: string): OracleRecord[] {
  * records its call and returns `status`. No network, no access to the real
  * home directory, and the system directories are read-only.
  */
-export async function runOracle(env: OracleEnvironment, command: string, status: number, timeoutMs = 5000): Promise<OracleRun> {
+export interface OracleFiles {
+  // Files a redirection reads: created empty so that bash can open them.
+  read: string[];
+  // Files a redirection writes: their directories are created.
+  written: string[];
+}
+
+/** The redirection targets in `script` that must exist for bash to run it. */
+export function redirectionFiles(script: ParsedScript): OracleFiles {
+  const files: OracleFiles = { read: [], written: [] };
+  for (const command of script.pipelines.flat()) {
+    for (const { target, duplicate, read } of command.redirects) {
+      if (duplicate || target === "/dev/null") {
+        continue;
+      }
+      (read ? files.read : files.written).push(target);
+    }
+  }
+  return files;
+}
+
+/** A redirection target the sandbox cannot provide, so bash would fail before running anything. */
+export class OracleSetupError extends Error {}
+
+/**
+ * Sandbox setup for the redirection targets. A path inside the run's own
+ * directory is created there directly; any other path is created only inside
+ * the sandbox, so the host's filesystem is never touched.
+ */
+function prepareFiles(root: string, work: string, files: OracleFiles): string[] {
+  const args: string[] = [];
+  const emptyFile = join(root, "empty-file");
+  writeFileSync(emptyFile, "");
+  const place = (target: string, kind: "file" | "directory") => {
+    const absolute = resolve(work, target);
+    if (SYSTEM_DIRECTORIES.some((directory) => absolute === directory || absolute.startsWith(`${directory}/`))) {
+      return;
+    }
+    if (absolute.startsWith(`${root}/`)) {
+      try {
+        if (kind === "directory") {
+          mkdirSync(absolute, { recursive: true });
+        } else if (!existsSync(absolute)) {
+          mkdirSync(dirname(absolute), { recursive: true });
+          writeFileSync(absolute, "");
+        }
+      } catch (error) {
+        throw new OracleSetupError(`cannot create ${target}: ${(error as Error).message}`);
+      }
+    } else if (kind === "directory") {
+      args.push("--dir", absolute);
+    } else {
+      args.push("--ro-bind", emptyFile, absolute);
+    }
+  };
+  // A file the command also writes must stay writable, so it is not created
+  // as a read-only placeholder; the write creates it.
+  files.read.filter((target) => !files.written.includes(target)).forEach((target) => place(target, "file"));
+  files.written.forEach((target) => place(dirname(target), "directory"));
+  return args;
+}
+
+export async function runOracle(
+  env: OracleEnvironment,
+  command: string,
+  status: number,
+  options: { files?: OracleFiles; timeoutMs?: number } = {},
+): Promise<OracleRun> {
+  const timeoutMs = options.timeoutMs ?? 5000;
   const root = mkdtempSync(join(tmpdir(), "shell-oracle-"));
   const work = join(root, "work");
   const home = join(root, "home");
@@ -139,8 +212,9 @@ export async function runOracle(env: OracleEnvironment, command: string, status:
     writeFileSync(join(work, file), "");
   }
   mkdirSync(home);
+  const fileArgs = prepareFiles(root, work, options.files ?? { read: [], written: [] });
   writeFileSync(join(root, "stdin"), "");
-  writeFileSync(join(root, "log"), "");
+  mkdirSync(join(root, "log"));
   const stdio = [openSync(join(root, "stdin"), "r"), openSync(join(root, "stdout"), "w"), openSync(join(root, "stderr"), "w")];
   const args = [
     "--unshare-all", "--die-with-parent", "--new-session",
@@ -148,6 +222,7 @@ export async function runOracle(env: OracleEnvironment, command: string, status:
     "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
     "--bind", root, root,
     "--ro-bind", PRELUDE, join(root, "prelude.sh"),
+    ...fileArgs,
     "--chdir", work,
     "--clearenv",
     "--setenv", "HOME", home,
@@ -171,8 +246,9 @@ export async function runOracle(env: OracleEnvironment, command: string, status:
         resolve({ exitCode: code, timedOut });
       });
     });
+    const log = join(root, "log");
     return {
-      records: parseRecords(readFileSync(join(root, "log")), root),
+      records: readdirSync(log).sort().flatMap((name) => parseRecords(readFileSync(join(log, name)), root)),
       exitCode,
       stderr: readFileSync(join(root, "stderr"), "utf8"),
       timedOut,
@@ -200,11 +276,11 @@ export function pipelinesRun(script: ParsedScript, status: number): number[] {
 
 function expectedFds(command: ParsedCommand, position: number, length: number): [string, string, string] {
   const fds: [string, string, string] = [position === 0 ? "stdin" : "pipe", position === length - 1 ? "stdout" : "pipe", "stderr"];
-  for (const { fd, target } of command.redirects) {
+  for (const { fd, target, duplicate } of command.redirects) {
     if (fd < 0 || fd > 2) {
       continue;
     }
-    fds[fd] = target.startsWith("&") ? fds[Number(target.slice(1))] ?? target : target;
+    fds[fd] = duplicate ? fds[Number(target)] ?? `&${target}` : normalize(target);
   }
   return fds;
 }
@@ -217,9 +293,10 @@ function matches(command: ParsedCommand, fds: string[], record: OracleRecord): b
   if (record.fds.some((fd, index) => fd !== fds[index])) {
     return false;
   }
-  // A word the shell rewrites can become any text, or several words.
+  // A word the shell rewrites can become any text, or several words; the
+  // program, unless it is one of them, must still match.
   if (command.words.some((word) => word.expands)) {
-    return true;
+    return command.words[0].expands || record.argv[0] === command.words[0].text;
   }
   return record.argv.length === command.words.length && record.argv.every((arg, index) => arg === command.words[index].text);
 }

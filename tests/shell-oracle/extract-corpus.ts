@@ -5,22 +5,27 @@ import { fileURLToPath } from "node:url";
 
 /**
  * Collect the bash commands agents actually ran, from local Claude Code
- * transcripts and OMP sessions, into a deduplicated JSONL corpus for the
- * shell oracle.
+ * transcripts, OMP sessions and Kimi Code sessions, into a deduplicated JSONL
+ * corpus for the shell oracle. The oracle reads every `shell-corpus*.jsonl`
+ * in the corpus directory, so commands collected elsewhere (another machine)
+ * can be added as a file next to it.
  *
  * The corpus holds whatever those commands contained (hostnames, paths,
  * occasionally secrets), so it is written outside the repository, readable
  * only by you, and must never be committed.
  *
- *   node --import tsx tests/shell-oracle/extract-corpus.ts [--out FILE] [--claude DIR] [--omp DIR]
+ *   node --import tsx tests/shell-oracle/extract-corpus.ts [--out FILE] [--claude DIR] [--omp DIR] [--kimi DIR]
  */
 
 export const DEFAULT_CORPUS = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "omp-auto-approval", "shell-corpus.jsonl");
 
 export interface CorpusEntry {
   command: string;
-  source: "claude" | "omp";
+  // Which agent ran it, optionally prefixed by the machine (`alpha-claude`).
+  source: string;
 }
+
+type Agent = "claude" | "omp" | "kimi";
 
 function jsonlFiles(directory: string, found: string[] = [], depth = 0): string[] {
   if (depth > 8) {
@@ -48,22 +53,30 @@ function jsonlFiles(directory: string, found: string[] = [], depth = 0): string[
   return found;
 }
 
-function* commandsIn(file: string, source: CorpusEntry["source"]): Generator<string> {
+function* commandsIn(file: string, source: Agent): Generator<string> {
   let text: string;
   try {
     text = readFileSync(file, "utf8");
   } catch {
     return;
   }
-  const marker = source === "claude" ? '"Bash"' : '"toolCall"';
+  const marker = source === "omp" ? '"toolCall"' : '"Bash"';
   for (const line of text.split("\n")) {
     if (!line.includes(marker)) {
       continue;
     }
-    let entry: { message?: { content?: unknown } };
+    let entry: { message?: { content?: unknown }; event?: { name?: unknown; args?: { command?: unknown } } };
     try {
       entry = JSON.parse(line);
     } catch {
+      continue;
+    }
+    if (source === "kimi") {
+      // Kimi Code logs each tool call as an event in the session's wire.jsonl.
+      const command = entry.event?.name === "Bash" ? entry.event.args?.command : undefined;
+      if (typeof command === "string" && command.trim()) {
+        yield command;
+      }
       continue;
     }
     const content = entry.message?.content;
@@ -85,6 +98,19 @@ export function loadCorpus(file: string): CorpusEntry[] {
   return readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as CorpusEntry);
 }
 
+/** Every corpus file next to `file` (`shell-corpus*.jsonl`), deduplicated by command. */
+export function loadCorpusDirectory(file: string): CorpusEntry[] {
+  const directory = dirname(file);
+  let names: string[];
+  try {
+    names = readdirSync(directory).filter((name) => /^shell-corpus.*\.jsonl$/.test(name)).sort();
+  } catch {
+    return [];
+  }
+  const seen = new Set<string>();
+  return names.flatMap((name) => loadCorpus(join(directory, name))).filter((entry) => !seen.has(entry.command) && Boolean(seen.add(entry.command)));
+}
+
 function main(): void {
   const args = process.argv.slice(2);
   const option = (name: string, fallback: string) => {
@@ -92,9 +118,10 @@ function main(): void {
     return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
   };
   const out = option("--out", DEFAULT_CORPUS);
-  const sources: [CorpusEntry["source"], string][] = [
+  const sources: [Agent, string][] = [
     ["claude", option("--claude", join(homedir(), ".claude", "projects"))],
     ["omp", option("--omp", join(homedir(), ".omp", "agent", "sessions"))],
+    ["kimi", option("--kimi", join(homedir(), ".kimi-code", "sessions"))],
   ];
   const seen = new Set<string>();
   const entries: CorpusEntry[] = [];

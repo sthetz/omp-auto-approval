@@ -4,9 +4,11 @@
 #
 # PATH points at an empty directory, so every external program reaches
 # command_not_found_handle. Every builtin except `builtin` itself is shadowed
-# by a function. Each call appends one record to $ORACLE_LOG: the recording
-# process, where its fds 0-2 point, and its arguments, all NUL-separated. It
-# then returns $ORACLE_STATUS, so a run can take either branch of `&&`/`||`.
+# by a function. Each call writes one record to its own file in $ORACLE_LOG
+# (a directory), named by time and process so that the parts of a pipeline,
+# which run concurrently, cannot interleave: the recording process, where its
+# fds 0-2 point, and its arguments, all NUL-separated. It then returns
+# $ORACLE_STATUS, so a run can take either branch of `&&`/`||`.
 # Keywords (`if`, `[[`, `time`, ...) cannot be shadowed and leave no record.
 
 builtin unset BASH_ENV
@@ -14,16 +16,19 @@ __oracle_log=$ORACLE_LOG
 __oracle_status=$ORACLE_STATUS
 __oracle_coreutils=$ORACLE_COREUTILS
 
+# The target of fd $2 of process $1. Command substitution strips trailing
+# newlines, which a file name may end with, so a sentinel protects them.
 __oracle_fd() {
-  "$__oracle_coreutils" --coreutils-prog=readlink "/proc/$1/fd/$2" 2>/dev/null
+  "$__oracle_coreutils" --coreutils-prog=readlink -n "/proc/$1/fd/$2" 2>/dev/null
+  builtin printf x
 }
 
 __oracle_record() {
   builtin local __me=$BASHPID __f0 __f1 __f2
-  __f0=$(__oracle_fd "$__me" 0)
-  __f1=$(__oracle_fd "$__me" 1)
-  __f2=$(__oracle_fd "$__me" 2)
-  builtin printf '%s\0' "@@REC" "$__me" "$__f0" "$__f1" "$__f2" "$#" "$@" >> "$__oracle_log"
+  __f0=$(__oracle_fd "$__me" 0); __f0=${__f0%x}
+  __f1=$(__oracle_fd "$__me" 1); __f1=${__f1%x}
+  __f2=$(__oracle_fd "$__me" 2); __f2=${__f2%x}
+  builtin printf '%s\0' "@@REC" "$__me" "$__f0" "$__f1" "$__f2" "$#" "$@" > "$__oracle_log/${EPOCHREALTIME/./}-$__me"
   builtin return "$__oracle_status"
 }
 

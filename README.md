@@ -172,6 +172,8 @@ By default, the approval classifier uses the current OMP session model. Use `/au
 
 The selected value is stored as `classifierModel` in `config.jsonc`. `null` means "use the current session model".
 
+Classifier requests go through the host's own `pi-ai` package with the same provider auth as normal OMP model calls, so no extra packages need to be installed.
+
 The model selector refreshes OMP's runtime model registry before reading available models, so it includes runtime-added and custom provider models.
 
 ## References

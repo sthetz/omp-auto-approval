@@ -74,6 +74,21 @@ async function run(): Promise<void> {
     assert.ok(visibleFallback.length <= 6, `fallback visible text exceeds width: ${JSON.stringify(fallback)}`);
   }
 
+  const hostModule = { visibleWidth: piLikeTextUtils.visibleWidth, truncateToWidth: piLikeTextUtils.truncateToWidth };
+  const otherModule = { visibleWidth: (text: string) => text.length, truncateToWidth: (text: string) => text };
+  assert.equal(
+    modelSelectorInternals.selectTuiTextUtils([hostModule, hostModule]).visibleWidth,
+    piLikeTextUtils.visibleWidth,
+    "the same host module under both package scopes should be used",
+  );
+  assert.equal(
+    modelSelectorInternals.selectTuiTextUtils([hostModule]).visibleWidth,
+    piLikeTextUtils.visibleWidth,
+  );
+  assert.equal(modelSelectorInternals.selectTuiTextUtils([hostModule, otherModule]), modelSelectorInternals.safeFallbackTextUtils);
+  assert.equal(modelSelectorInternals.selectTuiTextUtils([]), modelSelectorInternals.safeFallbackTextUtils);
+  assert.equal(modelSelectorInternals.selectTuiTextUtils([{}]), modelSelectorInternals.safeFallbackTextUtils);
+
   const config = {
     classifierModel: null,
   } as AutoReviewConfig;
@@ -119,6 +134,7 @@ async function run(): Promise<void> {
   console.log("[PASS] model selector uses Pi-compatible width helpers for emoji, combining marks, ZWJ emoji, CJK, and ANSI text");
   console.log("[PASS] safe fallback never guesses Unicode width and keeps visible text within printable ASCII bounds");
   console.log("[PASS] narrow selector render keeps every row within terminal width");
+  console.log("[PASS] TUI width engine is used when both scopes resolve to the same host module");
 }
 
 run().catch((error) => {

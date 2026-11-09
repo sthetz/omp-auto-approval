@@ -110,10 +110,11 @@ type ModelItem = {
   model?: unknown;
 };
 
+// Literal specifiers so OMP can map them to its bundled host package.
 const TUI_PACKAGE_CANDIDATES = [
-  "@oh-my-pi/pi-tui",
-  "@earendil-works/pi-tui",
-] as const;
+  () => import("@oh-my-pi/pi-tui"),
+  () => import("@earendil-works/pi-tui"),
+];
 
 function normalizeRenderWidth(width: number): number {
   return Number.isFinite(width) ? Math.max(1, Math.trunc(width)) : 1;
@@ -152,26 +153,35 @@ const safeFallbackTextUtils: TuiTextUtils = {
   },
 };
 
-async function loadTuiTextUtils(): Promise<TuiTextUtils> {
+/**
+ * Use Pi's exact width engine when it is unambiguous. Otherwise preserve the
+ * custom selector with an ASCII-only fallback that cannot underestimate
+ * terminal width: non-ASCII/control content is converted to printable ASCII
+ * before truncation instead of guessing Unicode cell widths.
+ */
+function selectTuiTextUtils(moduleValues: unknown[]): TuiTextUtils {
   const loaded: TuiTextUtils[] = [];
-  for (const packageName of TUI_PACKAGE_CANDIDATES) {
+  for (const moduleValue of moduleValues) {
+    const textUtils = toTuiTextUtils(moduleValue);
+    // OMP maps both scopes to the same host module; count it once.
+    if (textUtils && !loaded.some((existing) => existing.visibleWidth === textUtils.visibleWidth)) {
+      loaded.push(textUtils);
+    }
+  }
+  return loaded.length === 1 ? loaded[0] : safeFallbackTextUtils;
+}
+
+async function loadTuiTextUtils(): Promise<TuiTextUtils> {
+  const moduleValues: unknown[] = [];
+  for (const load of TUI_PACKAGE_CANDIDATES) {
     try {
-      const moduleValue = await import(packageName);
-      const textUtils = toTuiTextUtils(moduleValue);
-      if (textUtils) {
-        loaded.push(textUtils);
-      }
+      moduleValues.push(await load());
     } catch {
       // The extension supports both Pi package scopes; normally only the
       // active runtime's TUI package is resolvable.
     }
   }
-
-  // Use Pi's exact width engine when it is unambiguous. Otherwise preserve the
-  // custom selector with an ASCII-only fallback that cannot underestimate
-  // terminal width: non-ASCII/control content is converted to printable ASCII
-  // before truncation instead of guessing Unicode cell widths.
-  return loaded.length === 1 ? loaded[0] : safeFallbackTextUtils;
+  return selectTuiTextUtils(moduleValues);
 }
 
 function fitLineToWidth(line: string, width: number, textUtils: TuiTextUtils): string {
@@ -450,4 +460,5 @@ export const modelSelectorInternals = {
   selectClassifierModelWithTextUtils,
   loadTuiTextUtils,
   safeFallbackTextUtils,
+  selectTuiTextUtils,
 };

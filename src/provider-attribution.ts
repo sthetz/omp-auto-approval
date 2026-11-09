@@ -45,9 +45,9 @@ export async function isProviderAttributionEnabled(
   }
 
   try {
-    // Keep this dynamic so the optional peer dependency remains optional.
-    const packageName = codingAgentPackage;
-    const mod = await import(packageName);
+    // Dynamic so the optional peer dependency remains optional; literal so
+    // host module mapping can see it.
+    const mod = await import("@earendil-works/pi-coding-agent");
     const settingsManagerClass = mod.SettingsManager as { create?: (cwd: string) => unknown } | undefined;
     if (typeof settingsManagerClass?.create !== "function") {
       return true;

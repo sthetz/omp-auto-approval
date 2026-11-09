@@ -15,15 +15,18 @@ interface LoadedClassifierClient {
   codingAgentPackage: string;
 }
 
+// Specifiers must stay string literals: OMP serves its bundled host packages
+// only for imports it can see statically. A computed `import(name)` bypasses
+// that and needs a separately installed copy.
+const CLASSIFIER_CLIENT_CANDIDATES = [
+  { codingAgentPackage: "@oh-my-pi/pi-coding-agent", load: () => import("@oh-my-pi/pi-ai") },
+  { codingAgentPackage: "@earendil-works/pi-coding-agent", load: () => import("@earendil-works/pi-ai") },
+];
+
 async function loadCompleteSimple(): Promise<LoadedClassifierClient> {
-  const candidates = [
-    { aiPackage: "@oh-my-pi/pi-ai", codingAgentPackage: "@oh-my-pi/pi-coding-agent" },
-    { aiPackage: "@earendil-works/pi-ai", codingAgentPackage: "@earendil-works/pi-coding-agent" },
-  ];
-  for (const candidate of candidates) {
+  for (const candidate of CLASSIFIER_CLIENT_CANDIDATES) {
     try {
-      const packageName = candidate.aiPackage;
-      const mod = await import(packageName);
+      const mod = await candidate.load();
       if (typeof mod.completeSimple === "function") {
         return {
           client: mod.completeSimple as ClassifierClient,

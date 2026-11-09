@@ -4,11 +4,11 @@
   "description": "AI classifier based automatic approval extension for OMP.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/HayabusaC/omp-auto-approval.git"
+    "url": "git+https://github.com/sthetz/omp-auto-approval.git"
   },
-  "homepage": "https://github.com/HayabusaC/omp-auto-approval#readme",
+  "homepage": "https://github.com/sthetz/omp-auto-approval#readme",
   "bugs": {
-    "url": "https://github.com/HayabusaC/omp-auto-approval/issues"
+    "url": "https://github.com/sthetz/omp-auto-approval/issues"
   },
   "type": "module",
   "main": "./index.ts",
@@ -21,6 +21,7 @@
     "tests",
     "config",
     "schemas",
+    "docs",
     "README.md",
     "README.zh-CN.md",
     "LICENSE"

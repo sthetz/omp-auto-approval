@@ -24,8 +24,33 @@ function stringifyMessageContent(content: unknown): string | null {
   return null;
 }
 
+function extractSkillPromptUserText(record: Record<string, unknown>): string | null {
+  if (record.type !== "custom_message" || record.customType !== "skill-prompt") {
+    return null;
+  }
+  const content = stringifyMessageContent(record.content);
+  if (!content) {
+    return null;
+  }
+
+  // Only the trailing user payload is authorization. The skill body and other
+  // custom messages (notably advisor reviews) must not be promoted to user text.
+  const marker = "\nUser:";
+  const markerIndex = content.startsWith("User:") ? 0 : content.lastIndexOf(marker);
+  if (markerIndex < 0) {
+    return null;
+  }
+  const userText = content.slice(markerIndex === 0 ? "User:".length : markerIndex + marker.length).trim();
+  return userText || null;
+}
+
 function extractRoleAndData(entry: unknown): { role: string; data: unknown } | null {
   const record = toRecord(entry);
+  const skillPromptUserText = extractSkillPromptUserText(record);
+  if (skillPromptUserText) {
+    return { role: "user", data: skillPromptUserText };
+  }
+
   const message = toRecord(record.message);
   const role = String(message.role ?? record.role ?? record.type ?? "");
 

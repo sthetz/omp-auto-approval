@@ -18,10 +18,10 @@ Install the latest version of this fork directly from GitHub:
 omp plugin install https://github.com/sthetz/omp-auto-approval
 ```
 
-Install the pinned `0.2.2` release:
+Install the pinned `0.3.0` release:
 
 ```bash
-omp plugin install github:sthetz/omp-auto-approval#v0.2.2
+omp plugin install github:sthetz/omp-auto-approval#v0.3.0
 ```
 
 The original `0.1.0` release remains available on npm as `omp-auto-approval`, but that package contains the original code rather than this restored fork. This fork is distributed through GitHub and is not published to npm.

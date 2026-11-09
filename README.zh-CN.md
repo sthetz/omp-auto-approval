@@ -14,10 +14,10 @@ omp-auto-approval 是 [pi-auto-approval](https://github.com/Europa2061/pi-auto-a
 omp plugin install https://github.com/sthetz/omp-auto-approval
 ```
 
-安装固定为 `0.2.2` 的版本：
+安装固定为 `0.3.0` 的版本：
 
 ```bash
-omp plugin install github:sthetz/omp-auto-approval#v0.2.2
+omp plugin install github:sthetz/omp-auto-approval#v0.3.0
 ```
 
 原始 `0.1.0` 版本仍以 `omp-auto-approval` 的名称发布在 npm 上，但该包包含原始代码，而不是此恢复分支。此分支通过 GitHub 分发，不发布到 npm。

@@ -6,9 +6,15 @@ omp-auto-approval is an OMP fork of [pi-auto-approval](https://github.com/Europa
 
 It uses an AI classifier to approve low-risk tool calls. Risky, denied, failed, or uncertain actions fall back to human approval or are blocked by the selected mode.
 
+> **Restoration and attribution notice**
+>
+> This repository is an independently maintained fork restored from the original [`omp-auto-approval@0.1.0` npm package](https://www.npmjs.com/package/omp-auto-approval/v/0.1.0). The original OMP extension was authored and published by **HayabusaC** ([`hayabusac` on npm](https://www.npmjs.com/~hayabusac)); its declared source repository is no longer publicly available. This is not an official repository of the original author. The original Apache-2.0 license is retained in [`LICENSE`](./LICENSE).
+
 ## Installation
 
-Install through OMP:
+The npm commands below install the original `0.1.0` release, **not the code from this restored repository**. This fork has not been published to npm.
+
+Install the original package through OMP:
 
 ```bash
 omp plugin install omp-auto-approval

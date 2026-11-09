@@ -79,7 +79,13 @@ export function normalizeConfig(raw: unknown): AutoReviewConfig {
   };
 }
 
-export function loadConfig(path = configPath()): { config: AutoReviewConfig; warning?: string; created: boolean } {
+/** Top-level keys that normalizeConfig would silently drop, e.g. typos. */
+export function unknownConfigKeys(raw: unknown): string[] {
+  const known = new Set([...Object.keys(DEFAULT_CONFIG), "$schema"]);
+  return Object.keys(toRecord(raw)).filter((key) => !known.has(key));
+}
+
+export function loadConfig(path = configPath()): { config: AutoReviewConfig; warning?: string; notice?: string; created: boolean } {
   let created = false;
   if (!existsSync(path)) {
     mkdirSync(dirname(path), { recursive: true });
@@ -89,7 +95,14 @@ export function loadConfig(path = configPath()): { config: AutoReviewConfig; war
 
   try {
     const parsed = JSON.parse(stripJsonComments(readFileSync(path, "utf-8")));
-    return { config: normalizeConfig(parsed), created };
+    const unknownKeys = unknownConfigKeys(parsed);
+    return {
+      config: normalizeConfig(parsed),
+      created,
+      ...(unknownKeys.length > 0
+        ? { notice: `omp-auto-approval config at '${path}' has unknown key(s) that are ignored: ${unknownKeys.join(", ")}.` }
+        : {}),
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {

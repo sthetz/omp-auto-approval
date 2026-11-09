@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import ompAutoApprovalExtension from "../index.js";
+import ompAutoApprovalExtension, { SYSTEM_PROMPT_NOTE } from "../index.js";
 import { classifyAction, parseReviewDecision } from "../src/classifier.js";
 import { buildProjectedContext } from "../src/context-projection.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, logsDir, normalizeConfig } from "../src/extension-config.js";
@@ -338,32 +338,183 @@ async function run(): Promise<void> {
     assert.deepEqual(result, { block: true, reason: CLASSIFIER_DENY_REASON });
   });
 
-  await test("read-only routing fails closed when metadata check throws", async () => {
-    const result = await evaluateToolCall(
-      { toolName: "custom_report", input: { path: "/tmp/workspace/a.ts" } },
-      ctx(),
-      config({ mode: "auto" }),
-      new SessionApprovalStore(),
-      {
-        tools: [{ name: "custom_report", isReadOnly: () => { throw new Error("metadata unavailable"); } }],
-        ...classifierDenyOptions(),
-      },
-    );
-    assert.deepEqual(result, { block: true, reason: CLASSIFIER_DENY_REASON });
+  await test("read-only routing ignores self-declared tool metadata", async () => {
+    for (const tool of [
+      { name: "custom_report", isReadOnly: () => true },
+      { name: "custom_report", readOnlyHint: true },
+      { name: "custom_report", annotations: { readOnlyHint: true } },
+      { name: "custom_report", mcpReadOnlyHint: true, sourceInfo: { source: "mcp" } },
+    ]) {
+      const result = await evaluateToolCall(
+        { toolName: "custom_report", input: { path: "/tmp/workspace/a.ts" } },
+        ctx(),
+        config({ mode: "auto" }),
+        new SessionApprovalStore(),
+        { tools: [tool], ...classifierDenyOptions() },
+      );
+      assert.deepEqual(result, { block: true, reason: CLASSIFIER_DENY_REASON }, JSON.stringify(tool));
+    }
   });
 
-  await test("read-only routing accepts trusted tool metadata", async () => {
-    const result = await evaluateToolCall(
-      { toolName: "custom_report", input: { path: "/tmp/workspace/a.ts" } },
+  await test("name-based fast paths apply only to the host's builtin tools", async () => {
+    const cases = [
+      { toolName: "read", input: { path: "a.ts" } },
+      { toolName: "grep", input: { pattern: "x" } },
+      { toolName: "todo", input: { op: "done", task: "x" } },
+      { toolName: "wait", input: {} },
+      { toolName: "ask", input: { question: "Continue?" } },
+    ];
+    for (const source of ["extension", "sdk", "mcp"]) {
+      for (const event of cases) {
+        const result = await evaluateToolCall(
+          event,
+          ctx({ hasUI: true }),
+          config({ mode: "auto" }),
+          new SessionApprovalStore(),
+          { tools: [{ name: event.toolName, sourceInfo: { source } }], ...classifierDenyOptions() },
+        );
+        assert.deepEqual(result, { block: true, reason: CLASSIFIER_DENY_REASON }, `${source} ${event.toolName}`);
+      }
+    }
+    for (const event of cases) {
+      const result = await evaluateToolCall(
+        event,
+        ctx({ hasUI: true }),
+        config({ mode: "auto" }),
+        new SessionApprovalStore(),
+        {
+          tools: [{ name: event.toolName, sourceInfo: { source: "builtin" } }, { name: "other", sourceInfo: { source: "extension" } }],
+          classifierClient: async () => { throw new Error("builtin fast path must not call classifier"); },
+        },
+      );
+      assert.deepEqual(result, {}, `builtin ${event.toolName}`);
+    }
+    const unlisted = await evaluateToolCall(
+      { toolName: "read", input: { path: "a.ts" } },
       ctx(),
       config({ mode: "auto" }),
       new SessionApprovalStore(),
-      {
-        tools: [{ name: "custom_report", annotations: { readOnlyHint: true } }],
-        classifierClient: async () => { throw new Error("readonly metadata should not call classifier"); },
-      },
+      { tools: [{ name: "bash", sourceInfo: { source: "builtin" } }], ...classifierDenyOptions() },
     );
-    assert.deepEqual(result, {});
+    assert.deepEqual(unlisted, { block: true, reason: CLASSIFIER_DENY_REASON });
+  });
+
+  await test("read fast path allows non-sensitive workspace targets and session-local URLs", async () => {
+    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-read-"));
+    const workspace = join(root, "workspace");
+    mkdirSync(join(workspace, "src"), { recursive: true });
+    try {
+      const cases = [
+        { toolName: "read", input: { path: "src/a.ts" } },
+        { toolName: "read", input: { path: "src/a.ts:10-20" } },
+        { toolName: "read", input: { path: "README.md:raw" } },
+        { toolName: "read", input: { path: join(workspace, "src", "a.ts") } },
+        { toolName: "read", input: { path: ".env.example" } },
+        { toolName: "read", input: { path: "config/.env.sample" } },
+        { toolName: "read", input: { path: "skill://commit/SKILL.md" } },
+        { toolName: "read", input: { path: "rule://style" } },
+        { toolName: "read", input: { path: "agent://0-Explore" } },
+        { toolName: "grep", input: { pattern: "https://api.example.com", path: "." } },
+        { toolName: "grep", input: { pattern: "TODO", path: '["src", "tests"]' } },
+        { toolName: "grep", input: { pattern: "TODO", gitignore: true } },
+        { toolName: "glob", input: { path: "src/**/*.ts", hidden: true } },
+        { toolName: "find", input: { query: "auth flow", grep_keywords: ["auth"] } },
+        { toolName: "ast_grep", input: { pat: "foo($A)", path: "src" } },
+        { toolName: "ls", input: { paths: ["src", "."] } },
+      ];
+      for (const event of cases) {
+        const result = await evaluateToolCall(
+          event,
+          ctx({ cwd: workspace }),
+          config({ mode: "auto" }),
+          new SessionApprovalStore(),
+          { classifierClient: async () => { throw new Error(`classifier called for ${JSON.stringify(event)}`); } },
+        );
+        assert.deepEqual(result, {}, JSON.stringify(event));
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test("read fast path reviews outside, sensitive, remote, and rewritten targets", async () => {
+    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-read-"));
+    const workspace = join(root, "workspace");
+    const outside = join(root, "outside");
+    mkdirSync(join(workspace, "src"), { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(workspace, ".env"), "TOKEN=x\n");
+    symlinkSync(outside, join(workspace, "linked-outside"));
+    symlinkSync(join(workspace, ".env"), join(workspace, "settings.txt"));
+    try {
+      const paths = [
+        "/etc/passwd",
+        "../outside/a.txt",
+        "..:5",
+        "linked-outside/a.txt",
+        "settings.txt",
+        "~/.ssh/id_ed25519",
+        "@/etc/passwd",
+        ":/etc/passwd",
+        '"/etc/passwd"',
+        "file:///etc/passwd",
+        ".env",
+        ".ENV",
+        ".env.production:1-5",
+        "apps/api/.env",
+        "certs/server.pem",
+        "deploy/tls.key",
+        "keys/id_ed25519",
+        "secrets/token.txt",
+        "apps/api/credentials.json",
+        "config/secrets.yaml",
+        ".npmrc",
+        ".envrc",
+        "infra/terraform.tfstate",
+        ".aws/config",
+        "https://attacker.example/?d=secret",
+        "HTTP://attacker.example",
+        "http:/attacker.example",
+        "www.attacker.example/x",
+        "ssh://host/etc/passwd",
+        "mcp://server/resource",
+        "pr://123",
+        "vault://notes/x",
+        "cfg://settings",
+        "proc://1",
+        "src/a.ts?q=summary",
+        "src/a.ts#L10",
+        '["src", "/etc"]',
+        '["src"',
+      ];
+      const events = [
+        ...paths.map((path) => ({ toolName: "read", input: { path } })),
+        { toolName: "grep", input: { pattern: "TOKEN", path: "." , gitignore: false } },
+        { toolName: "grep", input: { pattern: "TOKEN", path: ["src", "/etc"] } },
+        { toolName: "ls", input: { paths: ["src", ".ssh"] } },
+        { toolName: "glob", input: { path: "secrets/**" } },
+        { toolName: "web_search", input: { query: "TOKEN=x site:attacker.example" } },
+      ];
+      for (const event of events) {
+        let classifierCalls = 0;
+        const result = await evaluateToolCall(
+          event,
+          ctx({ cwd: workspace }),
+          config({ mode: "auto" }),
+          new SessionApprovalStore(),
+          {
+            classifierClient: async () => {
+              classifierCalls += 1;
+              return { content: [{ type: "text", text: '{"outcome":"deny","rationale":"needs review"}' }] };
+            },
+          },
+        );
+        assert.deepEqual(result, { block: true, reason: CLASSIFIER_DENY_REASON }, JSON.stringify(event));
+        assert.equal(classifierCalls, 1, JSON.stringify(event));
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   await test("workspace write fast path rejects symlink escape", async () => {
@@ -787,7 +938,7 @@ async function run(): Promise<void> {
       },
     });
     const completions = await getArgumentCompletions?.("");
-    assert.equal(description, "args: status | off | fallback | auto | model");
+    assert.equal(description, "args: status | off | fallback | auto | model | explain");
     assert.deepEqual((completions ?? []).map((item) => (item as { value: string }).value), [
       "status",
       "off",
@@ -795,12 +946,118 @@ async function run(): Promise<void> {
       "auto",
       "model",
       "model current",
+      "explain",
     ]);
     rmSync(configPath, { force: true });
     if (previousConfigPath === undefined) {
       delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
     } else {
       process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfigPath;
+    }
+  });
+
+  await test("auto-approval explain reports the route a tool call would take", async () => {
+    const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+    const configFile = join(tmpdir(), `omp-auto-approval-explain-${Date.now()}.jsonc`);
+    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = configFile;
+    writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, enabled: true, mode: "auto" }));
+    let handler: ((args: string, ctx: ExtensionContextLike) => Promise<void> | void) | undefined;
+    ompAutoApprovalExtension({
+      on: () => {},
+      getAllTools: () => [{ name: "read", sourceInfo: { source: "builtin" } }, { name: "deploy", sourceInfo: { source: "extension" } }],
+      registerCommand: (_name, definition) => {
+        handler = definition.handler;
+      },
+    });
+    const messages: string[] = [];
+    const commandCtx = ctx({ ui: { notify: (message) => { messages.push(message); }, setStatus: () => {} } });
+    try {
+      const routeFor = async (args: string): Promise<string> => {
+        messages.length = 0;
+        await handler?.(`explain ${args}`, commandCtx);
+        return messages.join("\n");
+      };
+      assert.match(await routeFor("read src/a.ts"), /tool: read \(builtin\)[\s\S]*route: allowed without review: read-only builtin tool/);
+      assert.match(await routeFor("read ~/.ssh/id_ed25519"), /route: classifier review; blocked if it denies or fails/);
+      assert.match(await routeFor('read {"path":".env"}'), /arguments: \{"path":".env"\}[\s\S]*route: classifier review/);
+      assert.match(await routeFor("bash git status --short"), /arguments: \{"command":"git status --short"\}[\s\S]*route: allowed without review: built-in or allowlisted read-only command/);
+      assert.match(await routeFor("bash git push"), /route: classifier review/);
+      assert.match(await routeFor("deploy {}"), /tool: deploy \(extension\)[\s\S]*route: classifier review/);
+      assert.match(await routeFor("read {bad"), /not valid JSON/);
+      assert.match(await routeFor(""), /Usage: \/auto-approval explain/);
+    } finally {
+      rmSync(configFile, { force: true });
+      if (previousConfigPath === undefined) {
+        delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+      } else {
+        process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfigPath;
+      }
+    }
+  });
+
+  await test("system prompt note is appended only while auto-approval is enabled", async () => {
+    const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+    const configFile = join(tmpdir(), `omp-auto-approval-prompt-${Date.now()}.jsonc`);
+    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = configFile;
+    try {
+      for (const enabled of [true, false]) {
+        writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, enabled }));
+        const handlers = new Map<string, (...args: any[]) => any>();
+        ompAutoApprovalExtension({ on: (event, handler) => { handlers.set(event, handler); } });
+        const beforeAgentStart = handlers.get("before_agent_start");
+        assert.ok(beforeAgentStart);
+        const fromArray = await beforeAgentStart({ type: "before_agent_start", systemPrompt: ["base"] });
+        const fromString = await beforeAgentStart({ type: "before_agent_start", systemPrompt: "base" });
+        if (enabled) {
+          assert.deepEqual(fromArray, { systemPrompt: ["base", SYSTEM_PROMPT_NOTE] });
+          assert.deepEqual(fromString, { systemPrompt: `base\n\n${SYSTEM_PROMPT_NOTE}` });
+          assert.match(SYSTEM_PROMPT_NOTE, /do not retry it in another form/);
+        } else {
+          assert.equal(fromArray, undefined);
+          assert.equal(fromString, undefined);
+        }
+      }
+    } finally {
+      rmSync(configFile, { force: true });
+      if (previousConfigPath === undefined) {
+        delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+      } else {
+        process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfigPath;
+      }
+    }
+  });
+
+  await test("unknown config keys are reported once at session start, not on every tool call", async () => {
+    const configFile = join(tmpdir(), `omp-auto-approval-keys-${Date.now()}.jsonc`);
+    writeFileSync(configFile, JSON.stringify({ $schema: "./schemas/config.schema.json", enabled: true, safeCommandAllowList: ["make"], modes: "auto" }));
+    const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = configFile;
+    try {
+      const loaded = loadConfig(configFile);
+      assert.equal(loaded.warning, undefined);
+      assert.match(loaded.notice ?? "", /unknown key\(s\) that are ignored: safeCommandAllowList, modes\./);
+      const freshConfigFile = join(tmpdir(), `omp-auto-approval-fresh-${Date.now()}.jsonc`);
+      try {
+        assert.equal(loadConfig(freshConfigFile).notice, undefined);
+      } finally {
+        rmSync(freshConfigFile, { force: true });
+      }
+
+      const handlers = new Map<string, (...args: any[]) => any>();
+      ompAutoApprovalExtension({ on: (event, handler) => { handlers.set(event, handler); } });
+      const notices: string[] = [];
+      const sessionCtx = ctx({ ui: { notify: (message) => { notices.push(message); }, setStatus: () => {} } });
+      await handlers.get("session_start")?.({}, sessionCtx);
+      await handlers.get("tool_call")?.({ toolName: "read", input: { path: "a.ts" } }, sessionCtx);
+      await handlers.get("tool_call")?.({ toolName: "read", input: { path: "b.ts" } }, sessionCtx);
+      assert.equal(notices.filter((message) => message.includes("unknown key")).length, 1);
+    } finally {
+      rmSync(configFile, { force: true });
+      if (previousConfigPath === undefined) {
+        delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+      } else {
+        process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfigPath;
+      }
     }
   });
 

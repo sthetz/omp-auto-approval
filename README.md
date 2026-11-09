@@ -52,6 +52,7 @@ This fork registers the same `/auto-approval` command as the original Pi package
 | `/auto-approval auto` | Enable AI review only. Classifier denial or failure blocks the tool call. |
 | `/auto-approval model` | Open the model selector for the approval classifier model. |
 | `/auto-approval model current` | Use the active OMP session model for approval classification. |
+| `/auto-approval explain <tool> [args]` | Show how a tool call would be routed, without running it. `args` is a path, a JSON object, or (for `bash`) a command, e.g. `/auto-approval explain read ~/.ssh/id_ed25519`. |
 
 ## Screenshot
 
@@ -64,7 +65,8 @@ This fork registers the same `/auto-approval` command as the original Pi package
 omp-auto-approval sits between OMP tool calls and the normal approval path:
 
 - command layer registers `/auto-approval` and persists local config;
-- routing layer fast-paths disabled, read-only, workspace-safe, and session-approved actions;
+- prompt layer adds a short note to the system prompt while auto-approval is on, asking the agent to report a blocked call instead of retrying it in another form;
+- routing layer fast-paths disabled, workspace read-only, workspace-safe, and session-approved actions;
 - classifier layer projects recent session context and asks the selected model for a structured allow or deny decision;
 - fallback layer asks the user when classifier review cannot safely approve;
 - audit layer writes JSONL records when auditing is enabled.
@@ -87,7 +89,7 @@ sequenceDiagram
 
     alt state is off
         Ext-->>OMP: No decision, use normal OMP behavior
-    else read-only tool, workspace-internal write, or safe read-only bash command
+    else workspace read, workspace-internal write, or safe read-only bash command
         Ext-->>OMP: Allow
         OMP->>Tool: Execute tool call
     else exact action already approved in this session
@@ -130,7 +132,7 @@ sequenceDiagram
 
 `off` means the extension does not make automatic approval decisions.
 
-`fallback` means local fast paths handle actions that are already known to be low risk, such as trusted read-only tools, workspace-internal writes, explicitly allowlisted safe commands, or exact actions already approved in the session. Other tool calls go to the classifier first. If it allows, the tool runs. If it denies, fails, times out, or the tool is manual-only, OMP asks the human through the approval UI when UI is available.
+`fallback` means local fast paths handle actions that are already known to be low risk, such as non-sensitive workspace reads, workspace-internal writes, explicitly allowlisted safe commands, or exact actions already approved in the session. Other tool calls go to the classifier first. If it allows, the tool runs. If it denies, fails, times out, or the tool is manual-only, OMP asks the human through the approval UI when UI is available.
 
 `auto` means non-fast-path tool calls use the classifier as the approval gate. Local fast paths can still allow actions that are statically known to be low risk or already approved in the current session. For reviewed actions, a classifier allow runs the tool; a classifier deny, failure, timeout, manual-only tool, or repeated denial blocks the tool call.
 
@@ -144,15 +146,24 @@ sequenceDiagram
 
 Fast paths approve without classifier review, so they are deliberately narrow:
 
-- **Read-only tools**: tools with trusted read-only metadata and the built-in read-only tool names (`read`, `grep`, `find`, `ls`, …).
+- **Workspace reads**: the host's own read-only tools (`read`, `grep`, `find`, `glob`, `ast_grep`, `ls`, …) when every path they name is inside the working directory (after resolving symlinks) and is not credential-like. These always go to classifier review:
+  - paths outside the working directory, including `~/…`;
+  - URLs (`http(s)://`, `www.`) and remote or sensitive internal URLs (`ssh://`, `mcp://`, `pr://`, `issue://`, `mr://`, `vault://`, `cfg://`, `proc://`, …). Only session-local URLs (`skill://`, `rule://`, `agent://`, `artifact://`, `memory://`, `local://`, `omp://`) skip review;
+  - credential-like files and directories anywhere in the tree: `.env` and `.env.*` (except `.example`, `.sample`, `.template`, `.dist`, `.defaults`), `.envrc`, `.npmrc`, `.pypirc`, `.netrc`, `.pgpass`, `.git-credentials`, `.htpasswd`, `kubeconfig`, `id_rsa`/`id_ed25519`-style keys, `credentials.*`, `secret(s).*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.kdbx`, `*.tfstate`, `*.tfvars`, and anything under `.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, `.password-store`, `secrets`, `.secrets` or `credentials`;
+  - path forms that OMP rewrites before use (a leading `@`, `:`, `"` or `~`, `file://`, `?query`, `#fragment`);
+  - searches with `gitignore: false`. OMP's `grep` searches hidden files but honours `.gitignore`, which normally keeps `.env` out of a workspace-wide search. A secret file that is *not* gitignored can still appear in grep results.
+
+  `web_search` is always classifier-reviewed, because its query is sent to a third party and could carry data out of the session.
+
+  Tools are matched by name only when the host reports them as its own (`sourceInfo.source` is `builtin`). An extension, SDK or MCP tool that reuses a read-only name is reviewed. Self-declared metadata (`isReadOnly`, `readOnlyHint`, MCP `annotations.readOnlyHint`) is ignored, as the MCP specification says these hints are untrusted.
 - **Workspace writes**: `write` and `edit` calls whose every destination, including `edit` renames, is a plain path inside the working directory. Paths that OMP rewrites before use (`[path]`, `~/…`, `scheme://…`) and protected entries (`.git`, `.omp`, `.pi`, `.envrc`, `.vscode`, at any depth, after resolving symlinks) always go to classifier review, because their contents are executed or trusted without further review. For example, `core.fsmonitor` in `.git/config` runs on `git status`.
 - **Safe bash commands**: `pwd`, `git status`, `git log`, `git diff`, `git show`, `git rev-parse`, and listing-only `git branch`, plus `safeCommandAllowlist` entries. A command containing a newline, `&`, `|`, `;`, `<`, `>`, `` ` ``, or `$` is never fast-pathed. Neither is a git command using `--output` or `--ext-diff`.
 
 ## Tool Review Exemptions
 
-`todo` and `wait` only perform local orchestration, so they always bypass classifier review. Their decisions are still written to the audit log with route `local_state`.
+`todo` and `wait` only perform local orchestration, so the host's builtin `todo` and `wait` always bypass classifier review. Their decisions are still written to the audit log with route `local_state`.
 
-`ask` is UI-only. In interactive sessions, forms without URLs bypass classifier review with audit route `ui_only`; OMP still renders the form and waits for submit or cancel. Rendering fetches HTTP(S) image sources, so any form whose payload contains `http:`, `https:`, or `//` anywhere, after HTML entity decoding, remains classifier-reviewed. Noninteractive `ask` calls are also classifier-reviewed.
+`ask` is UI-only. In interactive sessions, forms from the host's builtin `ask` that contain no URLs bypass classifier review with audit route `ui_only`; OMP still renders the form and waits for submit or cancel. Rendering fetches HTTP(S) image sources, so any form whose payload contains `http:`, `https:`, or `//` anywhere, after HTML entity decoding, remains classifier-reviewed. Noninteractive `ask` calls are also classifier-reviewed.
 
 `eval` and `task` remain classifier-reviewed: `eval` executes arbitrary code, and `task` can delegate work to fully capable subagents.
 

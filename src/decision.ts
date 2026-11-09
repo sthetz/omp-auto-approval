@@ -8,10 +8,12 @@ import {
   findToolDefinition,
   getToolInput,
   getToolName,
+  isBuiltinTool,
   isLocalStateTool,
   isInteractiveUiOnlyTool,
   isManualOnlyTool,
   isReadOnlyTool,
+  isWorkspaceReadFastPath,
   isWorkspaceWriteFastPath,
 } from "./tool-routing.js";
 import { getString, toRecord } from "./common.js";
@@ -89,6 +91,57 @@ async function handleHumanFallback(
   return deny(reason);
 }
 
+export type FastPathRoute =
+  | "local_state"
+  | "ui_only"
+  | "tool_allowlist"
+  | "readonly"
+  | "workspace_write"
+  | "safe_command"
+  | "manual_only";
+
+/**
+ * The route a tool call takes before any classifier or session state is
+ * consulted: a fast path that allows it, "manual_only", or null for review.
+ * Name-based fast paths apply only to the host's own builtin tools.
+ */
+export function selectFastPath(
+  toolName: string,
+  input: unknown,
+  options: { cwd: string; config: AutoReviewConfig; tools: unknown[]; hasUI: boolean },
+): FastPathRoute | null {
+  const { cwd, config, tools, hasUI } = options;
+  const toolDefinition = findToolDefinition(toolName, tools);
+  const builtin = isBuiltinTool(toolDefinition, tools.length > 0);
+  const normalizedToolName = toolName.trim().toLowerCase();
+
+  if (builtin && isLocalStateTool(toolName)) {
+    return "local_state";
+  }
+  if (builtin && isInteractiveUiOnlyTool(toolName, input, hasUI)) {
+    return "ui_only";
+  }
+  if (config.reviewExemptTools.some((name) => name.trim().toLowerCase() === normalizedToolName)) {
+    return "tool_allowlist";
+  }
+  if (builtin && isReadOnlyTool(toolName) && isWorkspaceReadFastPath(input, cwd)) {
+    return "readonly";
+  }
+  if ((toolName === "write" || toolName === "edit") && isWorkspaceWriteFastPath(input, cwd)) {
+    return "workspace_write";
+  }
+  if (isManualOnlyTool(toolName, toolDefinition)) {
+    return "manual_only";
+  }
+  if (toolName === "bash") {
+    const command = getString(toRecord(input).command);
+    if (command && isSafeReadOnlyCommand(command, config)) {
+      return "safe_command";
+    }
+  }
+  return null;
+}
+
 export async function evaluateToolCall(
   event: ToolCallEventLike,
   ctx: ExtensionContextLike,
@@ -111,57 +164,14 @@ export async function evaluateToolCall(
   const cwd = ctx.cwd || process.cwd();
   const input = getToolInput(event);
   const subject = createReviewSubject(toolName, input, cwd);
-  const toolDefinition = findToolDefinition(toolName, options.tools ?? []);
+  const route = selectFastPath(toolName, input, {
+    cwd,
+    config,
+    tools: options.tools ?? [],
+    hasUI: ctx.hasUI === true,
+  });
 
-  const localState = isLocalStateTool(toolName);
-  const uiOnly = isInteractiveUiOnlyTool(toolName, input, ctx.hasUI === true);
-  const normalizedToolName = toolName.trim().toLowerCase();
-  const explicitlyExempt = config.reviewExemptTools.some(
-    (name) => name.trim().toLowerCase() === normalizedToolName,
-  );
-  if (localState || uiOnly || explicitlyExempt) {
-    await writeAudit(config, {
-      event: "decision",
-      route: localState ? "local_state" : uiOnly ? "ui_only" : "tool_allowlist",
-      mode: config.mode,
-      toolName,
-      actionSummary: subject.actionSummary,
-      actionHash: subject.actionHash,
-      outcome: "allow",
-      durationMs: Date.now() - started,
-    });
-    return {};
-  }
-
-  if (isReadOnlyTool(toolName, toolDefinition)) {
-    await writeAudit(config, {
-      event: "decision",
-      route: "readonly",
-      mode: config.mode,
-      toolName,
-      actionSummary: subject.actionSummary,
-      actionHash: subject.actionHash,
-      outcome: "allow",
-      durationMs: Date.now() - started,
-    });
-    return {};
-  }
-
-  if ((toolName === "write" || toolName === "edit") && isWorkspaceWriteFastPath(input, cwd)) {
-    await writeAudit(config, {
-      event: "decision",
-      route: "workspace_write",
-      mode: config.mode,
-      toolName,
-      actionSummary: subject.actionSummary,
-      actionHash: subject.actionHash,
-      outcome: "allow",
-      durationMs: Date.now() - started,
-    });
-    return {};
-  }
-
-  if (isManualOnlyTool(toolName, toolDefinition)) {
+  if (route === "manual_only") {
     if (config.mode === "fallback" && ctx.hasUI) {
       return handleHumanFallback(ctx, config, store, subject, {
         started,
@@ -183,22 +193,21 @@ export async function evaluateToolCall(
     return deny("This tool requires explicit user approval and cannot be auto-approved.");
   }
 
-  if (toolName === "bash") {
-    const command = getString(toRecord(input).command);
-    if (command && isSafeReadOnlyCommand(command, config)) {
+  if (route) {
+    if (route === "safe_command") {
       store.recordNonDenial();
-      await writeAudit(config, {
-        event: "decision",
-        route: "safe_command",
-        mode: config.mode,
-        toolName,
-        actionSummary: subject.actionSummary,
-        actionHash: subject.actionHash,
-        outcome: "allow",
-        durationMs: Date.now() - started,
-      });
-      return {};
     }
+    await writeAudit(config, {
+      event: "decision",
+      route,
+      mode: config.mode,
+      toolName,
+      actionSummary: subject.actionSummary,
+      actionHash: subject.actionHash,
+      outcome: "allow",
+      durationMs: Date.now() - started,
+    });
+    return {};
   }
 
   if (store.isExactApproved(subject.actionHash)) {

@@ -48,6 +48,7 @@ omp plugin uninstall omp-auto-approval
 | `/auto-approval auto` | 只使用 AI 审批。分类器拒绝或失败时直接阻止工具调用。 |
 | `/auto-approval model` | 打开审批分类器模型选择器。 |
 | `/auto-approval model current` | 使用当前 OMP 会话模型作为审批分类器模型。 |
+| `/auto-approval explain <tool> [args]` | 显示某个工具调用会走哪条审批路由，但不执行它。`args` 可以是路径、JSON 对象，或（对 `bash`）命令，例如 `/auto-approval explain read ~/.ssh/id_ed25519`。 |
 
 ## 截图
 
@@ -60,7 +61,8 @@ omp plugin uninstall omp-auto-approval
 omp-auto-approval 位于 OMP 工具调用和默认审批路径之间：
 
 - 命令层注册 `/auto-approval` 并持久化本地配置；
-- 路由层快速处理关闭、只读、工作区安全、会话已批准等动作；
+- 提示词层在自动审批开启时向系统提示词追加一段简短说明，要求代理在调用被阻止时如实报告，而不是换一种方式重试；
+- 路由层快速处理关闭、工作区只读、工作区安全、会话已批准等动作；
 - 分类器层投影最近会话上下文，并让选定模型返回结构化允许或拒绝决策；
 - 兜底层在分类器无法安全放行时请求人工审批；
 - 审计层在启用审计时写入 JSONL 记录。
@@ -83,7 +85,7 @@ sequenceDiagram
 
     alt 状态为 off
         Ext-->>OMP: 不做决策，使用 OMP 默认行为
-    else 只读工具、工作区内部写入或安全只读 bash 命令
+    else 工作区读取、工作区内部写入或安全只读 bash 命令
         Ext-->>OMP: 放行
         OMP->>Tool: 执行工具调用
     else 当前会话已精确批准同一动作
@@ -126,7 +128,7 @@ sequenceDiagram
 
 `off` 表示扩展不做自动审批决策。
 
-`fallback` 表示本地 fast path 会先处理已知低风险动作，例如可信只读工具、工作区内写入、显式 allowlist 的安全命令，或当前会话中已批准过的精确动作。其他工具调用会先交给分类器审批。如果分类器允许，工具会执行。如果分类器拒绝、失败、超时，或工具必须人工审批，并且 UI 可用，OMP 会通过审批 UI 询问人工确认。
+`fallback` 表示本地 fast path 会先处理已知低风险动作，例如非敏感的工作区读取、工作区内写入、显式 allowlist 的安全命令，或当前会话中已批准过的精确动作。其他工具调用会先交给分类器审批。如果分类器允许，工具会执行。如果分类器拒绝、失败、超时，或工具必须人工审批，并且 UI 可用，OMP 会通过审批 UI 询问人工确认。
 
 `auto` 表示非 fast-path 工具调用由分类器作为审批关口。本地 fast path 仍然可以允许静态可证明低风险或当前会话已批准的动作。对于进入审批的动作，分类器允许时工具执行；分类器拒绝、失败、超时、工具必须人工审批，或连续拒绝过多时，工具调用会被阻止。
 
@@ -140,15 +142,24 @@ sequenceDiagram
 
 Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 
-- **只读工具**：带可信只读元数据的工具，以及内置只读工具名（`read`、`grep`、`find`、`ls` 等）。
+- **工作区读取**：宿主自带的只读工具（`read`、`grep`、`find`、`glob`、`ast_grep`、`ls` 等），且其指定的每个路径（解析符号链接后）都位于工作目录内、并且不像凭据文件。以下情况始终进入分类器审批：
+  - 工作目录之外的路径，包括 `~/…`；
+  - URL（`http(s)://`、`www.`）以及远程或敏感的内部 URL（`ssh://`、`mcp://`、`pr://`、`issue://`、`mr://`、`vault://`、`cfg://`、`proc://` 等）。只有会话本地 URL（`skill://`、`rule://`、`agent://`、`artifact://`、`memory://`、`local://`、`omp://`）可以跳过审批；
+  - 目录树中任意位置的凭据类文件和目录：`.env` 和 `.env.*`（`.example`、`.sample`、`.template`、`.dist`、`.defaults` 除外）、`.envrc`、`.npmrc`、`.pypirc`、`.netrc`、`.pgpass`、`.git-credentials`、`.htpasswd`、`kubeconfig`、`id_rsa`/`id_ed25519` 类私钥、`credentials.*`、`secret(s).*`、`*.pem`、`*.key`、`*.p12`、`*.pfx`、`*.jks`、`*.keystore`、`*.kdbx`、`*.tfstate`、`*.tfvars`，以及 `.ssh`、`.gnupg`、`.aws`、`.azure`、`.kube`、`.docker`、`.password-store`、`secrets`、`.secrets`、`credentials` 目录下的任何内容；
+  - OMP 会在使用前改写的路径形式（开头的 `@`、`:`、`"` 或 `~`，`file://`，`?query`，`#fragment`）；
+  - 设置了 `gitignore: false` 的搜索。OMP 的 `grep` 会搜索隐藏文件，但遵守 `.gitignore`，因此通常不会在全工作区搜索中读到 `.env`。*未*被 gitignore 的密钥文件仍可能出现在 grep 结果中。
+
+  `web_search` 始终需要分类器审批，因为它的查询会发送给第三方，可能把数据带出会话。
+
+  只有宿主报告为自身工具（`sourceInfo.source` 为 `builtin`）时才按工具名匹配。扩展、SDK 或 MCP 工具即使复用了只读工具名也需要审批。工具自行声明的元数据（`isReadOnly`、`readOnlyHint`、MCP `annotations.readOnlyHint`）会被忽略，因为 MCP 规范说明这些提示不可信。
 - **工作区写入**：`write` 和 `edit` 调用的所有目标路径（包括 `edit` 的重命名目标）都必须是工作目录内的普通路径。OMP 会在使用前改写的路径（`[path]`、`~/…`、`scheme://…`）以及受保护条目（任意层级、解析符号链接后的 `.git`、`.omp`、`.pi`、`.envrc`、`.vscode`）始终进入分类器审批，因为它们的内容会被直接执行或信任。例如 `.git/config` 中的 `core.fsmonitor` 会在 `git status` 时运行。
 - **安全 bash 命令**：`pwd`、`git status`、`git log`、`git diff`、`git show`、`git rev-parse`、仅列出分支的 `git branch`，以及 `safeCommandAllowlist` 中的条目。包含换行、`&`、`|`、`;`、`<`、`>`、`` ` `` 或 `$` 的命令，以及使用 `--output` 或 `--ext-diff` 的 git 命令，永远不会走 fast path。
 
 ## 工具审批豁免
 
-`todo` 和 `wait` 只执行本地编排，因此始终绕过分类器审批。其决策仍会写入审计日志，路由为 `local_state`。
+`todo` 和 `wait` 只执行本地编排，因此宿主自带的 `todo` 和 `wait` 始终绕过分类器审批。其决策仍会写入审计日志，路由为 `local_state`。
 
-`ask` 仅用于 UI。在交互会话中，不含 URL 的表单绕过分类器审批，审计路由为 `ui_only`；OMP 仍会渲染表单并等待提交或取消。渲染时会请求 HTTP(S) 图片地址，因此只要表单内容在 HTML 实体解码后任意位置包含 `http:`、`https:` 或 `//`，就仍需分类器审批。非交互式 `ask` 调用也需分类器审批。
+`ask` 仅用于 UI。在交互会话中，宿主自带 `ask` 中不含 URL 的表单绕过分类器审批，审计路由为 `ui_only`；OMP 仍会渲染表单并等待提交或取消。渲染时会请求 HTTP(S) 图片地址，因此只要表单内容在 HTML 实体解码后任意位置包含 `http:`、`https:` 或 `//`，就仍需分类器审批。非交互式 `ask` 调用也需分类器审批。
 
 `eval` 和 `task` 仍需分类器审批：`eval` 可执行任意代码，`task` 可将工作委派给具备完整能力的子代理。
 

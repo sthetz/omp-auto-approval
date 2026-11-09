@@ -4,6 +4,10 @@ import type { ReviewSubject, ToolCallEventLike } from "./types.js";
 
 const LOCAL_STATE_TOOLS: Record<string, true> = { todo: true, wait: true };
 
+// Host tools that only read. They skip review only when every target they
+// name passes isWorkspaceReadFastPath. `web_search` is deliberately absent:
+// its query is model-chosen text sent to a third party, so it can carry data
+// out of the session.
 const READ_ONLY_TOOLS = new Set([
   "read",
   "grep",
@@ -11,7 +15,7 @@ const READ_ONLY_TOOLS = new Set([
   "ls",
   "glob",
   "search",
-  "web_search",
+  "ast_grep",
   "mcp_status",
   "mcp_list",
   "mcp_search",
@@ -19,6 +23,48 @@ const READ_ONLY_TOOLS = new Set([
 ]);
 
 const PATH_KEYS = ["path", "file_path", "filepath", "target", "targetPath"];
+const READ_TARGET_KEYS = [...PATH_KEYS, "paths"];
+
+// OMP internal URL schemes backed by local, read-only session data. Others
+// reach remote hosts (ssh, mcp, pr, issue, mr), devices or processes (proc,
+// out, xd), or user secrets and settings (vault, cfg), and stay reviewed.
+const LOCAL_READ_SCHEMES = new Set(["skill", "rule", "agent", "artifact", "memory", "local", "omp"]);
+
+// Directories and file names that commonly hold credentials. Reads that touch
+// them always go to review, wherever they sit in the tree.
+const SENSITIVE_DIRECTORIES = new Set([
+  ".ssh",
+  ".gnupg",
+  ".aws",
+  ".azure",
+  ".kube",
+  ".docker",
+  ".password-store",
+  "secrets",
+  ".secrets",
+  "credentials",
+]);
+const SENSITIVE_FILE_NAMES = new Set([
+  ".envrc",
+  ".npmrc",
+  ".pypirc",
+  ".netrc",
+  "_netrc",
+  ".pgpass",
+  ".git-credentials",
+  ".htpasswd",
+  ".dockercfg",
+  ".vault-token",
+  "kubeconfig",
+]);
+const SENSITIVE_FILE_PATTERNS = [
+  /^\.env(\..+)?$/,
+  /^id_(rsa|dsa|ecdsa|ed25519)(_sk)?$/,
+  /^(credentials|secrets?)(\.[^.]+)?$/,
+  /\.(pem|key|p12|pfx|jks|keystore|kdbx|tfstate|tfvars)$/,
+  /\.tfstate\.backup$/,
+];
+const NON_SECRET_ENV_SUFFIXES = new Set(["example", "sample", "template", "dist", "defaults"]);
 
 // Keys that can name a write destination anywhere in a write/edit payload,
 // e.g. OMP's patch-mode edit `{ path, edits: [{ rename }] }`.
@@ -77,26 +123,111 @@ export function isInteractiveUiOnlyTool(toolName: string, input: unknown, hasUI:
   return hasUI && toolName.trim().toLowerCase() === "ask" && !mayLoadRemoteContent(input);
 }
 
-export function isReadOnlyTool(toolName: string, toolDefinition?: unknown): boolean {
-  const definition = toRecord(toolDefinition);
-  if (typeof definition.isReadOnly === "function") {
-    try {
-      if (definition.isReadOnly({})) {
-        return true;
-      }
-    } catch {
-      return false;
-    }
+/**
+ * Whether a tool name can be trusted to mean the host's own tool. OMP and Pi
+ * report `sourceInfo.source` ("builtin", "mcp", "sdk", "extension") from
+ * getAllTools(); only "builtin" qualifies. Hosts that expose no tool list, or
+ * tool entries without source info, fall back to trusting the name.
+ */
+export function isBuiltinTool(toolDefinition: unknown, toolListAvailable: boolean): boolean {
+  if (toolDefinition === undefined) {
+    return !toolListAvailable;
   }
-  if (definition.isReadOnly === true || definition.readOnlyHint === true) {
-    return true;
-  }
-  if (toRecord(definition.annotations).readOnlyHint === true) {
-    return true;
-  }
+  const source = toRecord(toRecord(toolDefinition).sourceInfo).source;
+  return typeof source !== "string" || source === "builtin";
+}
 
-  const normalized = toolName.trim().toLowerCase();
-  return READ_ONLY_TOOLS.has(normalized);
+/**
+ * Read-only tools are recognised by name only. Self-declared metadata
+ * (`isReadOnly`, `readOnlyHint`, MCP `annotations.readOnlyHint`) comes from
+ * the tool's author, and the MCP spec marks those hints as untrusted.
+ */
+export function isReadOnlyTool(toolName: string): boolean {
+  return READ_ONLY_TOOLS.has(toolName.trim().toLowerCase());
+}
+
+export function isSensitivePath(relativePath: string): boolean {
+  const segments = relativePath.split(/[\\/]/).filter(Boolean).map((segment) => segment.toLowerCase());
+  const fileName = segments.at(-1) ?? "";
+  if (segments.slice(0, -1).some((segment) => SENSITIVE_DIRECTORIES.has(segment)) || SENSITIVE_DIRECTORIES.has(fileName)) {
+    return true;
+  }
+  if (SENSITIVE_FILE_NAMES.has(fileName)) {
+    return true;
+  }
+  if (fileName.startsWith(".env.") && NON_SECRET_ENV_SUFFIXES.has(fileName.slice(".env.".length))) {
+    return false;
+  }
+  return SENSITIVE_FILE_PATTERNS.some((pattern) => pattern.test(fileName));
+}
+
+function parseJsonStringArray(value: string): string[] | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string") ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A read target that may skip review: a session-local internal URL, or a local
+ * path inside the workspace that is not credential-like. OMP reads URLs
+ * (`http(s)://`, `www.`), internal schemes (`ssh://`, `mcp://`, ...), strips
+ * `@` and `:` prefixes, expands `~`, unquotes `"…"`, and accepts JSON-array
+ * strings as several scopes. Every form other than a plain path or a JSON
+ * array of plain paths is left to review instead of being re-implemented here.
+ */
+function isWorkspaceReadTarget(value: unknown, cwd: string, depth = 0): boolean {
+  if (Array.isArray(value)) {
+    return depth === 0 && value.length > 0 && value.every((item) => isWorkspaceReadTarget(item, cwd, depth + 1));
+  }
+  if (typeof value !== "string") {
+    return false;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (trimmed.startsWith("[")) {
+    const entries = depth === 0 ? parseJsonStringArray(trimmed) : null;
+    return entries !== null && isWorkspaceReadTarget(entries, cwd, depth);
+  }
+  const scheme = trimmed.match(/^([a-z][a-z0-9+.-]*):\/\//i)?.[1]?.toLowerCase();
+  if (scheme) {
+    return LOCAL_READ_SCHEMES.has(scheme);
+  }
+  if (/^[@:"'~]/.test(trimmed) || /^www\./i.test(trimmed) || /[?#]/.test(trimmed) || trimmed.includes("://")) {
+    return false;
+  }
+  // A colon before the first path separator may name a scheme (`https:/x`,
+  // `ssh:host`) rather than a file; Windows drive letters are the exception.
+  const beforeSeparator = trimmed.split(/[\\/]/, 1)[0];
+  if (beforeSeparator.includes(":") && !/^[a-z]:$/i.test(beforeSeparator) && !/\.[^:]*:/.test(beforeSeparator)) {
+    return false;
+  }
+  // `path:selector` reads lines from `path`; check both spellings.
+  const withoutSelector = trimmed.replace(/:[^:\\/]*$/, "");
+  return [trimmed, withoutSelector].every((candidate) => {
+    const relative = relativePathWithin(candidate, cwd);
+    return relative !== null && !isSensitivePath(relative);
+  });
+}
+
+/**
+ * Read fast path: every target named in the payload must pass
+ * isWorkspaceReadTarget. A call naming no target reads the workspace itself.
+ * OMP's grep and glob include hidden files but honour .gitignore, which keeps
+ * the usual ignored `.env` out of a workspace-wide search; a search that turns
+ * that off is reviewed.
+ */
+export function isWorkspaceReadFastPath(input: unknown, cwd: string): boolean {
+  const record = toRecord(input);
+  if (record.gitignore === false) {
+    return false;
+  }
+  const targets = READ_TARGET_KEYS.filter((key) => record[key] !== undefined && record[key] !== null).map((key) => record[key]);
+  return targets.every((target) => isWorkspaceReadTarget(target, cwd));
 }
 
 export function getPathFromInput(input: unknown): string | null {

@@ -172,6 +172,16 @@ Fast paths approve without classifier review, so they are deliberately narrow:
   - names a path outside the working directory (git compares files outside the work tree even without `--no-index`, so `git diff /etc/passwd /dev/null` prints the file);
   - names a credential-like path, including `rev:path` blobs such as `git show HEAD:.env`.
 
+### Allowlisted commands
+
+A `safeCommandAllowlist` entry is a prefix (`"rg *"`, `"find"`, `"npm test"`), so on its own it would trust every option of the program. Even when an entry matches, a command is still reviewed if:
+
+- it uses an option that runs another program or writes files: `find -exec/-execdir/-ok/-okdir/-delete/-fprint*/-fls`, `fd -x/-X/--exec*`, `rg --pre`, `sort -o/--output/--compress-program`, `tar -I/-F/--to-command/--checkpoint-action/--use-compress-program/...`;
+- an argument names an existing path outside the working directory and `readRoots`, or a credential-like path (`cat ~/.ssh/id_ed25519`, `cat .env`, `rg TOKEN --file=../x`);
+- an argument is expanded by the shell (an unquoted glob or brace, or `~user`), since its final form is unknown: `cat secrets*` is reviewed, `find . -name '*.ts'` is not.
+
+Some entries are ignored, and `/auto-approval status` says so: any entry for programs whose arguments are a script or command line (`sed`, `awk`, `xargs`, `parallel`), and bare entries for shells, interpreters and wrappers (`bash`, `python`, `node`, `env`, `sudo`, `timeout`, …), which would allow any code. Name a specific invocation instead, such as `"python -m pytest"` or `"npm test"`. Beyond those rules, an entry still trusts the program: `npm test` runs whatever the `test` script says.
+
 ### Extra read roots
 
 Reads outside the working directory are reviewed, which adds a classifier call for things like dependency sources. List directories you are happy for the agent to read freely in `readRoots`:
@@ -245,7 +255,7 @@ If you use a slower classifier model, raise both: OMP's `extensionHandlers.toolC
 | `classifierTimeoutSeconds` | `25` | See [Classifier timeout](#classifier-timeout). |
 | `approvalTimeoutSeconds` | `30` | How long the human prompt waits before rejecting. |
 | `maxConsecutiveDenials` | `3` | Automatic denials in a row before the turn is stopped. |
-| `safeCommandAllowlist` | `[]` | Extra bash commands to allow without review: exact, prefix + space, or `prefix*`. |
+| `safeCommandAllowlist` | `[]` | Extra bash commands to allow without review: exact, prefix + space, or `prefix*`. See [Allowlisted commands](#allowlisted-commands). |
 | `blockCommands` | `[]` | See [Blocked Commands](#blocked-commands). |
 | `readRoots` | `[]` | See [Extra read roots](#extra-read-roots). |
 | `reviewExemptTools` | `[]` | Tool names that skip review entirely. |

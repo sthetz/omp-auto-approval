@@ -1,6 +1,8 @@
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
-import { getString, relativePathWithin, resolvePathForCwd, sha256, stableStringify, toRecord, truncateInline } from "./common.js";
+import { join } from "node:path";
+import { getString, relativePathWithin, resolvePathForCwd, sha256, stableStringify, toRecord, truncateInline, type ReadRoots } from "./common.js";
+
+export { resolveReadRoots, type ReadRoots } from "./common.js";
 import { normalizeCommand } from "./safe-command.js";
 import { isSensitivePath } from "./sensitive-paths.js";
 import type { ReviewSubject, ToolCallEventLike } from "./types.js";
@@ -176,20 +178,6 @@ function isReadTarget(value: unknown, roots: ReadRoots, depth = 0): boolean {
   });
 }
 
-/** Directories reads may target without review: the workspace plus `readRoots`. */
-export interface ReadRoots {
-  cwd: string;
-  extra: string[];
-}
-
-/** Absolute `readRoots` entries, with `~/` expanded. Relative entries are ignored. */
-export function resolveReadRoots(cwd: string, readRoots: string[]): ReadRoots {
-  const extra = readRoots
-    .map((root) => root.trim())
-    .map((root) => (root === "~" || root.startsWith("~/") ? join(homedir(), root.slice(1)) : root))
-    .filter((root) => isAbsolute(root));
-  return { cwd, extra };
-}
 
 /**
  * Read fast path: every target named in the payload must pass

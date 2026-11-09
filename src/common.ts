@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, normalize, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 
 export function toRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
@@ -71,4 +72,19 @@ function resolveExistingPathForBoundary(pathValue: string, cwd: string): string 
     tail.push(current.slice(parent.length).replace(/^[/\\]/, ""));
     current = parent;
   }
+}
+
+/** Directories reads may target without review: the workspace plus `readRoots`. */
+export interface ReadRoots {
+  cwd: string;
+  extra: string[];
+}
+
+/** Absolute `readRoots` entries, with `~/` expanded. Relative entries are ignored. */
+export function resolveReadRoots(cwd: string, readRoots: string[]): ReadRoots {
+  const extra = readRoots
+    .map((root) => root.trim())
+    .map((root) => (root === "~" || root.startsWith("~/") ? join(homedir(), root.slice(1)) : root))
+    .filter((root) => isAbsolute(root));
+  return { cwd, extra };
 }

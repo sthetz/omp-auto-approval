@@ -115,7 +115,7 @@ async function run(): Promise<void> {
     assert.equal(isSafeReadOnlyCommand("rg needle src", cfg, "/tmp/workspace"), false);
   });
 
-  await test("safe command fast path blocks shell composition and dangerous arguments", () => {
+  await test("safe command fast path blocks shell composition and unlisted programs", () => {
     const cfg = config();
     assert.equal(isSafeReadOnlyCommand("git status && rm -rf tmp", cfg, "/tmp/workspace"), false);
     assert.equal(isSafeReadOnlyCommand("git status > status.txt", cfg, "/tmp/workspace"), false);
@@ -163,6 +163,90 @@ async function run(): Promise<void> {
     assert.equal(isSafeReadOnlyCommand("rg needle src", cfg, "/tmp/workspace"), true);
     assert.equal(isSafeReadOnlyCommand("cat README.md", cfg, "/tmp/workspace"), true);
     assert.equal(isSafeReadOnlyCommand("cat package.json", cfg, "/tmp/workspace"), false);
+  });
+
+  await test("allowlisted commands never fast-path exec, write, or out-of-workspace arguments", () => {
+    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-allowlist-"));
+    const workspace = join(root, "workspace");
+    mkdirSync(join(workspace, "src"), { recursive: true });
+    writeFileSync(join(workspace, ".env"), "TOKEN=x\n");
+    writeFileSync(join(workspace, "secrets.yaml"), "token: x\n");
+    writeFileSync(join(workspace, "notes.txt"), "notes\n");
+    writeFileSync(join(root, "outside.txt"), "outside\n");
+    const cfg = config({ safeCommandAllowlist: ["find", "fd *", "rg *", "cat *", "sort *", "tar *", "ls"] });
+    try {
+      for (const command of [
+        "find . -name '*.ts'",
+        "find src -type f",
+        "rg needle src",
+        "rg '/api/users' src",
+        "rg 'foo.*bar'",
+        "rg -n --glob '*.ts' needle",
+        "cat notes.txt",
+        "cat src/missing.ts",
+        "sort -r notes.txt",
+        "tar -tf archive.tar",
+        "ls",
+        "fd -e ts",
+      ]) {
+        assert.equal(isSafeReadOnlyCommand(command, cfg, workspace), true, command);
+      }
+      for (const command of [
+        "find . -name '*.tmp' -exec rm -rf {} +",
+        "find . -execdir sh -c x {} +",
+        "find . -ok rm {} +",
+        "find / -delete",
+        "find . -fprint /home/user/.bashrc",
+        "find ~ -name id_ed25519",
+        "fd -x rm",
+        "fd -e tmp --exec-batch rm",
+        "rg --pre ./evil.sh needle",
+        "rg --pre=./evil.sh needle",
+        "sort -o notes.txt notes.txt",
+        "sort -ro out.txt notes.txt",
+        "sort --output=out.txt notes.txt",
+        "tar -xIzstd -f a.tar",
+        "tar xIf a.tar",
+        "tar -x --to-command=sh -f a.tar",
+        "cat ~/.ssh/id_ed25519",
+        `cat ${join(root, "outside.txt")}`,
+        "cat ../outside.txt",
+        "cat .env",
+        "cat secrets*",
+        "cat *",
+        "rg foo.*bar",
+        "rg TOKEN --file=../outside.txt",
+        "cat {notes,.env}.txt",
+        "~/bin/tool",
+      ]) {
+        assert.equal(isSafeReadOnlyCommand(command, cfg, workspace), false, command);
+      }
+      assert.equal(isSafeReadOnlyCommand(`cat ${join(root, "outside.txt")}`, config({ safeCommandAllowlist: ["cat *"], readRoots: [root] }), workspace), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test("allowlist entries for script programs and bare interpreters are ignored and reported", () => {
+    const cfg = config({ safeCommandAllowlist: ["sed -n", "xargs", "awk *", "python", "bash *", "env", "python -m pytest", "npm test"] });
+    for (const command of ["sed -n 1p notes.txt", "sed -n 'w /tmp/x' notes.txt", "xargs rm", "awk '{system(\"rm x\")}'", "python -c 'import os'", "bash -c 'rm -rf x'", "env rm x"]) {
+      assert.equal(isSafeReadOnlyCommand(command, cfg, "/tmp/workspace"), false, command);
+    }
+    assert.equal(isSafeReadOnlyCommand("python -m pytest tests", cfg, "/tmp/workspace"), true);
+    assert.equal(isSafeReadOnlyCommand("npm test", cfg, "/tmp/workspace"), true);
+
+    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-allowlist-config-"));
+    try {
+      const file = join(dir, "config.jsonc");
+      writeFileSync(file, JSON.stringify({ enabled: true, safeCommandAllowlist: cfg.safeCommandAllowlist }));
+      const notice = loadConfig(file).notice ?? "";
+      for (const entry of ["sed -n", "xargs", "awk *", "python", "bash *", "env"]) {
+        assert.ok(notice.includes(`entry "${entry}" is ignored`), entry);
+      }
+      assert.ok(!notice.includes('entry "python -m pytest"') && !notice.includes('entry "npm test"'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   await test("disabled extension transparently allows", async () => {

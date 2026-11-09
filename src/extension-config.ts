@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AutoReviewConfig, AutoReviewMode } from "./types.js";
 import { toRecord } from "./common.js";
+import { allowlistEntryProblem } from "./safe-command.js";
 
 export const EXTENSION_ID = "omp-auto-approval";
 
@@ -121,6 +122,12 @@ function configNotices(path: string, raw: unknown, config: AutoReviewConfig): st
   const unknownKeys = unknownConfigKeys(raw);
   if (unknownKeys.length > 0) {
     notices.push(`omp-auto-approval config at '${path}' has unknown key(s) that are ignored: ${unknownKeys.join(", ")}.`);
+  }
+  for (const entry of config.safeCommandAllowlist) {
+    const problem = allowlistEntryProblem(entry);
+    if (problem) {
+      notices.push(`safeCommandAllowlist entry "${entry}" is ignored: ${problem}.`);
+    }
   }
   if (config.classifierTimeoutSeconds >= OMP_DEFAULT_HANDLER_TIMEOUT_SECONDS) {
     notices.push(

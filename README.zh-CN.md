@@ -168,6 +168,16 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
   - 指定工作目录之外的路径（即使不加 `--no-index`，git 也会比较工作树之外的文件，因此 `git diff /etc/passwd /dev/null` 会输出该文件）；
   - 指定凭据类路径，包括 `git show HEAD:.env` 这类 `rev:path` 对象。
 
+### allowlist 中的命令
+
+`safeCommandAllowlist` 条目是前缀（`"rg *"`、`"find"`、`"npm test"`），单靠它会信任该程序的所有选项。即使条目匹配，以下命令仍需审批：
+
+- 使用会运行其他程序或写文件的选项：`find -exec/-execdir/-ok/-okdir/-delete/-fprint*/-fls`、`fd -x/-X/--exec*`、`rg --pre`、`sort -o/--output/--compress-program`、`tar -I/-F/--to-command/--checkpoint-action/--use-compress-program/...`；
+- 参数指向工作目录和 `readRoots` 之外的已存在路径，或凭据类路径（`cat ~/.ssh/id_ed25519`、`cat .env`、`rg TOKEN --file=../x`）；
+- 参数会被 shell 展开（未加引号的通配符或花括号，或 `~user`），因为其最终形式未知：`cat secrets*` 需要审批，`find . -name '*.ts'` 不需要。
+
+有些条目会被忽略，`/auto-approval status` 会提示：参数本身就是脚本或命令行的程序（`sed`、`awk`、`xargs`、`parallel`）的任何条目，以及 shell、解释器和包装命令（`bash`、`python`、`node`、`env`、`sudo`、`timeout` 等）的裸条目，因为它们等于允许任意代码。请改为写出具体调用，例如 `"python -m pytest"` 或 `"npm test"`。除这些规则外，条目仍然信任该程序：`npm test` 会运行 `test` 脚本中的任何内容。
+
 ### 额外的可读目录
 
 工作目录之外的读取需要审批，因此读取依赖源码等内容时会多一次分类器调用。可以把允许代理自由读取的目录写入 `readRoots`：
@@ -243,7 +253,7 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 | `classifierTimeoutSeconds` | `25` | 见[分类器超时](#分类器超时)。 |
 | `approvalTimeoutSeconds` | `30` | 人工审批界面等待多久后视为拒绝。 |
 | `maxConsecutiveDenials` | `3` | 连续自动拒绝多少次后结束当前轮次。 |
-| `safeCommandAllowlist` | `[]` | 额外允许免审批的 bash 命令：完全匹配、前缀加空格，或 `prefix*`。 |
+| `safeCommandAllowlist` | `[]` | 额外允许免审批的 bash 命令：完全匹配、前缀加空格，或 `prefix*`。见[allowlist 中的命令](#allowlist-中的命令)。 |
 | `blockCommands` | `[]` | 见[阻止的命令](#阻止的命令)。 |
 | `readRoots` | `[]` | 见[额外的可读目录](#额外的可读目录)。 |
 | `reviewExemptTools` | `[]` | 完全跳过审批的工具名。 |

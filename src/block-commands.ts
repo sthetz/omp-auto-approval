@@ -14,6 +14,14 @@ function programName(word: string): string {
   return word.slice(word.lastIndexOf("/") + 1);
 }
 
+const SHORT_FLAG = /^-[A-Za-z0-9]$/;
+const SHORT_FLAG_GROUP = /^-[A-Za-z0-9]+$/;
+
+/** `-f` also matches a group of short flags that contains it, such as `-uf`. */
+function wordMatches(word: string, wanted: string): boolean {
+  return word === wanted || (SHORT_FLAG.test(wanted) && SHORT_FLAG_GROUP.test(word) && word.includes(wanted[1]));
+}
+
 function matchesWords(segment: string[], words: string[]): boolean {
   const [program, ...rest] = words;
   return segment.some((word, start) => {
@@ -22,7 +30,7 @@ function matchesWords(segment: string[], words: string[]): boolean {
     }
     let next = start + 1;
     return rest.every((wanted) => {
-      while (next < segment.length && segment[next] !== wanted) {
+      while (next < segment.length && !wordMatches(segment[next], wanted)) {
         next += 1;
       }
       next += 1;
@@ -50,7 +58,8 @@ function parseRegexPattern(pattern: string): RegExp | null {
  * list of words: the first names a program and the rest must follow it, in
  * order, within the same command. `git push --force` matches
  * `git push origin main --force` and `/usr/bin/git push --force`, but not
- * `git push --force-with-lease`. Matching errs toward blocking: the words also
+ * `git push --force-with-lease`. A single-letter flag such as `-f` also matches
+ * grouped short flags (`-uf`). Matching errs toward blocking: the words also
  * match when they appear as another command's arguments.
  */
 export function matchBlockedCommand(command: string, patterns: readonly string[]): string | null {

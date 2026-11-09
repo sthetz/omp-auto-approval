@@ -147,7 +147,7 @@ export function selectFastPath(
   if (builtin && isReadOnlyTool(toolName) && isWorkspaceReadFastPath(input, resolveReadRoots(cwd, config.readRoots))) {
     return "readonly";
   }
-  if ((toolName === "write" || toolName === "edit") && isWorkspaceWriteFastPath(input, cwd)) {
+  if (builtin && (toolName === "write" || toolName === "edit") && isWorkspaceWriteFastPath(input, cwd)) {
     return "workspace_write";
   }
   if (isManualOnlyTool(toolName, toolDefinition)) {

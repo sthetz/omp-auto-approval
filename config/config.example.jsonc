@@ -9,7 +9,7 @@
   "maxConsecutiveDenials": 3,
   "safeCommandAllowlist": [],
   // Always blocked, never reviewed or asked: words in order, or /regex/flags.
-  "blockCommands": ["git push --force", "git push -f", "terraform apply"],
+  "blockCommands": ["git push --force", "git push -f", "/\\bgit\\b.*\\bpush\\b.*\\s\\+\\S/", "terraform apply"],
   // Read-only tools may read non-sensitive files here without review.
   "readRoots": ["/nix/store", "~/.cargo/registry"],
   "reviewExemptTools": [],

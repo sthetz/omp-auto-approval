@@ -43,7 +43,22 @@ const WRITE_DESTINATION_KEYS = new Set([...PATH_KEYS, "rename", "move", "to", "n
 // Workspace entries whose contents are executed or trusted without further
 // review: git config and hooks (run by fast-pathed git commands such as
 // `git status` via core.fsmonitor), agent configuration, direnv, editor tasks.
-const PROTECTED_WORKSPACE_ENTRIES = new Set([".git", ".omp", ".pi", ".envrc", ".vscode"]);
+// Workspace entries whose contents run code or configure an agent later: git
+// hooks and config, agent and editor settings (Claude Code hooks and MCP
+// servers run commands), commit hooks, and dev container definitions.
+const PROTECTED_WORKSPACE_ENTRIES = new Set([
+  ".git",
+  ".omp",
+  ".pi",
+  ".claude",
+  ".mcp.json",
+  ".cursor",
+  ".envrc",
+  ".vscode",
+  ".idea",
+  ".husky",
+  ".devcontainer",
+]);
 
 export function getToolName(event: ToolCallEventLike): string | null {
   const direct = getString(event.toolName) ?? getString(event.name);
@@ -243,7 +258,8 @@ function isProtectedWorkspacePath(relativePath: string): boolean {
 
 /**
  * Write/edit fast path: every destination named anywhere in the payload must be
- * a plain path inside the workspace and outside protected entries.
+ * a plain path inside the workspace, outside protected entries, and not a
+ * credential file.
  */
 export function isWorkspaceWriteFastPath(input: unknown, cwd: string): boolean {
   const destinations: unknown[] = [];
@@ -253,7 +269,7 @@ export function isWorkspaceWriteFastPath(input: unknown, cwd: string): boolean {
       return false;
     }
     const relative = relativePathWithin(destination, cwd);
-    return relative !== null && !isProtectedWorkspacePath(relative);
+    return relative !== null && !isProtectedWorkspacePath(relative) && !isSensitivePath(relative);
   });
 }
 

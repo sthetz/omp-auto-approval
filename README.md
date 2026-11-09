@@ -166,7 +166,10 @@ Fast paths approve without classifier review, so they are deliberately narrow:
   `web_search` is always classifier-reviewed, because its query is sent to a third party and could carry data out of the session.
 
   Tools are matched by name only when the host reports them as its own (`sourceInfo.source` is `builtin`). An extension, SDK or MCP tool that reuses a read-only name is reviewed. Self-declared metadata (`isReadOnly`, `readOnlyHint`, MCP `annotations.readOnlyHint`) is ignored, as the MCP specification says these hints are untrusted.
-- **Workspace writes**: `write` and `edit` calls whose every destination, including `edit` renames, is a plain path inside the working directory. Paths that OMP rewrites before use (`[path]`, `~/…`, `scheme://…`) and protected entries (`.git`, `.omp`, `.pi`, `.envrc`, `.vscode`, at any depth, after resolving symlinks) always go to classifier review, because their contents are executed or trusted without further review. For example, `core.fsmonitor` in `.git/config` runs on `git status`.
+- **Workspace writes**: calls to OMP's own `write` and `edit` tools whose every destination, including `edit` renames, is a plain path inside the working directory. These always go to classifier review instead:
+  - paths that OMP rewrites before use (`[path]`, `~/…`, `scheme://…`);
+  - protected entries at any depth, after resolving symlinks: `.git`, `.omp`, `.pi`, `.claude`, `.mcp.json`, `.cursor`, `.envrc`, `.vscode`, `.idea`, `.husky`, `.devcontainer`. Their contents are executed or trusted later without review: `core.fsmonitor` in `.git/config` runs on `git status`, and Claude Code hooks in `.claude/settings.json` run shell commands;
+  - the credential-like files listed above for reads, such as `.env` or `*.pem`.
 - **Safe bash commands**: `pwd`, `git status`, `git log`, `git diff`, `git show`, `git rev-parse`, and listing-only `git branch`, plus `safeCommandAllowlist` entries. A command containing a newline, `&`, `|`, `;`, `<`, `>`, `` ` ``, or `$` is never fast-pathed. Neither is a git command that:
   - uses `--output`, `--ext-diff` or `--no-index`;
   - names a path outside the working directory (git compares files outside the work tree even without `--no-index`, so `git diff /etc/passwd /dev/null` prints the file);
@@ -200,11 +203,11 @@ Entries must be absolute or start with `~/`. Credential-like files below a read 
 
 ```json
 {
-  "blockCommands": ["git push --force", "git push -f", "terraform apply", "/curl[^|]*\\|\\s*(ba)?sh/"]
+  "blockCommands": ["git push --force", "git push -f", "/\\bgit\\b.*\\bpush\\b.*\\s\\+\\S/", "terraform apply", "/curl[^|]*\\|\\s*(ba)?sh/"]
 }
 ```
 
-A pattern is either `/regex/flags`, tested against the whole command, or a list of words: the first names a program and the rest must follow it, in order, within the same command. `git push --force` matches `git push origin main --force`, `/usr/bin/git push --force`, `cd repo && git push --force` and `bash -lc "git push --force"`, but not `git push --force-with-lease`. Flags are compared as written, so list `-f` separately. Matching errs toward blocking: the words also match when they are arguments to another command, such as `echo git push --force`.
+A pattern is either `/regex/flags`, tested against the whole command, or a list of words: the first names a program and the rest must follow it, in order, within the same command. `git push --force` matches `git push origin main --force`, `/usr/bin/git push --force`, `cd repo && git push --force` and `bash -lc "git push --force"`, but not `git push --force-with-lease`. Long flags are compared as written, so list `-f` separately. A single-letter flag also matches grouped short flags: `git push -f` matches `git push -uf origin main`. Git also forces a push when a branch is prefixed with `+` (`git push origin +main`), which no word list can express; the regex above catches it. Matching errs toward blocking: the words also match when they are arguments to another command, such as `echo git push --force`.
 
 This is a best-effort tripwire for commands you never want run unattended, not a sandbox: a sufficiently creative command (variables, aliases, scripts) can still get past it, and is then reviewed by the classifier as usual.
 
@@ -235,6 +238,8 @@ The selected value is stored as `classifierModel` in `config.jsonc`. `null` mean
 Classifier requests go through the host's own `pi-ai` package with the same provider auth as normal OMP model calls, so no extra packages need to be installed.
 
 The classifier sees the latest user request, up to six earlier user messages, the agent's latest message, and the pending action. Authorization can only come from your messages. The agent's message is included to explain intent but marked as untrusted. Tool output (file contents, command output, fetched pages) is left out entirely, because that is where prompt injections come from.
+
+Messages that OMP places in the user role on someone else's behalf (`attribution: "agent"`) don't count as yours: a subagent's assignment, compaction and branch summaries, messages from other agents, and MCP notices. The classifier sees the latest of them separately, marked as untrusted. Otherwise an agent could write "the user approved this" into a `task` assignment and the subagent's classifier would read it as your request. For a subagent, your messages come from the parent session's file, found through the `parentSession` header. With `--no-session` there is no such file, so subagents get no user request and only low-risk actions pass.
 
 If the classifier allows an action it rated `high` risk without `high` user authorization, or `critical` risk at all without it, the extension treats the answer as a denial.
 

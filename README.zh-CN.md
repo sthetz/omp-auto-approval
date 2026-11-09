@@ -162,7 +162,10 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
   `web_search` 始终需要分类器审批，因为它的查询会发送给第三方，可能把数据带出会话。
 
   只有宿主报告为自身工具（`sourceInfo.source` 为 `builtin`）时才按工具名匹配。扩展、SDK 或 MCP 工具即使复用了只读工具名也需要审批。工具自行声明的元数据（`isReadOnly`、`readOnlyHint`、MCP `annotations.readOnlyHint`）会被忽略，因为 MCP 规范说明这些提示不可信。
-- **工作区写入**：`write` 和 `edit` 调用的所有目标路径（包括 `edit` 的重命名目标）都必须是工作目录内的普通路径。OMP 会在使用前改写的路径（`[path]`、`~/…`、`scheme://…`）以及受保护条目（任意层级、解析符号链接后的 `.git`、`.omp`、`.pi`、`.envrc`、`.vscode`）始终进入分类器审批，因为它们的内容会被直接执行或信任。例如 `.git/config` 中的 `core.fsmonitor` 会在 `git status` 时运行。
+- **工作区写入**：OMP 自身的 `write` 和 `edit` 工具调用，且所有目标路径（包括 `edit` 的重命名目标）都是工作目录内的普通路径。以下情况始终进入分类器审批：
+  - OMP 会在使用前改写的路径（`[path]`、`~/…`、`scheme://…`）；
+  - 任意层级、解析符号链接后的受保护条目：`.git`、`.omp`、`.pi`、`.claude`、`.mcp.json`、`.cursor`、`.envrc`、`.vscode`、`.idea`、`.husky`、`.devcontainer`。它们的内容之后会被直接执行或信任：`.git/config` 中的 `core.fsmonitor` 会在 `git status` 时运行，`.claude/settings.json` 中的 Claude Code hooks 会执行 shell 命令；
+  - 上文读取部分列出的凭据类文件，例如 `.env` 或 `*.pem`。
 - **安全 bash 命令**：`pwd`、`git status`、`git log`、`git diff`、`git show`、`git rev-parse`、仅列出分支的 `git branch`，以及 `safeCommandAllowlist` 中的条目。包含换行、`&`、`|`、`;`、`<`、`>`、`` ` `` 或 `$` 的命令永远不会走 fast path。以下 git 命令也不会：
   - 使用 `--output`、`--ext-diff` 或 `--no-index`；
   - 指定工作目录之外的路径（即使不加 `--no-index`，git 也会比较工作树之外的文件，因此 `git diff /etc/passwd /dev/null` 会输出该文件）；
@@ -196,11 +199,11 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 
 ```json
 {
-  "blockCommands": ["git push --force", "git push -f", "terraform apply", "/curl[^|]*\\|\\s*(ba)?sh/"]
+  "blockCommands": ["git push --force", "git push -f", "/\\bgit\\b.*\\bpush\\b.*\\s\\+\\S/", "terraform apply", "/curl[^|]*\\|\\s*(ba)?sh/"]
 }
 ```
 
-模式可以是 `/regex/flags`（对整条命令做匹配），也可以是一串单词：第一个单词是程序名，其余单词需按顺序出现在同一条命令中。`git push --force` 能匹配 `git push origin main --force`、`/usr/bin/git push --force`、`cd repo && git push --force` 和 `bash -lc "git push --force"`，但不匹配 `git push --force-with-lease`。参数按字面比较，因此 `-f` 需要单独列出。匹配倾向于阻止：这些单词作为其他命令的参数出现时（例如 `echo git push --force`）也会匹配。
+模式可以是 `/regex/flags`（对整条命令做匹配），也可以是一串单词：第一个单词是程序名，其余单词需按顺序出现在同一条命令中。`git push --force` 能匹配 `git push origin main --force`、`/usr/bin/git push --force`、`cd repo && git push --force` 和 `bash -lc "git push --force"`，但不匹配 `git push --force-with-lease`。长参数按字面比较，因此 `-f` 需要单独列出。单字母参数也能匹配合并的短参数：`git push -f` 能匹配 `git push -uf origin main`。在分支前加 `+`（`git push origin +main`）同样会强制推送，单词列表无法表达这种形式，上例中的正则表达式可以捕获它。匹配倾向于阻止：这些单词作为其他命令的参数出现时（例如 `echo git push --force`）也会匹配。
 
 这只是针对你绝不希望无人值守执行的命令的尽力而为的绊线，而不是沙箱：足够“有创意”的命令（变量、别名、脚本）仍可能绕过它，此时会照常由分类器审批。
 
@@ -233,6 +236,8 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 模型选择器会先刷新 OMP runtime model registry，再读取可用模型，因此也会显示运行时添加的模型和自定义 provider。
 
 分类器能看到最新的用户请求、最多六条较早的用户消息、代理的最新消息以及待审批的动作。授权只能来自你的消息。代理的消息用于说明意图，但被标记为不可信。工具输出（文件内容、命令输出、抓取的网页）完全不会提供给分类器，因为提示词注入正是从这里来的。
+
+OMP 代替他人放入 user 角色的消息（`attribution: "agent"`）不算作你的消息：子代理的任务分配、压缩和分支摘要、来自其他代理的消息以及 MCP 通知。分类器会单独看到其中最新的一条，并标记为不可信。否则代理可以在 `task` 分配中写入“用户已批准”，子代理的分类器就会把它当成你的请求。对于子代理，你的消息取自父会话文件（通过 `parentSession` 头找到）。使用 `--no-session` 时没有该文件，子代理看不到用户请求，只有低风险动作会被放行。
 
 如果分类器放行了一个它自己评为 `high` 风险、但用户授权不是 `high` 的动作，或任何未获 `high` 授权的 `critical` 风险动作，扩展会将其视为拒绝。
 

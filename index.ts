@@ -133,17 +133,20 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
   }
 
   function explain(rest: string, ctx: ExtensionContextLike): void {
-    const toolName = rest.split(/\s+/, 1)[0] ?? "";
-    if (!toolName) {
-      notify(ctx, "Usage: /auto-approval explain <tool> [path | JSON arguments | bash command]", "warning");
+    const firstWord = rest.split(/\s+/, 1)[0] ?? "";
+    if (!firstWord) {
+      notify(ctx, "Usage: /auto-approval explain <tool> [path | JSON arguments | bash command], or a bash command", "warning");
       return;
     }
-    const parsed = parseExplainInput(toolName, rest.slice(toolName.length).trim());
+    const tools = omp.getAllTools?.() ?? [];
+    // `explain ls -la` means the shell command: no session tool has that name.
+    const asCommand = firstWord !== "bash" && tools.length > 0 && findToolDefinition(firstWord, tools) === undefined;
+    const toolName = asCommand ? "bash" : firstWord;
+    const parsed = parseExplainInput(toolName, asCommand ? rest : rest.slice(firstWord.length).trim());
     if ("error" in parsed) {
       notify(ctx, parsed.error, "warning");
       return;
     }
-    const tools = omp.getAllTools?.() ?? [];
     const source = toRecord(toRecord(findToolDefinition(toolName, tools)).sourceInfo).source;
     const route = selectFastPath(toolName, parsed.input, {
       cwd: ctx.cwd || process.cwd(),
@@ -160,6 +163,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
         ? ROUTE_EXPLANATIONS[route]
         : review;
     notify(ctx, [
+      ...(asCommand ? [`note: no tool named "${firstWord}" in this session; explained as a bash command`] : []),
       `state: ${stateText(config)}${config.enabled ? "" : " (nothing is reviewed while off)"}`,
       `tool: ${toolName}${typeof source === "string" ? ` (${source})` : ""}`,
       `arguments: ${JSON.stringify(parsed.input)}`,

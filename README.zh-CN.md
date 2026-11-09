@@ -50,7 +50,7 @@ OMP 自带审批设置 `tools.approvalMode`，它在本扩展放行调用之后�
 | `/auto-approval auto` | 只使用 AI 审批。分类器拒绝或失败时直接阻止工具调用。 |
 | `/auto-approval model` | 打开审批分类器模型选择器。 |
 | `/auto-approval model current` | 使用当前 OMP 会话模型作为审批分类器模型。 |
-| `/auto-approval explain <tool> [args]` | 显示某个工具调用会走哪条审批路由，但不执行它。`args` 可以是路径、JSON 对象，或（对 `bash`）命令，例如 `/auto-approval explain read ~/.ssh/id_ed25519`。 |
+| `/auto-approval explain <tool> [args]` | 显示某个工具调用会走哪条审批路由，但不执行它。`args` 可以是路径、JSON 对象，或（对 `bash`）命令，例如 `/auto-approval explain read ~/.ssh/id_ed25519`。如果第一个单词不是当前会话中的工具，整段输入会被当作 bash 命令解释：`/auto-approval explain ls -la`。 |
 
 ## 截图
 

@@ -54,7 +54,7 @@ This fork registers the same `/auto-approval` command as the original Pi package
 | `/auto-approval auto` | Enable AI review only. Classifier denial or failure blocks the tool call. |
 | `/auto-approval model` | Open the model selector for the approval classifier model. |
 | `/auto-approval model current` | Use the active OMP session model for approval classification. |
-| `/auto-approval explain <tool> [args]` | Show how a tool call would be routed, without running it. `args` is a path, a JSON object, or (for `bash`) a command, e.g. `/auto-approval explain read ~/.ssh/id_ed25519`. |
+| `/auto-approval explain <tool> [args]` | Show how a tool call would be routed, without running it. `args` is a path, a JSON object, or (for `bash`) a command, e.g. `/auto-approval explain read ~/.ssh/id_ed25519`. If the first word isn't a tool in the session, the whole input is explained as a bash command: `/auto-approval explain ls -la`. |
 
 ## Screenshot
 

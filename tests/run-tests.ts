@@ -1082,6 +1082,8 @@ async function run(): Promise<void> {
       assert.match(await routeFor("bash git status --short"), /arguments: \{"command":"git status --short"\}[\s\S]*route: allowed without review: built-in or allowlisted read-only command/);
       assert.match(await routeFor("bash git push"), /route: classifier review/);
       assert.match(await routeFor("deploy {}"), /tool: deploy \(extension\)[\s\S]*route: classifier review/);
+      assert.match(await routeFor("ls -la"), /note: no tool named "ls" in this session; explained as a bash command[\s\S]*tool: bash\n[\s\S]*arguments: \{"command":"ls -la"\}/);
+      assert.match(await routeFor("git status"), /arguments: \{"command":"git status"\}[\s\S]*route: allowed without review: built-in or allowlisted read-only command/);
       assert.match(await routeFor("read {bad"), /not valid JSON/);
       writeFileSync(configFile, JSON.stringify({ enabled: true, mode: "auto", blockCommands: ["git push --force"] }));
       assert.match(await routeFor("bash git push origin --force"), /route: blocked: matches a blockCommands rule/);

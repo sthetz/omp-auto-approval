@@ -2,17 +2,16 @@ import type { AutoReviewConfig } from "./types.js";
 
 const SAFE_GIT_SUBCOMMANDS = new Set(["status", "log", "diff", "show", "rev-parse"]);
 const SAFE_GIT_BRANCH_FLAGS = new Set(["--show-current", "--list", "--all", "--merged", "--no-merged", "-a", "-r", "-v", "-vv"]);
+// Positional arguments are branch-name patterns only in list mode; otherwise
+// `git branch <name>` creates a branch.
+const GIT_BRANCH_LIST_MODE_FLAGS = new Set(["--list", "--merged", "--no-merged"]);
+// Long options that make otherwise read-only git commands write files or run
+// external programs. Git accepts unambiguous abbreviations, so prefixes match too.
+const UNSAFE_GIT_LONG_OPTIONS = ["--output", "--ext-diff"];
 
-const UNSAFE_SHELL_TOKENS = [
-  "|",
-  "&&",
-  "||",
-  ";",
-  ">",
-  "<",
-  "$(",
-  "`",
-];
+// Command separators, background jobs, pipes, redirections, and expansions.
+// Newlines and a single `&` both start a new command in bash.
+const UNSAFE_SHELL_CHARACTERS = /[\n\r&|;<>`$]/;
 
 export function normalizeCommand(command: string): string {
   return command.replace(/\s+/g, " ").trim();
@@ -24,11 +23,14 @@ function unwrapBashLc(command: string): string | null {
   return match ? match[2] : null;
 }
 
-function splitSimpleCommands(command: string): string[] | null {
-  if (UNSAFE_SHELL_TOKENS.some((token) => command.includes(token))) {
-    return null;
+function isUnsafeGitOption(arg: string): boolean {
+  if (!arg.startsWith("--")) {
+    return false;
   }
-  return [normalizeCommand(command)].filter(Boolean);
+  const name = arg.split("=", 1)[0];
+  return UNSAFE_GIT_LONG_OPTIONS.some((option) => (
+    name.startsWith(option) || (name.length > 2 && option.startsWith(name))
+  ));
 }
 
 function tokenizeSimpleCommand(command: string): string[] | null {
@@ -91,13 +93,19 @@ function isBuiltinSafeCommand(command: string): boolean {
   if (program !== "git" || !subcommand) {
     return false;
   }
+  if (rest.some(isUnsafeGitOption)) {
+    return false;
+  }
   if (SAFE_GIT_SUBCOMMANDS.has(subcommand)) {
     return true;
   }
   if (subcommand !== "branch") {
     return false;
   }
-  return rest.every((arg) => SAFE_GIT_BRANCH_FLAGS.has(arg) || !arg.startsWith("-"));
+  const flags = rest.filter((arg) => arg.startsWith("-"));
+  const hasPositional = flags.length < rest.length;
+  return flags.every((flag) => SAFE_GIT_BRANCH_FLAGS.has(flag))
+    && (!hasPositional || flags.some((flag) => GIT_BRANCH_LIST_MODE_FLAGS.has(flag)));
 }
 
 function isUserAllowlisted(command: string, config: AutoReviewConfig): boolean {
@@ -114,12 +122,13 @@ function isUserAllowlisted(command: string, config: AutoReviewConfig): boolean {
 }
 
 export function isSafeReadOnlyCommand(command: string, config: AutoReviewConfig): boolean {
-  const unwrapped = unwrapBashLc(command) ?? command;
-  const parts = splitSimpleCommands(unwrapped);
-  if (!parts || parts.length === 0) {
+  // Check the raw command: the bash -lc payload is a substring of it.
+  if (UNSAFE_SHELL_CHARACTERS.test(command)) {
     return false;
   }
-  return parts.every((part) => (
-    isBuiltinSafeCommand(part) || isUserAllowlisted(part, config)
-  ));
+  const simple = normalizeCommand(unwrapBashLc(command) ?? command);
+  if (!simple) {
+    return false;
+  }
+  return isBuiltinSafeCommand(simple) || isUserAllowlisted(simple, config);
 }

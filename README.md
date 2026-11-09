@@ -140,11 +140,19 @@ sequenceDiagram
 
 `auto` is fail-closed for reviewed actions and should be used only in trusted unattended contexts. Classifier failures and denials block the tool call. Any local fast path must be narrowly defined and statically low risk; otherwise the action is reviewed or blocked.
 
+## Fast Paths
+
+Fast paths approve without classifier review, so they are deliberately narrow:
+
+- **Read-only tools**: tools with trusted read-only metadata and the built-in read-only tool names (`read`, `grep`, `find`, `ls`, …).
+- **Workspace writes**: `write` and `edit` calls whose every destination, including `edit` renames, is a plain path inside the working directory. Paths that OMP rewrites before use (`[path]`, `~/…`, `scheme://…`) and protected entries (`.git`, `.omp`, `.pi`, `.envrc`, `.vscode`, at any depth, after resolving symlinks) always go to classifier review, because their contents are executed or trusted without further review. For example, `core.fsmonitor` in `.git/config` runs on `git status`.
+- **Safe bash commands**: `pwd`, `git status`, `git log`, `git diff`, `git show`, `git rev-parse`, and listing-only `git branch`, plus `safeCommandAllowlist` entries. A command containing a newline, `&`, `|`, `;`, `<`, `>`, `` ` ``, or `$` is never fast-pathed. Neither is a git command using `--output` or `--ext-diff`.
+
 ## Tool Review Exemptions
 
 `todo` and `wait` only perform local orchestration, so they always bypass classifier review. Their decisions are still written to the audit log with route `local_state`.
 
-`ask` is UI-only. In interactive sessions, forms without external image URLs bypass classifier review with audit route `ui_only`; OMP still renders the form and waits for submit or cancel. Forms containing HTTP(S) or protocol-relative image URLs remain classifier-reviewed because rendering them can make network requests. Noninteractive `ask` calls are also classifier-reviewed.
+`ask` is UI-only. In interactive sessions, forms without URLs bypass classifier review with audit route `ui_only`; OMP still renders the form and waits for submit or cancel. Rendering fetches HTTP(S) image sources, so any form whose payload contains `http:`, `https:`, or `//` anywhere, after HTML entity decoding, remains classifier-reviewed. Noninteractive `ask` calls are also classifier-reviewed.
 
 `eval` and `task` remain classifier-reviewed: `eval` executes arbitrary code, and `task` can delegate work to fully capable subagents.
 

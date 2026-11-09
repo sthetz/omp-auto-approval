@@ -35,9 +35,21 @@ export function resolvePathForCwd(pathValue: string, cwd: string): string {
 }
 
 export function isPathWithin(pathValue: string, root: string): boolean {
+  return relativePathWithin(pathValue, root) !== null;
+}
+
+/**
+ * Canonical path of `pathValue` relative to `root` (symlinks resolved), or
+ * null when it escapes `root`. The root itself is "".
+ */
+export function relativePathWithin(pathValue: string, root: string): string | null {
   const resolvedPath = resolveExistingPathForBoundary(pathValue, root);
   const resolvedRoot = resolveExistingPathForBoundary(root, root);
-  return resolvedPath === resolvedRoot || resolvedPath.startsWith(`${resolvedRoot}${sep}`);
+  if (resolvedPath === resolvedRoot) {
+    return "";
+  }
+  const prefix = resolvedRoot.endsWith(sep) ? resolvedRoot : `${resolvedRoot}${sep}`;
+  return resolvedPath.startsWith(prefix) ? resolvedPath.slice(prefix.length) : null;
 }
 
 function resolveExistingPathForBoundary(pathValue: string, cwd: string): string {

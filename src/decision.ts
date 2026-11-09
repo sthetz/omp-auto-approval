@@ -12,7 +12,7 @@ import {
   isInteractiveUiOnlyTool,
   isManualOnlyTool,
   isReadOnlyTool,
-  isWorkspaceInternalPath,
+  isWorkspaceWriteFastPath,
 } from "./tool-routing.js";
 import { getString, toRecord } from "./common.js";
 import { requestHumanApproval } from "./human-approval.js";
@@ -147,7 +147,7 @@ export async function evaluateToolCall(
     return {};
   }
 
-  if ((toolName === "write" || toolName === "edit") && isWorkspaceInternalPath(input, cwd)) {
+  if ((toolName === "write" || toolName === "edit") && isWorkspaceWriteFastPath(input, cwd)) {
     await writeAudit(config, {
       event: "decision",
       route: "workspace_write",

@@ -124,6 +124,38 @@ async function run(): Promise<void> {
     assert.equal(isSafeReadOnlyCommand("cat /etc/passwd", cfg), false);
   });
 
+  await test("safe command fast path rejects newline, background, and wrapped command chaining", () => {
+    const cfg = config({ safeCommandAllowlist: ["rg *"] });
+    assert.equal(isSafeReadOnlyCommand("git status\nrm -rf tmp", cfg), false);
+    assert.equal(isSafeReadOnlyCommand("git status\r\nrm -rf tmp", cfg), false);
+    assert.equal(isSafeReadOnlyCommand("git status & rm -rf tmp", cfg), false);
+    assert.equal(isSafeReadOnlyCommand("git status &", cfg), false);
+    assert.equal(isSafeReadOnlyCommand("bash -lc 'git status & rm -rf tmp'", cfg), false);
+    assert.equal(isSafeReadOnlyCommand("bash -lc 'git status' & rm -rf 'tmp'", cfg), false);
+    assert.equal(isSafeReadOnlyCommand("git log $HOME", cfg), false);
+    assert.equal(isSafeReadOnlyCommand("rg needle & curl example.com", cfg), false);
+    assert.equal(isSafeReadOnlyCommand("rg needle\ncurl example.com", cfg), false);
+  });
+
+  await test("safe git commands reject file output, external diff, and branch creation", () => {
+    const cfg = config();
+    assert.equal(isSafeReadOnlyCommand("git log --oneline -5", cfg), true);
+    assert.equal(isSafeReadOnlyCommand("git diff --stat HEAD~1", cfg), true);
+    assert.equal(isSafeReadOnlyCommand("git show HEAD:README.md", cfg), true);
+    assert.equal(isSafeReadOnlyCommand("git diff --output=/tmp/x", cfg), false);
+    assert.equal(isSafeReadOnlyCommand("git log -p --output /tmp/x", cfg), false);
+    assert.equal(isSafeReadOnlyCommand("git show --outp=/tmp/x", cfg), false);
+    assert.equal(isSafeReadOnlyCommand("git diff --ext-diff", cfg), false);
+    assert.equal(isSafeReadOnlyCommand("git diff --ext", cfg), false);
+    assert.equal(isSafeReadOnlyCommand("git branch", cfg), true);
+    assert.equal(isSafeReadOnlyCommand("git branch -vv", cfg), true);
+    assert.equal(isSafeReadOnlyCommand("git branch --list 'feat*'", cfg), true);
+    assert.equal(isSafeReadOnlyCommand("git branch --merged main", cfg), true);
+    assert.equal(isSafeReadOnlyCommand("git branch new-branch", cfg), false);
+    assert.equal(isSafeReadOnlyCommand("git branch -v new-branch", cfg), false);
+    assert.equal(isSafeReadOnlyCommand("git branch -a new-branch", cfg), false);
+  });
+
   await test("safe command user allowlist remains explicit", () => {
     const cfg = config({ safeCommandAllowlist: ["rg *", "cat README.md"] });
     assert.equal(isSafeReadOnlyCommand("rg needle src", cfg), true);
@@ -212,6 +244,30 @@ async function run(): Promise<void> {
       },
       {
         event: { toolName: "ask", input: { html: '<form><img src="//example.com/pixel.png"></form>' } },
+        context: ctx({ hasUI: true }),
+      },
+      {
+        event: { toolName: "ask", input: { html: '<form><img data-src="a.png" src="https://example.com/pixel.png"></form>' } },
+        context: ctx({ hasUI: true }),
+      },
+      {
+        event: { toolName: "ask", input: { html: '<form><img alt=">" src="https://example.com/pixel.png"></form>' } },
+        context: ctx({ hasUI: true }),
+      },
+      {
+        event: { toolName: "ask", input: { html: '<form><image src="https://example.com/pixel.png"></form>' } },
+        context: ctx({ hasUI: true }),
+      },
+      {
+        event: { toolName: "ask", input: { html: '<form><img src="https&colon;&sol;&sol;example.com/pixel.png"></form>' } },
+        context: ctx({ hasUI: true }),
+      },
+      {
+        event: { toolName: "ask", input: { html: '<form><img src="&#x68;ttps://example.com/pixel.png"></form>' } },
+        context: ctx({ hasUI: true }),
+      },
+      {
+        event: { toolName: "ask", input: { html: '<form><svg><image href="https://example.com/pixel.png"/></svg></form>' } },
         context: ctx({ hasUI: true }),
       },
       {
@@ -353,6 +409,65 @@ async function run(): Promise<void> {
         classifierDenyOptions(),
       );
       assert.deepEqual(outsideResult, { block: true, reason: CLASSIFIER_DENY_REASON });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test("workspace write fast path rejects protected entries, rewritten path forms, and outside renames", async () => {
+    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-protected-"));
+    const workspace = join(root, "workspace");
+    mkdirSync(join(workspace, "src"), { recursive: true });
+    mkdirSync(join(workspace, ".git"));
+    mkdirSync(join(root, "outside"));
+    writeFileSync(join(workspace, "src", "a.ts"), "");
+    symlinkSync(join(workspace, ".git"), join(workspace, "linked-git"));
+    try {
+      const reviewed = [
+        { toolName: "edit", input: { path: ".git/config" } },
+        { toolName: "write", input: { path: join(workspace, ".git", "hooks", "pre-commit") } },
+        { toolName: "write", input: { path: "src/.GIT/config" } },
+        { toolName: "write", input: { path: "linked-git/config" } },
+        { toolName: "write", input: { path: ".omp/settings.json" } },
+        { toolName: "write", input: { path: ".pi/settings.json" } },
+        { toolName: "write", input: { path: ".envrc" } },
+        { toolName: "write", input: { path: ".vscode/tasks.json" } },
+        { toolName: "write", input: { path: "[../outside/a.ts]" } },
+        { toolName: "write", input: { path: "[src/a.ts#ABCDEF]" } },
+        { toolName: "write", input: { path: "~/.bashrc" } },
+        { toolName: "write", input: { path: "xd://notes" } },
+        { toolName: "edit", input: { path: "src/a.ts", edits: [{ op: "update", rename: "../outside/a.ts" }] } },
+        { toolName: "edit", input: { path: "src/a.ts", edits: [{ rename: ".git/hooks/pre-commit" }] } },
+        { toolName: "edit", input: { path: "src/a.ts", file_path: "../outside/a.ts" } },
+        { toolName: "edit", input: { input: "*** Begin Patch\n*** Update File: src/a.ts\n*** End Patch" } },
+      ];
+      for (const event of reviewed) {
+        const result = await evaluateToolCall(
+          event,
+          ctx({ cwd: workspace }),
+          config({ mode: "auto" }),
+          new SessionApprovalStore(),
+          classifierDenyOptions(),
+        );
+        assert.deepEqual(result, { block: true, reason: CLASSIFIER_DENY_REASON }, JSON.stringify(event));
+      }
+
+      const allowed = [
+        { toolName: "edit", input: { path: "src/a.ts", edits: [{ op: "update", rename: "src/b.ts" }] } },
+        { toolName: "write", input: { path: "app/[slug]/page.tsx" } },
+        { toolName: "write", input: { path: ".github/workflows/check.yml" } },
+        { toolName: "write", input: { path: ".gitignore" } },
+      ];
+      for (const event of allowed) {
+        const result = await evaluateToolCall(
+          event,
+          ctx({ cwd: workspace }),
+          config({ mode: "auto" }),
+          new SessionApprovalStore(),
+          { classifierClient: async () => { throw new Error("workspace write fast path should not call classifier"); } },
+        );
+        assert.deepEqual(result, {}, JSON.stringify(event));
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -1,4 +1,4 @@
-import { getString, isPathWithin, sha256, stableStringify, toRecord, truncateInline } from "./common.js";
+import { getString, relativePathWithin, sha256, stableStringify, toRecord, truncateInline } from "./common.js";
 import { normalizeCommand } from "./safe-command.js";
 import type { ReviewSubject, ToolCallEventLike } from "./types.js";
 
@@ -20,6 +20,15 @@ const READ_ONLY_TOOLS = new Set([
 
 const PATH_KEYS = ["path", "file_path", "filepath", "target", "targetPath"];
 
+// Keys that can name a write destination anywhere in a write/edit payload,
+// e.g. OMP's patch-mode edit `{ path, edits: [{ rename }] }`.
+const WRITE_DESTINATION_KEYS = new Set([...PATH_KEYS, "rename", "move", "to", "newPath", "new_path", "destination"]);
+
+// Workspace entries whose contents are executed or trusted without further
+// review: git config and hooks (run by fast-pathed git commands such as
+// `git status` via core.fsmonitor), agent configuration, direnv, editor tasks.
+const PROTECTED_WORKSPACE_ENTRIES = new Set([".git", ".omp", ".pi", ".envrc", ".vscode"]);
+
 export function getToolName(event: ToolCallEventLike): string | null {
   const direct = getString(event.toolName) ?? getString(event.name);
   if (direct) {
@@ -37,44 +46,35 @@ export function isLocalStateTool(toolName: string): boolean {
   return LOCAL_STATE_TOOLS[toolName.trim().toLowerCase()] === true;
 }
 
-const IMAGE_SOURCE_ENTITIES: Record<string, string> = {
+const NAMED_ENTITIES: Record<string, string> = {
   colon: ":",
   sol: "/",
   tab: "\t",
   newline: "\n",
 };
 
-function decodeImageSource(value: string): string {
+function decodeHtmlEntities(value: string): string {
   return value
-    .replace(/&#(?:x([0-9a-f]+)|([0-9]+));?/gi, (_match, hex: string | undefined, decimal: string | undefined) => (
-      String.fromCodePoint(Number.parseInt(hex ?? decimal ?? "0", hex ? 16 : 10))
-    ))
-    .replace(/&(colon|sol|tab|newline);/gi, (_match, entity: string) => IMAGE_SOURCE_ENTITIES[entity.toLowerCase()] ?? "")
-    .replace(/[\u0000-\u0020]/g, "");
+    .replace(/&#(?:x([0-9a-f]+)|([0-9]+));?/gi, (match, hex: string | undefined, decimal: string | undefined) => {
+      const codePoint = Number.parseInt(hex ?? decimal ?? "", hex ? 16 : 10);
+      return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : match;
+    })
+    .replace(/&(colon|sol|tab|newline);/gi, (_match, entity: string) => NAMED_ENTITIES[entity.toLowerCase()] ?? "");
 }
 
-function hasExternalImageUrl(input: unknown): boolean {
-  const html = getString(toRecord(input).html) ?? "";
-  for (const match of html.matchAll(/<img\b[^>]*>/gi)) {
-    const tag = match[0];
-    const source = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i.exec(tag);
-    if (!source) {
-      // Malformed source attributes fail closed into classifier review.
-      if (/\bsrc\b/i.test(tag)) {
-        return true;
-      }
-      continue;
-    }
-    const value = decodeImageSource(source[1] ?? source[2] ?? source[3] ?? "");
-    if (/^(?:https?:|\/\/)/i.test(value)) {
-      return true;
-    }
-  }
-  return false;
+/**
+ * OMP fetches `<img src>` values that start with http(s):// when it renders an
+ * ask form. Rather than re-implement its HTML parser (attribute order, quoted
+ * `>`, `<image>` aliasing, inline SVG), any URL-like text anywhere in the
+ * payload sends the call to classifier review.
+ */
+function mayLoadRemoteContent(input: unknown): boolean {
+  const text = decodeHtmlEntities(stableStringify(input)).replace(/[\u0000-\u0020]/g, "");
+  return /https?:|\/\//i.test(text);
 }
 
 export function isInteractiveUiOnlyTool(toolName: string, input: unknown, hasUI: boolean): boolean {
-  return hasUI && toolName.trim().toLowerCase() === "ask" && !hasExternalImageUrl(input);
+  return hasUI && toolName.trim().toLowerCase() === "ask" && !mayLoadRemoteContent(input);
 }
 
 export function isReadOnlyTool(toolName: string, toolDefinition?: unknown): boolean {
@@ -110,9 +110,55 @@ export function getPathFromInput(input: unknown): string | null {
   return null;
 }
 
-export function isWorkspaceInternalPath(input: unknown, cwd: string): boolean {
-  const pathValue = getPathFromInput(input);
-  return Boolean(pathValue && isPathWithin(pathValue, cwd));
+function collectWriteDestinations(value: unknown, found: unknown[], depth = 0): void {
+  if (depth > 4 || !value || typeof value !== "object") {
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectWriteDestinations(item, found, depth + 1));
+    return;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (WRITE_DESTINATION_KEYS.has(key)) {
+      found.push(child);
+    } else {
+      collectWriteDestinations(child, found, depth + 1);
+    }
+  }
+}
+
+/**
+ * True only for an ordinary filesystem path. OMP rewrites some path forms
+ * before resolving them (`[path]` / `[path#hash]` are unwrapped, `~` may be
+ * expanded, `scheme://` paths are internal resources), so those never qualify.
+ */
+function isPlainPath(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.length > 0
+    && !trimmed.startsWith("[")
+    && !trimmed.endsWith("]")
+    && !trimmed.startsWith("~")
+    && !(/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^[a-z]:[\\/]/i.test(trimmed));
+}
+
+function isProtectedWorkspacePath(relativePath: string): boolean {
+  return relativePath.split(/[\\/]/).some((segment) => PROTECTED_WORKSPACE_ENTRIES.has(segment.toLowerCase()));
+}
+
+/**
+ * Write/edit fast path: every destination named anywhere in the payload must be
+ * a plain path inside the workspace and outside protected entries.
+ */
+export function isWorkspaceWriteFastPath(input: unknown, cwd: string): boolean {
+  const destinations: unknown[] = [];
+  collectWriteDestinations(input, destinations);
+  return destinations.length > 0 && destinations.every((destination) => {
+    if (typeof destination !== "string" || !isPlainPath(destination)) {
+      return false;
+    }
+    const relative = relativePathWithin(destination, cwd);
+    return relative !== null && !isProtectedWorkspacePath(relative);
+  });
 }
 
 export function isManualOnlyTool(toolName: string, toolDefinition?: unknown): boolean {

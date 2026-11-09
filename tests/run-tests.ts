@@ -11,6 +11,7 @@ import { configPath, DEFAULT_CONFIG, loadConfig, logPath, logsDir, normalizeConf
 import { evaluateToolCall } from "../src/decision.js";
 import { columnWidth, truncateVisible } from "../src/model-selector.js";
 import { pinnedSafeCommand } from "../src/safe-command.js";
+import { compareRun, pipelinesRun, type ParsedScript } from "./shell-oracle/oracle.js";
 import { SessionApprovalStore } from "../src/session-approval-store.js";
 import { getProviderAttributionHeaders } from "../src/provider-attribution.js";
 import type { AutoReviewConfig, ExtensionContextLike } from "../src/types.js";
@@ -242,6 +243,37 @@ async function run(): Promise<void> {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  await test("shell oracle follows && and || and matches pipelines in any order", () => {
+    const word = (text: string, expands = false) => ({ text, expands });
+    const command = (...texts: string[]) => ({ words: texts.map((text) => word(text)), redirects: [] });
+    const script: ParsedScript = {
+      pipelines: [[command("a")], [command("b"), command("c")], [command("d")]],
+      connectors: ["&&", "||"],
+    };
+    assert.deepEqual(pipelinesRun(script, 0), [0, 1]);
+    assert.deepEqual(pipelinesRun(script, 1), [0, 2]);
+    const record = (argv: string[], fds: [string, string, string]) => ({ argv, fds });
+    const run = (records: ReturnType<typeof record>[]) => ({ records, exitCode: 0, stderr: "", timedOut: false });
+    assert.equal(compareRun(script, 0, run([
+      record(["a"], ["stdin", "stdout", "stderr"]),
+      record(["c"], ["pipe", "stdout", "stderr"]),
+      record(["b"], ["stdin", "pipe", "stderr"]),
+    ])), null);
+    assert.match(compareRun(script, 1, run([record(["a"], ["stdin", "stdout", "stderr"])])) ?? "", /expected \["d"\]/);
+    assert.match(compareRun(script, 1, run([
+      record(["a"], ["stdin", "stdout", "stderr"]),
+      record(["d", "x"], ["stdin", "stdout", "stderr"]),
+    ])) ?? "", /bash ran \["d","x"\]/);
+
+    const redirected: ParsedScript = {
+      pipelines: [[{ words: [word("ls"), word("*", true)], redirects: [{ fd: 1, target: "/dev/null" }, { fd: 2, target: "&1" }] }]],
+      connectors: [],
+    };
+    assert.equal(compareRun(redirected, 0, run([record(["ls", "a", "b.txt"], ["stdin", "/dev/null", "/dev/null"])])), null);
+    assert.match(compareRun(redirected, 0, run([record(["ls", "a"], ["stdin", "/dev/null", "stderr"])])) ?? "", /expected/);
+    assert.equal(compareRun(redirected, 0, { ...run([]), timedOut: true }), "bash timed out");
   });
 
   await test("fast-pathed commands are pinned to the program on OMP's startup PATH", () => {

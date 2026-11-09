@@ -101,7 +101,7 @@ function isWorkspaceGitOperand(operand: string, cwd: string): boolean {
   return relative !== null && !isSensitivePath(relative);
 }
 
-interface Token {
+export interface Token {
   text: string;
   // Contains an unquoted glob or brace character, or an unquoted `~` that
   // bash expands: at the start of the word, or after `=` or `:` in a word
@@ -341,6 +341,19 @@ function isUserAllowlisted(command: string, tokens: Token[], config: AutoReviewC
   return args.every((token) => isAllowlistedArgumentSafe(token, roots));
 }
 
+/**
+ * The words of a command the fast path can reason about: one simple command
+ * with no separators, pipes, redirections, or expansions other than globs,
+ * braces, and tildes (which are flagged). Null for anything else.
+ */
+export function parseSimpleCommand(command: string): Token[] | null {
+  if (UNSAFE_SHELL_CHARACTERS.test(command)) {
+    return null;
+  }
+  const tokens = tokenizeWords(command);
+  return tokens?.length ? tokens : null;
+}
+
 function shellQuote(word: string): string {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
 }
@@ -385,11 +398,8 @@ export function pinnedSafeCommand(
   cwd: string,
   searchPath: string = STARTUP_PATH,
 ): string | null {
-  if (UNSAFE_SHELL_CHARACTERS.test(command)) {
-    return null;
-  }
-  const tokens = tokenizeWords(command);
-  if (!tokens?.length) {
+  const tokens = parseSimpleCommand(command);
+  if (!tokens) {
     return null;
   }
   if (!isBuiltinSafeCommand(tokens, cwd) && !isUserAllowlisted(command, tokens, config, cwd)) {

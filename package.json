@@ -30,6 +30,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx tests/run-tests.ts && node --import tsx tests/model-selector-width.ts && node --import tsx tests/provider-attribution-telemetry.ts",
     "smoke:omp": "node --import tsx tests/omp-smoke.ts",
+    "oracle:corpus": "node --import tsx tests/shell-oracle/extract-corpus.ts",
+    "oracle:shell": "node --import tsx tests/shell-oracle/run.ts",
     "check": "npm run typecheck && npm run test && npm run smoke:omp"
   },
   "keywords": [

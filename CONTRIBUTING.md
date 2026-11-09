@@ -22,6 +22,17 @@ Run the OMP smoke regression:
 npm run smoke:omp
 ```
 
+### Shell parser oracle
+
+The bash fast path is only as safe as its reading of a command. `tests/shell-oracle/` checks that reading against bash itself: for every command the parser accepts, bash runs the same string in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox (no network, no home directory, read-only system directories) where every program and builtin is replaced by a recorder. Any difference in which commands run, their arguments, or their file descriptors is reported. Rejecting a command is always allowed. It needs `bwrap`, `bash` and coreutils on `PATH`.
+
+```bash
+npm run oracle:shell -- --no-corpus           # hand-written cases and seeded fuzz
+npm run oracle:shell -- --fuzz 20000 --seed 7 # more fuzz
+```
+
+Real agent commands make the best test input. `npm run oracle:corpus` collects the bash commands from your local Claude Code transcripts and OMP sessions into `~/.cache/omp-auto-approval/shell-corpus.jsonl` (readable only by you), and `oracle:shell` picks it up from there. Those commands can contain hostnames, paths, or secrets: never commit the corpus or paste its divergence reports publicly. The report shows only the start of each corpus command for that reason.
+
 ## Pull Requests
 
 Before opening a PR:

@@ -12,19 +12,19 @@ It uses an AI classifier to approve low-risk tool calls. Risky, denied, failed, 
 
 ## Installation
 
-The npm commands below install the original `0.1.0` release, **not the code from this restored repository**. This fork has not been published to npm.
-
-Install the original package through OMP:
+Install the latest version of this fork directly from GitHub:
 
 ```bash
-omp plugin install omp-auto-approval
+omp plugin install https://github.com/sthetz/omp-auto-approval
 ```
 
-Install for the current project:
+Install the pinned `0.2.0` release:
 
 ```bash
-omp plugin install omp-auto-approval --scope project
+omp plugin install github:sthetz/omp-auto-approval#v0.2.0
 ```
+
+The original `0.1.0` release remains available on npm as `omp-auto-approval`, but that package contains the original code rather than this restored fork. This fork is distributed through GitHub and is not published to npm.
 
 Remove the plugin:
 

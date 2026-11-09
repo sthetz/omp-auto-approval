@@ -8,19 +8,19 @@ omp-auto-approval 是 [pi-auto-approval](https://github.com/Europa2061/pi-auto-a
 
 ## 安装
 
-以下 npm 命令安装的是原始 `0.1.0` 版本，**而不是此恢复仓库中的代码**。此分支尚未发布到 npm。
-
-通过 OMP 安装原始包：
+直接从 GitHub 安装此分支的最新版本：
 
 ```bash
-omp plugin install omp-auto-approval
+omp plugin install https://github.com/sthetz/omp-auto-approval
 ```
 
-安装到当前项目：
+安装固定为 `0.2.0` 的版本：
 
 ```bash
-omp plugin install omp-auto-approval --scope project
+omp plugin install github:sthetz/omp-auto-approval#v0.2.0
 ```
+
+原始 `0.1.0` 版本仍以 `omp-auto-approval` 的名称发布在 npm 上，但该包包含原始代码，而不是此恢复分支。此分支通过 GitHub 分发，不发布到 npm。
 
 卸载插件：
 

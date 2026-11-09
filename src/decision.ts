@@ -2,7 +2,7 @@ import type { AuditEntry, AutoReviewConfig, ExtensionContextLike, ReviewDecision
 import { matchBlockedCommand } from "./block-commands.js";
 import { classifyAction, type ClassifierClient } from "./classifier.js";
 import { writeAudit } from "./logging.js";
-import { isSafeReadOnlyCommand } from "./safe-command.js";
+import { pinnedSafeCommand } from "./safe-command.js";
 import { SessionApprovalStore } from "./session-approval-store.js";
 import {
   createReviewSubject,
@@ -18,7 +18,7 @@ import {
   isWorkspaceWriteFastPath,
   resolveReadRoots,
 } from "./tool-routing.js";
-import { getString, toRecord } from "./common.js";
+import { getString, relativePathWithin, resolvePathForCwd, toRecord } from "./common.js";
 import { requestHumanApproval } from "./human-approval.js";
 
 export type ToolCallDecision = {} | { block: true; reason: string };
@@ -116,6 +116,25 @@ function bashCommand(toolName: string, input: unknown): string | undefined {
 }
 
 /**
+ * The command a bash call would run in place of a read-only command that
+ * skips review (see pinnedSafeCommand), or null. OMP's bash tool accepts a
+ * `cwd`; paths are checked against it, and a directory outside the workspace
+ * gets no fast path.
+ */
+export function pinnedBashCommand(toolName: string, input: unknown, cwd: string, config: AutoReviewConfig): string | null {
+  const command = bashCommand(toolName, input);
+  if (!command) {
+    return null;
+  }
+  const requested = getString(toRecord(input).cwd);
+  const workingDirectory = requested ? resolvePathForCwd(requested, cwd) : cwd;
+  if (relativePathWithin(workingDirectory, cwd) === null) {
+    return null;
+  }
+  return pinnedSafeCommand(command, config, workingDirectory);
+}
+
+/**
  * The route a tool call takes before any classifier or session state is
  * consulted: "blocked_command", a fast path that allows it, "manual_only", or
  * null for review. Name-based fast paths apply only to the host's own builtin
@@ -153,7 +172,7 @@ export function selectFastPath(
   if (isManualOnlyTool(toolName, toolDefinition)) {
     return "manual_only";
   }
-  if (command && isSafeReadOnlyCommand(command, config, cwd)) {
+  if (pinnedBashCommand(toolName, input, cwd, config) !== null) {
     return "safe_command";
   }
   return null;
@@ -246,6 +265,13 @@ export async function evaluateToolCall(
   if (route) {
     if (route === "safe_command") {
       store.recordNonDenial();
+      const pinned = pinnedBashCommand(toolName, input, cwd, config);
+      if (pinned !== null && pinned !== bashCommand(toolName, input)) {
+        // OMP runs the call with the input as the tool_call handlers leave it.
+        toRecord(input).command = pinned;
+        await audit({ route, outcome: "allow", pinnedCommand: pinned });
+        return {};
+      }
     }
     await audit({ route, outcome: "allow" });
     return {};

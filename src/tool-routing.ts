@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getString, relativePathWithin, resolvePathForCwd, sha256, stableStringify, toRecord, truncateInline, type ReadRoots } from "./common.js";
@@ -257,11 +258,34 @@ function isProtectedWorkspacePath(relativePath: string): boolean {
 }
 
 /**
+ * OMP's write tool runs `chmod +x` on a file whose content starts with `#!`
+ * (but not Rust's `#![`), so such a write creates a program.
+ */
+function writesProgram(input: unknown): boolean {
+  const content = toRecord(input).content;
+  return typeof content === "string" && content.startsWith("#!") && !content.startsWith("#![");
+}
+
+function isExecutableFile(path: string, cwd: string): boolean {
+  try {
+    const stats = statSync(resolvePathForCwd(path, cwd));
+    return stats.isFile() && (stats.mode & 0o111) !== 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Write/edit fast path: every destination named anywhere in the payload must be
  * a plain path inside the workspace, outside protected entries, and not a
- * credential file.
+ * credential file. Writes that create or change a program are reviewed: a
+ * program in the workspace can shadow a command on the persistent shell's
+ * PATH, so `git status` would run it.
  */
 export function isWorkspaceWriteFastPath(input: unknown, cwd: string): boolean {
+  if (writesProgram(input)) {
+    return false;
+  }
   const destinations: unknown[] = [];
   collectWriteDestinations(input, destinations);
   return destinations.length > 0 && destinations.every((destination) => {
@@ -269,7 +293,10 @@ export function isWorkspaceWriteFastPath(input: unknown, cwd: string): boolean {
       return false;
     }
     const relative = relativePathWithin(destination, cwd);
-    return relative !== null && !isProtectedWorkspacePath(relative) && !isSensitivePath(relative);
+    return relative !== null
+      && !isProtectedWorkspacePath(relative)
+      && !isSensitivePath(relative)
+      && !isExecutableFile(destination, cwd);
   });
 }
 

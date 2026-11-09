@@ -119,5 +119,7 @@ export interface AuditEntry {
   classifierDecision?: ReviewDecision;
   humanDecision?: string;
   reason?: string;
+  // The command that ran instead, for a bash command pinned to its program's path.
+  pinnedCommand?: string;
   durationMs?: number;
 }

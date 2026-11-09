@@ -169,11 +169,15 @@ Fast paths approve without classifier review, so they are deliberately narrow:
 - **Workspace writes**: calls to OMP's own `write` and `edit` tools whose every destination, including `edit` renames, is a plain path inside the working directory. These always go to classifier review instead:
   - paths that OMP rewrites before use (`[path]`, `~/…`, `scheme://…`);
   - protected entries at any depth, after resolving symlinks: `.git`, `.omp`, `.pi`, `.claude`, `.mcp.json`, `.cursor`, `.envrc`, `.vscode`, `.idea`, `.husky`, `.devcontainer`. Their contents are executed or trusted later without review: `core.fsmonitor` in `.git/config` runs on `git status`, and Claude Code hooks in `.claude/settings.json` run shell commands;
-  - the credential-like files listed above for reads, such as `.env` or `*.pem`.
+  - the credential-like files listed above for reads, such as `.env` or `*.pem`;
+  - writes that create or change a program: content starting with `#!` (OMP's `write` tool makes such a file executable) or a destination that is already executable. A program in the workspace can shadow a command on the shell's PATH.
 - **Safe bash commands**: `pwd`, `git status`, `git log`, `git diff`, `git show`, `git rev-parse`, and listing-only `git branch`, plus `safeCommandAllowlist` entries. A command containing a newline, `&`, `|`, `;`, `<`, `>`, `` ` ``, or `$` is never fast-pathed. Neither is a git command that:
   - uses `--output`, `--ext-diff` or `--no-index`;
   - names a path outside the working directory (git compares files outside the work tree even without `--no-index`, so `git diff /etc/passwd /dev/null` prints the file);
-  - names a credential-like path, including `rev:path` blobs such as `git show HEAD:.env`.
+  - names a credential-like path, including `rev:path` blobs such as `git show HEAD:.env`;
+  - contains an unquoted glob (`git diff -- secrets*`).
+
+  OMP runs every bash call in one persistent shell per session, so an earlier call can leave an alias, a function, or a workspace directory on PATH that turns `git status` into something else. A fast-pathed command is therefore rewritten to run its program by absolute path, looked up on the PATH OMP started with, skipping directories inside the workspace: `git status` runs as `/run/current-system/sw/bin/git status`. If the program isn't found there, the command is reviewed. The rewritten command appears in the transcript and in the audit log as `pinnedCommand`. A command wrapped in `bash -lc` is reviewed, since the wrapper's own `bash` would be looked up on that PATH. A bash call whose `cwd` is outside the working directory is reviewed; one inside it has its paths checked from there. Variables exported by an earlier call (`GIT_EXTERNAL_DIFF`, `LD_PRELOAD`, …) still reach the pinned program, but setting them takes a reviewed call.
 
 ### Allowlisted commands
 

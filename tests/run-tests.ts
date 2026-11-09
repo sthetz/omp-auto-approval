@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import ompAutoApprovalExtension, { SYSTEM_PROMPT_NOTE } from "../index.js";
@@ -10,10 +10,26 @@ import { buildProjectedContext } from "../src/context-projection.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, logsDir, normalizeConfig, saveConfig } from "../src/extension-config.js";
 import { evaluateToolCall } from "../src/decision.js";
 import { columnWidth, truncateVisible } from "../src/model-selector.js";
-import { isSafeReadOnlyCommand } from "../src/safe-command.js";
+import { pinnedSafeCommand } from "../src/safe-command.js";
 import { SessionApprovalStore } from "../src/session-approval-store.js";
 import { getProviderAttributionHeaders } from "../src/provider-attribution.js";
 import type { AutoReviewConfig, ExtensionContextLike } from "../src/types.js";
+
+// Fast-pathed commands are pinned to a program found on OMP's startup PATH.
+// Stub programs make the tests independent of what this machine has
+// installed; the real PATH stays behind them.
+const STUB_PROGRAMS = ["cat", "dd", "fd", "find", "git", "grep", "ls", "npm", "pwd", "python", "rg", "sort", "tar"];
+const STUB_BIN = mkdtempSync(join(tmpdir(), "omp-auto-approval-bin-"));
+for (const name of STUB_PROGRAMS) {
+  writeFileSync(join(STUB_BIN, name), "#!/bin/sh\n");
+  chmodSync(join(STUB_BIN, name), 0o755);
+}
+const TEST_PATH = `${STUB_BIN}:${process.env.PATH ?? ""}`;
+process.on("exit", () => rmSync(STUB_BIN, { recursive: true, force: true }));
+
+function isSafeReadOnlyCommand(command: string, cfg: AutoReviewConfig, cwd: string): boolean {
+  return pinnedSafeCommand(command, cfg, cwd, TEST_PATH) !== null;
+}
 
 function test(name: string, fn: () => void | Promise<void>): Promise<void> {
   return Promise.resolve()
@@ -108,7 +124,8 @@ async function run(): Promise<void> {
     const cfg = config();
     assert.equal(isSafeReadOnlyCommand("pwd", cfg, "/tmp/workspace"), true);
     assert.equal(isSafeReadOnlyCommand("git status --short", cfg, "/tmp/workspace"), true);
-    assert.equal(isSafeReadOnlyCommand('bash -lc "git diff"', cfg, "/tmp/workspace"), true);
+    // The wrapper's own `bash` would be looked up on the session's PATH.
+    assert.equal(isSafeReadOnlyCommand('bash -lc "git diff"', cfg, "/tmp/workspace"), false);
     assert.equal(isSafeReadOnlyCommand("git branch --show-current", cfg, "/tmp/workspace"), true);
     assert.equal(isSafeReadOnlyCommand("git branch -D stale", cfg, "/tmp/workspace"), false);
     assert.equal(isSafeReadOnlyCommand("git checkout main", cfg, "/tmp/workspace"), false);
@@ -224,6 +241,85 @@ async function run(): Promise<void> {
       assert.equal(isSafeReadOnlyCommand(`cat ${join(root, "outside.txt")}`, config({ safeCommandAllowlist: ["cat *"], readRoots: [root] }), workspace), true);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test("fast-pathed commands are pinned to the program on OMP's startup PATH", () => {
+    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-pin-"));
+    const workspace = join(root, "workspace");
+    const spaced = join(root, "tool dir");
+    mkdirSync(join(workspace, "bin"), { recursive: true });
+    mkdirSync(spaced);
+    for (const program of [join(workspace, "bin", "git"), join(spaced, "rg")]) {
+      writeFileSync(program, "#!/bin/sh\n");
+      chmodSync(program, 0o755);
+    }
+    mkdirSync(join(root, "links"));
+    symlinkSync(join(workspace, "bin", "git"), join(root, "links", "git"));
+    const cfg = config({ safeCommandAllowlist: ["rg *", "./scripts/check.sh"] });
+    try {
+      assert.equal(pinnedSafeCommand("git status --short", cfg, workspace, TEST_PATH), `${STUB_BIN}/git status --short`);
+      assert.equal(pinnedSafeCommand('  "git" log -1', cfg, workspace, TEST_PATH), `  ${STUB_BIN}/git log -1`);
+      assert.equal(pinnedSafeCommand("pwd", cfg, workspace, TEST_PATH), `${STUB_BIN}/pwd`);
+      // Directories and links inside the workspace are skipped: the agent writes there without review.
+      assert.equal(pinnedSafeCommand("git status", cfg, workspace, `${join(workspace, "bin")}:${join(root, "links")}:${STUB_BIN}`), `${STUB_BIN}/git status`);
+      assert.equal(pinnedSafeCommand("git status", cfg, workspace, `relative/bin:${join(workspace, "bin")}`), null);
+      assert.equal(pinnedSafeCommand("rg needle", cfg, workspace, spaced), `'${join(spaced, "rg")}' needle`);
+      assert.equal(pinnedSafeCommand("rg needle", cfg, workspace, join(root, "missing")), null);
+      assert.equal(pinnedSafeCommand("./scripts/check.sh", cfg, workspace, ""), "./scripts/check.sh");
+      assert.equal(pinnedSafeCommand("git diff -- secrets*", cfg, workspace, TEST_PATH), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test("a fast-pathed bash call runs pinned, and only from inside the workspace", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-pin-call-"));
+    mkdirSync(join(workspace, "sub"));
+    try {
+      const event = { toolName: "bash", input: { command: "git status --short" } as Record<string, unknown> };
+      assert.deepEqual(await evaluateToolCall(event, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), classifierDenyOptions()), {});
+      assert.match(String(event.input.command), /^\/\S*\/git status --short$/);
+
+      const inside = { toolName: "bash", input: { command: "git status", cwd: "sub" } };
+      assert.deepEqual(await evaluateToolCall(inside, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), classifierDenyOptions()), {});
+      const outside = { toolName: "bash", input: { command: "git status", cwd: "/etc" } };
+      assert.deepEqual(
+        await evaluateToolCall(outside, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), classifierDenyOptions()),
+        { block: true, reason: CLASSIFIER_DENY_REASON },
+      );
+      assert.equal(outside.input.command, "git status");
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  await test("writes that create or change a program are reviewed", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-program-write-"));
+    writeFileSync(join(workspace, "tool.sh"), "#!/bin/sh\n");
+    chmodSync(join(workspace, "tool.sh"), 0o755);
+    writeFileSync(join(workspace, "notes.txt"), "notes\n");
+    const run = (event: { toolName: string; input: unknown }) =>
+      evaluateToolCall(event, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), classifierDenyOptions());
+    try {
+      for (const event of [
+        { toolName: "write", input: { path: "bin/rg", content: "#!/bin/sh\necho hi\n" } },
+        { toolName: "write", input: { path: "notes.txt", content: "#!/usr/bin/env python3\n" } },
+        { toolName: "write", input: { path: "tool.sh", content: "echo hi\n" } },
+        { toolName: "edit", input: { path: "tool.sh", edits: [{ op: "update" }] } },
+        { toolName: "edit", input: { path: "notes.txt", edits: [{ rename: "tool.sh" }] } },
+      ]) {
+        assert.deepEqual(await run(event), { block: true, reason: CLASSIFIER_DENY_REASON }, JSON.stringify(event));
+      }
+      for (const event of [
+        { toolName: "write", input: { path: "src/lib.rs", content: "#![allow(dead_code)]\n" } },
+        { toolName: "write", input: { path: "notes.txt", content: "# heading\n" } },
+        { toolName: "edit", input: { path: "notes.txt", edits: [{ op: "update" }] } },
+      ]) {
+        assert.deepEqual(await run(event), {}, JSON.stringify(event));
+      }
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
     }
   });
 

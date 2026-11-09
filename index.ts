@@ -1,6 +1,6 @@
 import type { AutoReviewConfig, ExtensionContextLike, ToolCallEventLike } from "./src/types.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, saveConfig } from "./src/extension-config.js";
-import { evaluateToolCall, selectFastPath, type FastPathRoute } from "./src/decision.js";
+import { evaluateToolCall, pinnedBashCommand, selectFastPath, type FastPathRoute } from "./src/decision.js";
 import { toRecord } from "./src/common.js";
 import { findToolDefinition } from "./src/tool-routing.js";
 import { assistantText } from "./src/context-projection.js";
@@ -154,6 +154,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
       tools,
       hasUI: ctx.hasUI === true,
     });
+    const pinned = route === "safe_command" ? pinnedBashCommand(toolName, parsed.input, ctx.cwd || process.cwd(), config) : null;
     const review = config.mode === "fallback"
       ? "classifier review; you decide if it denies or fails"
       : "classifier review; blocked if it denies or fails";
@@ -168,6 +169,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
       `tool: ${toolName}${typeof source === "string" ? ` (${source})` : ""}`,
       `arguments: ${JSON.stringify(parsed.input)}`,
       `route: ${outcome}`,
+      ...(pinned !== null && pinned !== toRecord(parsed.input).command ? [`runs as: ${pinned}`] : []),
     ].join("\n"));
   }
 

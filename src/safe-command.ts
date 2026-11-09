@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 import { relativePathWithin, resolvePathForCwd, resolveReadRoots, type ReadRoots } from "./common.js";
 import { isSensitivePath } from "./sensitive-paths.js";
 import type { AutoReviewConfig } from "./types.js";
@@ -65,11 +65,11 @@ export function normalizeCommand(command: string): string {
   return command.replace(/\s+/g, " ").trim();
 }
 
-function unwrapBashLc(command: string): string | null {
-  const normalized = normalizeCommand(command);
-  const match = normalized.match(/^bash\s+-lc\s+(['"])([\s\S]*)\1$/);
-  return match ? match[2] : null;
-}
+// The PATH OMP started with. OMP runs bash calls in one persistent shell per
+// session, so by the time a command runs, an earlier call may have put a
+// workspace directory on PATH (`export PATH=$PWD/bin:$PATH`, a virtualenv
+// `activate`), or defined an alias or function with the program's name.
+const STARTUP_PATH = process.env.PATH ?? "";
 
 function isUnsafeGitOption(arg: string): boolean {
   if (!arg.startsWith("--")) {
@@ -108,6 +108,9 @@ interface Token {
   // shaped like an assignment (`if=~/key`). The shell rewrites it before the
   // program sees it.
   expands: boolean;
+  // Where the word, quotes included, sits in the command string.
+  start: number;
+  end: number;
 }
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -123,9 +126,10 @@ function tokenizeWords(command: string): Token[] | null {
   let assignment = false;
   let quote: "'" | "\"" | null = null;
   let escaped = false;
-  const finish = () => {
+  let start = 0;
+  const finish = (end: number) => {
     if (started) {
-      tokens.push({ text: current, expands });
+      tokens.push({ text: current, expands, start, end });
     }
     current = "";
     expands = false;
@@ -134,7 +138,11 @@ function tokenizeWords(command: string): Token[] | null {
     assignment = false;
   };
 
-  for (const char of command) {
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (!started && !quote && !escaped && !/\s/.test(char)) {
+      start = index;
+    }
     if (escaped) {
       current += char;
       escaped = false;
@@ -161,7 +169,7 @@ function tokenizeWords(command: string): Token[] | null {
       continue;
     }
     if (/\s/.test(char)) {
-      finish();
+      finish(index);
       continue;
     }
     if (char === "=" && !assignment && !quotedPrefix && IDENTIFIER.test(current)) {
@@ -177,12 +185,8 @@ function tokenizeWords(command: string): Token[] | null {
   if (escaped || quote) {
     return null;
   }
-  finish();
+  finish(command.length);
   return tokens;
-}
-
-function tokenizeSimpleCommand(command: string): string[] | null {
-  return tokenizeWords(command)?.map((token) => token.text) ?? null;
 }
 
 function programName(word: string): string {
@@ -279,12 +283,12 @@ export function allowlistEntryProblem(entry: string): string | null {
   return null;
 }
 
-function isBuiltinSafeCommand(command: string, cwd: string): boolean {
-  const tokens = tokenizeSimpleCommand(command);
-  if (!tokens?.length) {
+function isBuiltinSafeCommand(words: Token[], cwd: string): boolean {
+  // `git diff -- secrets*` names whatever the glob matches.
+  if (words.some((word) => word.expands)) {
     return false;
   }
-
+  const tokens = words.map((word) => word.text);
   const [program, subcommand, ...rest] = tokens;
   if (program === "pwd" && tokens.length === 1) {
     return true;
@@ -323,12 +327,9 @@ function matchesAllowlistEntry(command: string, entry: string): boolean {
   return command === trimmed || command.startsWith(`${trimmed} `);
 }
 
-function isUserAllowlisted(command: string, config: AutoReviewConfig, cwd: string): boolean {
-  if (!config.safeCommandAllowlist.some((entry) => matchesAllowlistEntry(command, entry))) {
-    return false;
-  }
-  const tokens = tokenizeWords(command);
-  if (!tokens?.length) {
+function isUserAllowlisted(command: string, tokens: Token[], config: AutoReviewConfig, cwd: string): boolean {
+  const normalized = normalizeCommand(command);
+  if (!config.safeCommandAllowlist.some((entry) => matchesAllowlistEntry(normalized, entry))) {
     return false;
   }
   const [first, ...args] = tokens;
@@ -340,14 +341,68 @@ function isUserAllowlisted(command: string, config: AutoReviewConfig, cwd: strin
   return args.every((token) => isAllowlistedArgumentSafe(token, roots));
 }
 
-export function isSafeReadOnlyCommand(command: string, config: AutoReviewConfig, cwd: string): boolean {
-  // Check the raw command: the bash -lc payload is a substring of it.
+function shellQuote(word: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Where `program` lives on OMP's startup PATH, skipping directories inside
+ * the workspace and programs that resolve into it: the agent can write files
+ * there without review.
+ */
+function resolveStartupProgram(program: string, cwd: string, searchPath: string): string | null {
+  for (const directory of searchPath.split(delimiter)) {
+    if (!isAbsolute(directory) || relativePathWithin(directory, cwd) !== null) {
+      continue;
+    }
+    const candidate = join(directory, program);
+    try {
+      if (!statSync(candidate).isFile()) {
+        continue;
+      }
+      accessSync(candidate, constants.X_OK);
+    } catch {
+      continue;
+    }
+    if (relativePathWithin(candidate, cwd) === null) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * The command to run in place of a read-only command that skips review, or
+ * null when it must be reviewed. The program is replaced by its absolute path
+ * from OMP's startup PATH, so an alias, function, or PATH entry set up by an
+ * earlier call in the persistent shell cannot substitute other code. A
+ * program already named by a path is kept as written: bash looks up neither
+ * aliases, functions, nor PATH for it.
+ */
+export function pinnedSafeCommand(
+  command: string,
+  config: AutoReviewConfig,
+  cwd: string,
+  searchPath: string = STARTUP_PATH,
+): string | null {
   if (UNSAFE_SHELL_CHARACTERS.test(command)) {
-    return false;
+    return null;
   }
-  const simple = normalizeCommand(unwrapBashLc(command) ?? command);
-  if (!simple) {
-    return false;
+  const tokens = tokenizeWords(command);
+  if (!tokens?.length) {
+    return null;
   }
-  return isBuiltinSafeCommand(simple, cwd) || isUserAllowlisted(simple, config, cwd);
+  if (!isBuiltinSafeCommand(tokens, cwd) && !isUserAllowlisted(command, tokens, config, cwd)) {
+    return null;
+  }
+  const program = tokens[0];
+  if (program.text.includes("/")) {
+    return command;
+  }
+  const resolved = resolveStartupProgram(program.text, cwd, searchPath);
+  return resolved ? `${command.slice(0, program.start)}${shellQuote(resolved)}${command.slice(program.end)}` : null;
+}
+
+export function isSafeReadOnlyCommand(command: string, config: AutoReviewConfig, cwd: string): boolean {
+  return pinnedSafeCommand(command, config, cwd) !== null;
 }

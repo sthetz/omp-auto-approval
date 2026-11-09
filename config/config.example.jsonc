@@ -6,6 +6,7 @@
   "classifierTimeoutSeconds": 90,
   "maxConsecutiveDenials": 3,
   "safeCommandAllowlist": [],
+  "reviewExemptTools": [],
   "allow": [],
   "deny": [],
   "environment": "",

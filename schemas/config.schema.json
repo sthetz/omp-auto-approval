@@ -11,6 +11,7 @@
     "classifierTimeoutSeconds": { "type": "number", "exclusiveMinimum": 0, "default": 90 },
     "maxConsecutiveDenials": { "type": "number", "exclusiveMinimum": 0, "default": 3 },
     "safeCommandAllowlist": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "reviewExemptTools": { "type": "array", "items": { "type": "string" }, "default": [] },
     "allow": { "type": "array", "items": { "type": "string" }, "default": [] },
     "deny": { "type": "array", "items": { "type": "string" }, "default": [] },
     "environment": { "type": "string", "default": "" },

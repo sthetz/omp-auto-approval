@@ -2,6 +2,8 @@ import { getString, isPathWithin, sha256, stableStringify, toRecord, truncateInl
 import { normalizeCommand } from "./safe-command.js";
 import type { ReviewSubject, ToolCallEventLike } from "./types.js";
 
+const LOCAL_STATE_TOOLS: Record<string, true> = { todo: true, wait: true };
+
 const READ_ONLY_TOOLS = new Set([
   "read",
   "grep",
@@ -29,6 +31,50 @@ export function getToolName(event: ToolCallEventLike): string | null {
 
 export function getToolInput(event: ToolCallEventLike): unknown {
   return event.input !== undefined ? event.input : event.arguments ?? {};
+}
+
+export function isLocalStateTool(toolName: string): boolean {
+  return LOCAL_STATE_TOOLS[toolName.trim().toLowerCase()] === true;
+}
+
+const IMAGE_SOURCE_ENTITIES: Record<string, string> = {
+  colon: ":",
+  sol: "/",
+  tab: "\t",
+  newline: "\n",
+};
+
+function decodeImageSource(value: string): string {
+  return value
+    .replace(/&#(?:x([0-9a-f]+)|([0-9]+));?/gi, (_match, hex: string | undefined, decimal: string | undefined) => (
+      String.fromCodePoint(Number.parseInt(hex ?? decimal ?? "0", hex ? 16 : 10))
+    ))
+    .replace(/&(colon|sol|tab|newline);/gi, (_match, entity: string) => IMAGE_SOURCE_ENTITIES[entity.toLowerCase()] ?? "")
+    .replace(/[\u0000-\u0020]/g, "");
+}
+
+function hasExternalImageUrl(input: unknown): boolean {
+  const html = getString(toRecord(input).html) ?? "";
+  for (const match of html.matchAll(/<img\b[^>]*>/gi)) {
+    const tag = match[0];
+    const source = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i.exec(tag);
+    if (!source) {
+      // Malformed source attributes fail closed into classifier review.
+      if (/\bsrc\b/i.test(tag)) {
+        return true;
+      }
+      continue;
+    }
+    const value = decodeImageSource(source[1] ?? source[2] ?? source[3] ?? "");
+    if (/^(?:https?:|\/\/)/i.test(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function isInteractiveUiOnlyTool(toolName: string, input: unknown, hasUI: boolean): boolean {
+  return hasUI && toolName.trim().toLowerCase() === "ask" && !hasExternalImageUrl(input);
 }
 
 export function isReadOnlyTool(toolName: string, toolDefinition?: unknown): boolean {

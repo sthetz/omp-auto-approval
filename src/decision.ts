@@ -8,6 +8,8 @@ import {
   findToolDefinition,
   getToolInput,
   getToolName,
+  isLocalStateTool,
+  isInteractiveUiOnlyTool,
   isManualOnlyTool,
   isReadOnlyTool,
   isWorkspaceInternalPath,
@@ -110,6 +112,26 @@ export async function evaluateToolCall(
   const input = getToolInput(event);
   const subject = createReviewSubject(toolName, input, cwd);
   const toolDefinition = findToolDefinition(toolName, options.tools ?? []);
+
+  const localState = isLocalStateTool(toolName);
+  const uiOnly = isInteractiveUiOnlyTool(toolName, input, ctx.hasUI === true);
+  const normalizedToolName = toolName.trim().toLowerCase();
+  const explicitlyExempt = config.reviewExemptTools.some(
+    (name) => name.trim().toLowerCase() === normalizedToolName,
+  );
+  if (localState || uiOnly || explicitlyExempt) {
+    await writeAudit(config, {
+      event: "decision",
+      route: localState ? "local_state" : uiOnly ? "ui_only" : "tool_allowlist",
+      mode: config.mode,
+      toolName,
+      actionSummary: subject.actionSummary,
+      actionHash: subject.actionHash,
+      outcome: "allow",
+      durationMs: Date.now() - started,
+    });
+    return {};
+  }
 
   if (isReadOnlyTool(toolName, toolDefinition)) {
     await writeAudit(config, {

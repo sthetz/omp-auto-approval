@@ -140,6 +140,24 @@ sequenceDiagram
 
 `auto` is fail-closed for reviewed actions and should be used only in trusted unattended contexts. Classifier failures and denials block the tool call. Any local fast path must be narrowly defined and statically low risk; otherwise the action is reviewed or blocked.
 
+## Tool Review Exemptions
+
+`todo` and `wait` only perform local orchestration, so they always bypass classifier review. Their decisions are still written to the audit log with route `local_state`.
+
+`ask` is UI-only. In interactive sessions, forms without external image URLs bypass classifier review with audit route `ui_only`; OMP still renders the form and waits for submit or cancel. Forms containing HTTP(S) or protocol-relative image URLs remain classifier-reviewed because rendering them can make network requests. Noninteractive `ask` calls are also classifier-reviewed.
+
+`eval` and `task` remain classifier-reviewed: `eval` executes arbitrary code, and `task` can delegate work to fully capable subagents.
+
+Set `reviewExemptTools` in `config.jsonc` to bypass all extension review for additional tool names:
+
+```json
+{
+  "reviewExemptTools": ["custom_state"]
+}
+```
+
+Tool names are case-insensitive. This is a deterministic bypass, including for tools that would otherwise require manual approval, so only list tools whose execution you are willing to allow without AI review. In contrast, `allow` only adds guidance to the classifier prompt and does not guarantee approval.
+
 ## Classifier Model
 
 By default, the approval classifier uses the current OMP session model. Use `/auto-approval model` to choose another available model from OMP's model selector.

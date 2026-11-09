@@ -16,6 +16,7 @@ export interface AutoReviewConfig {
   classifierTimeoutSeconds: number;
   maxConsecutiveDenials: number;
   safeCommandAllowlist: string[];
+  reviewExemptTools: string[];
   allow: string[];
   deny: string[];
   environment: string;
@@ -88,6 +89,9 @@ export interface ReviewSubject {
 
 export type RouteName =
   | "disabled"
+  | "local_state"
+  | "ui_only"
+  | "tool_allowlist"
   | "readonly"
   | "workspace_write"
   | "safe_command"

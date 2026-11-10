@@ -3071,7 +3071,7 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("config saves only non-default values and maps the legacy 90s classifier timeout", () => {
+  await test("config saves only non-default values", () => {
     const dir = mkdtempSync(join(tmpdir(), "omp-clearance-config-"));
     const file = join(dir, "config.jsonc");
     try {
@@ -3080,12 +3080,11 @@ async function run(): Promise<void> {
       assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { enabled: false, mode: "fallback" });
       assert.equal(created.config.classifierTimeoutSeconds, 25);
 
-      writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, enabled: true, classifierTimeoutSeconds: 90, readRoots: undefined, allow: undefined }));
-      const legacy = loadConfig(file);
-      assert.equal(legacy.config.classifierTimeoutSeconds, 25);
-      assert.equal(legacy.notice, undefined);
+      writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, enabled: true, readRoots: undefined, allow: undefined }));
+      const full = loadConfig(file);
+      assert.equal(full.notice, undefined);
 
-      saveConfig({ ...legacy.config, mode: "auto", readRoots: ["/nix/store"] }, file);
+      saveConfig({ ...full.config, mode: "auto", readRoots: ["/nix/store"] }, file);
       assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { enabled: true, mode: "auto", readRoots: ["/nix/store"] });
 
       writeFileSync(file, JSON.stringify({ enabled: true, classifierTimeoutSeconds: 45 }));

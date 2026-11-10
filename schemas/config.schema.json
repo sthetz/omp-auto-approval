@@ -35,7 +35,7 @@
       "type": "number",
       "exclusiveMinimum": 0,
       "default": 25,
-      "description": "Keep below OMP's extensionHandlers.toolCallTimeoutMs (30 s by default). 90, the pre-0.3.0 default, is read as 25."
+      "description": "Keep below OMP's extensionHandlers.toolCallTimeoutMs (30 s by default)."
     },
     "maxConsecutiveDenials": {
       "type": "number",

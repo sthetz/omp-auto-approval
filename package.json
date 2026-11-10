@@ -18,7 +18,6 @@
   "files": [
     "index.ts",
     "src",
-    "tests",
     "config",
     "schemas",
     "docs",

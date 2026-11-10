@@ -6,6 +6,12 @@ An [OMP](https://github.com/can1357/oh-my-pi) extension that decides, for every 
 - **Command rules** stop what should never happen without you: a forced `git push` is blocked, `sudo` asks you, `terraform apply` goes to review. You can add your own.
 - **The classifier**, inspired by Claude Code auto mode and Codex Auto-review, judges everything else against what you asked for in the conversation. In `fallback` mode you decide when it says no; in `auto` mode its no is final.
 
+## Limits
+
+- **It is not a sandbox.** An allowed command runs with your permissions. Fast paths and rules read commands as text, conservatively: what they cannot read exactly goes to review, but a determined agent can still hide a command from a rule, for example in a script it writes first.
+- **The classifier is a model.** It can be wrong, and it reads text the agent wrote, though [it treats that text as untrusted](#the-classifier). `fallback` keeps you in the loop for every no; `auto` trusts every yes.
+- **Only OMP is supported.** The extension loads OMP's own packages, and its fast paths know OMP's tools.
+
 ## Installation
 
 ```bash
@@ -26,7 +32,7 @@ OMP's own `tools.approvalMode` setting runs after this extension has allowed a c
 
 Don't run omp-clearance alongside pi-auto-approval or omp-auto-approval: each reviews every tool call on its own.
 
-**Upgrading from omp-auto-approval.** Before 0.4.0 this project was called omp-auto-approval. Uninstall it (`omp plugin uninstall omp-auto-approval`), rename the environment variables `PI_AUTO_APPROVAL_CONFIG_PATH`, `PI_AUTO_APPROVAL_RULES_PATH` and `PI_AUTO_APPROVAL_LOGS_DIR` to `CLEARANCE_CONFIG_PATH`, `CLEARANCE_RULES_PATH` and `CLEARANCE_LOGS_DIR`, and move `config.jsonc` and `rules.jsonc` along if they lived in the old extension directory. The command is now `/clearance`, and the audit log is written to `omp-clearance.jsonl`. The old `safeCommandAllowlist` and `blockCommands` settings are no longer read: write them as [allow and block rules](docs/command-rules.md#allow-review-ask-and-block-rules).
+**Upgrading from omp-auto-approval.** Before 0.4.0 this project was called omp-auto-approval. Uninstall it (`omp plugin uninstall omp-auto-approval`), rename the environment variables `PI_AUTO_APPROVAL_CONFIG_PATH`, `PI_AUTO_APPROVAL_RULES_PATH` and `PI_AUTO_APPROVAL_LOGS_DIR` to `CLEARANCE_CONFIG_PATH`, `CLEARANCE_RULES_PATH` and `CLEARANCE_LOGS_DIR`, and move `config.jsonc` and `rules.jsonc` along if they lived in the old extension directory. The command is now `/clearance`, and the audit log is written to `omp-clearance.jsonl`. The old `safeCommandAllowlist` and `blockCommands` settings are no longer read: write them as [allow and block rules](docs/command-rules.md#allow-review-ask-and-block-rules). Delete `"classifierTimeoutSeconds": 90` if your config has it: versions before 0.3.0 wrote it there, and it is no longer read as 25, so OMP's 30 s limit would stop the classifier first.
 
 ## Modes
 
@@ -188,12 +194,6 @@ Every decision is appended as a line of JSON to `logs/omp-clearance.jsonl` in th
 - the command as actually run, if pinning rewrote it (`pinnedCommand`, `pinnedCwd`).
 
 A `shell_latch` event records when the bash fast path turned off for a session. The log holds the commands and paths your agent used, so treat it as private.
-
-## Limits
-
-- **It is not a sandbox.** An allowed command runs with your permissions. Fast paths and rules read commands as text, conservatively: what they cannot read exactly goes to review, but a determined agent can still hide a command from a rule, for example in a script it writes first.
-- **The classifier is a model.** It can be wrong, and despite the measures above it reads text the agent wrote. `fallback` keeps you in the loop for every no; `auto` trusts every yes.
-- **Only OMP is supported.** The extension loads OMP's own packages, and its fast paths know OMP's tools.
 
 ## Development
 

@@ -21,11 +21,8 @@ export const DEFAULT_CONFIG: AutoReviewConfig = {
   audit: true,
 };
 
-// Versions before 0.3.0 wrote every default into the config file, so the old
-// 90 s classifier timeout is frozen into existing installs. OMP blocks a tool
-// call whose extension handler runs past extensionHandlers.toolCallTimeoutMs
-// (30 s by default), so read that value as "use the default".
-const LEGACY_DEFAULT_CLASSIFIER_TIMEOUT_SECONDS = 90;
+// OMP blocks a tool call whose extension handler runs past
+// extensionHandlers.toolCallTimeoutMs (30 s by default).
 const OMP_DEFAULT_HANDLER_TIMEOUT_SECONDS = 30;
 
 // Always written, so the file shows the current state at a glance.
@@ -76,9 +73,7 @@ export function normalizeConfig(raw: unknown): AutoReviewConfig {
       ? record.classifierModel.trim()
       : null,
     approvalTimeoutSeconds: positiveNumber(record.approvalTimeoutSeconds, DEFAULT_CONFIG.approvalTimeoutSeconds),
-    classifierTimeoutSeconds: record.classifierTimeoutSeconds === LEGACY_DEFAULT_CLASSIFIER_TIMEOUT_SECONDS
-      ? DEFAULT_CONFIG.classifierTimeoutSeconds
-      : positiveNumber(record.classifierTimeoutSeconds, DEFAULT_CONFIG.classifierTimeoutSeconds),
+    classifierTimeoutSeconds: positiveNumber(record.classifierTimeoutSeconds, DEFAULT_CONFIG.classifierTimeoutSeconds),
     maxConsecutiveDenials: positiveNumber(record.maxConsecutiveDenials, DEFAULT_CONFIG.maxConsecutiveDenials),
     readRoots: stringArray(record.readRoots),
     reviewExemptTools: stringArray(record.reviewExemptTools),

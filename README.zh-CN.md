@@ -1,70 +1,68 @@
-# omp-auto-approval
+# omp-clearance
 
 [English](./README.md) | 中文
 
-omp-auto-approval 是 [pi-auto-approval](https://github.com/Europa2061/pi-auto-approval) 的 OMP 分支，提供受 Claude Code auto mode 和 Codex Auto-review 启发的自动审批功能。
+omp-clearance 会为 OMP agent 的每一次工具调用做出决定：直接放行、交给 AI 分类器审查、请你确认，或直接阻止。命令规则和按程序划分的选项表让常见的只读命令立即通过，并直接阻止危险命令；其余调用由受 Claude Code auto mode 和 Codex Auto-review 启发的分类器判断。高风险、被拒绝、失败或不确定的动作，会按当前模式回退到人工审批或被阻止。
 
-当 OMP agent 请求执行工具调用时，扩展会用 AI 分类器判断能否安全放行。低风险动作会自动批准；高风险、拒绝、失败或不确定的动作，会按当前模式回退到人工审批或直接阻止。
+> **来源**
+>
+> omp-clearance 最初是 [pi-auto-approval](https://github.com/Europa2061/pi-auto-approval) 的分支，经由 HayabusaC 的 OMP 适配版本而来，该版本以 [`omp-auto-approval@0.1.0`](https://www.npmjs.com/package/omp-auto-approval/v/0.1.0) 发布在 npm 上（其源码仓库已不再公开）。本项目从该包恢复，大部分代码已重写，并在 0.4.0 中改名。本项目与上述两个项目均无隶属关系。两者都采用 Apache-2.0 许可证，许可证保留在 [`LICENSE`](./LICENSE) 中；git 历史记录了每位作者的提交。
 
 ## 安装
 
-直接从 GitHub 安装此分支的最新版本：
+直接从 GitHub 安装最新版本：
 
 ```bash
-omp plugin install https://github.com/sthetz/omp-auto-approval
+omp plugin install https://github.com/sthetz/omp-clearance
 ```
 
 安装固定为 `0.3.1` 的版本：
 
 ```bash
-omp plugin install github:sthetz/omp-auto-approval#v0.3.1
+omp plugin install github:sthetz/omp-clearance#v0.3.1
 ```
 
-原始 `0.1.0` 版本仍以 `omp-auto-approval` 的名称发布在 npm 上，但该包包含原始代码，而不是此恢复分支。此分支通过 GitHub 分发，不发布到 npm。
+omp-clearance 通过 GitHub 分发。npm 上的 `omp-auto-approval` 包是 HayabusaC 的原始 0.1.0 版本，并非本项目。
 
 卸载插件：
 
 ```bash
-omp plugin uninstall omp-auto-approval
+omp plugin uninstall omp-clearance
 ```
 
 重启 OMP RPC 进程并启用推荐模式：
 
 ```text
-/auto-approval fallback
+/clearance fallback
 ```
 
 OMP 自带审批设置 `tools.approvalMode`，它在本扩展放行调用之后运行。默认值 `yolo` 不会额外询问。若设为 `always-ask`、`always-ask-cached` 或 `write`，OMP 仍会对本扩展已批准的调用再次询问你。
 
-此分支和原版都会注册 `/auto-approval` 命令。启用本分支前请移除或禁用原版，避免命令重复注册。如需保留自定义设置，请先备份；本分支使用独立的配置和审计日志路径。
+不要与 pi-auto-approval 或 omp-auto-approval 同时启用：每个扩展都会各自审查每一次工具调用。
+
+0.4.0 之前本项目名为 omp-auto-approval。升级时请先卸载它（`omp plugin uninstall omp-auto-approval`），把环境变量 `PI_AUTO_APPROVAL_CONFIG_PATH`、`PI_AUTO_APPROVAL_RULES_PATH` 和 `PI_AUTO_APPROVAL_LOGS_DIR` 改名为 `CLEARANCE_CONFIG_PATH`、`CLEARANCE_RULES_PATH` 和 `CLEARANCE_LOGS_DIR`；如果 `config.jsonc` 放在旧扩展目录中，也一并移走。命令现在是 `/clearance`。
 
 ## 命令
 
-`/auto-approval` 是唯一的斜杠命令。输入带尾随空格的 `/auto-approval ` 可以查看可用参数。
+`/clearance` 是唯一的斜杠命令。输入带尾随空格的 `/clearance ` 可以查看可用参数。
 
 | 命令 | 效果 |
 | --- | --- |
-| `/auto-approval status` | 显示当前状态、审批分类器模型、配置文件路径、审计日志路径以及配置问题。 |
-| `/auto-approval off` | 关闭自动审批。工具审批回到 OMP 的默认行为。 |
-| `/auto-approval fallback` | 开启 AI 审批；当分类器拒绝或失败时，回退到人工审批。 |
-| `/auto-approval auto` | 只使用 AI 审批。分类器拒绝或失败时直接阻止工具调用。 |
-| `/auto-approval model` | 打开审批分类器模型选择器。 |
-| `/auto-approval model current` | 使用当前 OMP 会话模型作为审批分类器模型。 |
-| `/auto-approval rules [程序 \| 规则 id]` | 列出正在使用的命令规则及其来源文件，或显示某个程序的条目或某条规则。见[自定义命令规则](#自定义命令规则)。 |
-| `/auto-approval explain <tool> [args]` | 显示某个工具调用会走哪条审批路由，但不执行它。`args` 可以是路径、JSON 对象，或（对 `bash`）命令，例如 `/auto-approval explain read ~/.ssh/id_ed25519`。如果第一个单词不是当前会话中的工具，整段输入会被当作 bash 命令解释：`/auto-approval explain ls -la`。 |
-
-## 截图
-
-`/auto-approval` 参数补全会直接在 OMP 中展示可用模式和模型选择入口。
-
-![auto-approval 命令补全](docs/images/auto-approval-command.png)
+| `/clearance status` | 显示当前状态、审批分类器模型、配置文件路径、审计日志路径以及配置问题。 |
+| `/clearance off` | 关闭自动审批。工具审批回到 OMP 的默认行为。 |
+| `/clearance fallback` | 开启 AI 审批；当分类器拒绝或失败时，回退到人工审批。 |
+| `/clearance auto` | 只使用 AI 审批。分类器拒绝或失败时直接阻止工具调用。 |
+| `/clearance model` | 打开审批分类器模型选择器。 |
+| `/clearance model current` | 使用当前 OMP 会话模型作为审批分类器模型。 |
+| `/clearance rules [程序 \| 规则 id]` | 列出正在使用的命令规则及其来源文件，或显示某个程序的条目或某条规则。见[自定义命令规则](#自定义命令规则)。 |
+| `/clearance explain <tool> [args]` | 显示某个工具调用会走哪条审批路由，但不执行它。`args` 可以是路径、JSON 对象，或（对 `bash`）命令，例如 `/clearance explain read ~/.ssh/id_ed25519`。如果第一个单词不是当前会话中的工具，整段输入会被当作 bash 命令解释：`/clearance explain ls -la`。 |
 
 ## 架构
 
-omp-auto-approval 位于 OMP 工具调用和默认审批路径之间：
+omp-clearance 位于 OMP 工具调用和默认审批路径之间：
 
-- 命令层注册 `/auto-approval` 并持久化本地配置；
-- 提示词层在自动审批开启时向系统提示词追加一段简短说明，要求代理在调用被阻止时如实报告，而不是换一种方式重试；
+- 命令层注册 `/clearance` 并持久化本地配置；
+- 提示词层在omp-clearance 开启时向系统提示词追加一段简短说明，要求代理在调用被阻止时如实报告，而不是换一种方式重试；
 - 路由层快速处理关闭、工作区只读、工作区安全、会话已批准等动作；
 - 分类器层投影最近会话上下文，并让选定模型返回结构化允许或拒绝决策；
 - 兜底层在分类器无法安全放行时请求人工审批；
@@ -76,7 +74,7 @@ omp-auto-approval 位于 OMP 工具调用和默认审批路径之间：
 sequenceDiagram
     participant User as 用户
     participant OMP as OMP Agent
-    participant Ext as omp-auto-approval
+    participant Ext as omp-clearance
     participant Store as 会话缓存
     participant Classifier as 审批分类器模型
     participant Human as 人工审批 UI
@@ -145,7 +143,7 @@ sequenceDiagram
 
 连续出现 `maxConsecutiveDenials` 次自动拒绝（默认 3 次：分类器拒绝或失败，以及 ask 和 block 规则的拒绝）后，扩展会直接结束代理的当前轮次，而不是指望代理自己停下。`fallback` 模式下的人工审批界面也提供 **Reject and Stop the Turn**。
 
-自动审批开启时，系统提示词中会追加一段简短说明，要求代理在调用被阻止时向你报告，而不是换一种方式重试。
+omp-clearance 开启时，系统提示词中会追加一段简短说明，要求代理在调用被阻止时向你报告，而不是换一种方式重试。
 
 ## 安全提示
 
@@ -190,7 +188,7 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 
   OMP 在每个会话中用同一个持久 shell 运行所有 bash 调用，因此之前的调用可能留下别名、函数，或把工作区目录加入 PATH，让 `git status` 变成别的东西。因此走 fast path 的命令会被改写为按绝对路径运行其中的每个程序：在 OMP 启动时的 PATH 中查找，并跳过工作区内的目录，例如 `git status` 以 `/run/current-system/sw/bin/git status` 运行。开头的 `~` 也会被写成 OMP 的主目录，因为 bash 从 shell 的 `HOME` 展开它，而之前的调用可以修改 `HOME`。如果在那里找不到某个程序，命令需要审批。改写后的命令会出现在对话记录中，并以 `pinnedCommand` 写入审计日志；如果开头的 `cd` 改变了目录，还会写入 `pinnedCwd`。用 `bash -lc` 包装的命令需要审批，因为包装层自己的 `bash` 会在那个 PATH 上查找。`cwd` 位于工作目录之外的 bash 调用需要审批；位于其内的调用会从该目录检查路径。之前调用导出的变量（`GIT_EXTERNAL_DIFF`、`LD_PRELOAD` 等）仍会传给固定路径的程序，但设置它们需要一次经过审批的调用。
 
-  有些 shell 状态会在之后的每条命令之前或之后自行运行代码，固定路径无法阻止：`trap … DEBUG` 会在固定路径的程序之前运行，也会在放在它前面的任何内容之前运行。因此，一旦运行过可能设置这类钩子的 bash 命令（无论经由哪条路由，或在扩展关闭时），本会话剩余时间内的所有 bash 命令都需要审批，OMP 会显示警告。这包括 `trap`、`eval`、`exec`、`enable`、由变量命名的命令（`$cmd`，除非同一条命令把它设为纯文本）、设置为这些命令的别名或变量、`PS4`、`BASH_ENV`、`PROMPT_COMMAND`、`extdebug` 和 `functrace`，以及对无法读取或包含上述内容的文件执行 `source`/`.`。路径为字面量的被 source 文件会以同样方式读取和检查，因此 `source .venv/bin/activate` 仍可走 fast path。heredoc 的内容是命令的输入，不会被检查。在约 15,000 条记录下来的 agent 命令中，有 1.7% 会关闭 fast path。`/auto-approval status` 和 `explain` 会说明 fast path 何时关闭；新会话会重新打开它，`/auto-approval off` 不会。该检查读取的是文本，所以分段拼出的钩子（`$'\x74rap'`）可能绕过它；设置钩子的命令本身仍会先经过审批。
+  有些 shell 状态会在之后的每条命令之前或之后自行运行代码，固定路径无法阻止：`trap … DEBUG` 会在固定路径的程序之前运行，也会在放在它前面的任何内容之前运行。因此，一旦运行过可能设置这类钩子的 bash 命令（无论经由哪条路由，或在扩展关闭时），本会话剩余时间内的所有 bash 命令都需要审批，OMP 会显示警告。这包括 `trap`、`eval`、`exec`、`enable`、由变量命名的命令（`$cmd`，除非同一条命令把它设为纯文本）、设置为这些命令的别名或变量、`PS4`、`BASH_ENV`、`PROMPT_COMMAND`、`extdebug` 和 `functrace`，以及对无法读取或包含上述内容的文件执行 `source`/`.`。路径为字面量的被 source 文件会以同样方式读取和检查，因此 `source .venv/bin/activate` 仍可走 fast path。heredoc 的内容是命令的输入，不会被检查。在约 15,000 条记录下来的 agent 命令中，有 1.7% 会关闭 fast path。`/clearance status` 和 `explain` 会说明 fast path 何时关闭；新会话会重新打开它，`/clearance off` 不会。该检查读取的是文本，所以分段拼出的钩子（`$'\x74rap'`）可能绕过它；设置钩子的命令本身仍会先经过审批。
 
   如果 bash 调用带有改变其运行方式或位置的字段，也需要审批：`pty: true`（标准输入是终端）、`async`、带有 `ready`/`log`/`port`/`host` 的服务 `name`、`env`，或扩展不认识的任何字段。只允许 `command`、`cwd`、`timeout` 和 `description`。
 
@@ -211,15 +209,15 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 
 ### 自定义命令规则
 
-`config.jsonc` 旁边的 `rules.jsonc`（或 `PI_AUTO_APPROVAL_RULES_PATH` 指定的文件）会叠加在内置规则之上，格式与 [`config/default-rules.jsonc`](config/default-rules.jsonc) 相同。[`config/rules.example.jsonc`](config/rules.example.jsonc) 是一个带注释的示例：它让 `kubectl get`、`describe` 和 `logs` 免审批（但 `kubectl get secrets` 除外），并修改了几个内置条目。
+`config.jsonc` 旁边的 `rules.jsonc`（或 `CLEARANCE_RULES_PATH` 指定的文件）会叠加在内置规则之上，格式与 [`config/default-rules.jsonc`](config/default-rules.jsonc) 相同。[`config/rules.example.jsonc`](config/rules.example.jsonc) 是一个带注释的示例：它让 `kubectl get`、`describe` 和 `logs` 免审批（但 `kubectl get secrets` 除外），并修改了几个内置条目。
 
 - 你自己写的程序条目会**替换**内置条目。加上 `"extends": "default"` 则改为**合并**进内置条目：选项和子命令逐个键合并，`null` 删除一个内置键（必须与内置文件中的写法完全一致，例如 `"-n --lines"`）；`except` 列表会合并；其他键替换内置值。
 - `"disable": ["program:sed", "program:git blame"]` 移除内置条目。
 - 含多个名字的键（例如 `"get describe"`）表示共享同一条目的多个子命令。子命令的子命令不能单独成为条目，所以 `"worktree list"` 表示 `worktree` 和 `list` 两个子命令；若只想允许 `git worktree list`，请给 `worktree` 设置操作数检查 `{ "literals": { "min": 1, "max": 1, "pattern": "^list$" } }`，示例文件中就是这样写的。
 - `"include": ["~/…/kubectl.jsonc"]` 读取更多文件，路径须为绝对路径或以 `~/` 开头。每个程序只能在一个文件中定义。
 - 条目未列出的选项和子命令仍需审批，与内置规则相同；代码中的所有检查也照常生效：程序从 OMP 启动时的 PATH 中运行，文件只能在可读目录内读取，等等。
-- 只要其中任何一个文件有错误（未知的键、类型或检查、重复列出的选项、无效的 include），就不会使用任何规则：由于文件中可能有 block 或 ask 规则，在错误修复之前，每条 bash 命令都会先询问你（在 `auto` 模式下或没有交互界面时直接拒绝）。OMP 会在会话开始时显示错误，`/auto-approval status` 会显示正在使用的文件或错误；修复文件后，执行任何 `/auto-approval` 命令即可重新加载。
-- 这些文件在会话开始时以及执行任何 `/auto-approval` 命令时读取。写入快速通道永远不会写入它们或 `config.jsonc`，即使它们位于工作目录中。
+- 只要其中任何一个文件有错误（未知的键、类型或检查、重复列出的选项、无效的 include），就不会使用任何规则：由于文件中可能有 block 或 ask 规则，在错误修复之前，每条 bash 命令都会先询问你（在 `auto` 模式下或没有交互界面时直接拒绝）。OMP 会在会话开始时显示错误，`/clearance status` 会显示正在使用的文件或错误；修复文件后，执行任何 `/clearance` 命令即可重新加载。
+- 这些文件在会话开始时以及执行任何 `/clearance` 命令时读取。写入快速通道永远不会写入它们或 `config.jsonc`，即使它们位于工作目录中。
 
 没有按项目区分的规则文件：克隆下来的仓库可能会自带一个。
 
@@ -244,7 +242,7 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 
 在命令匹配到的规则中，最严格的一项生效：block，其次 ask，再次 review。任何一项都优先于程序条目、allow 规则和 `reviewExemptTools`，因此宽泛的允许永远不会掩盖例外。ask 和 block 的拒绝计入 `maxConsecutiveDenials`。`why` 会显示在拒绝原因和审批提示中，并作为你的理由提供给分类器。`id` 必须唯一；`disable` 可按 id 移除内置规则（见[内置规则](#内置规则)）。
 
-`/auto-approval rules` 列出正在使用的程序和规则及其来源文件；`/auto-approval rules <程序 | 规则 id>` 显示其中一项。`explain` 会给出起决定作用的规则，审计日志将其记录为 `ruleId` 和 `ruleSource`（对于走快速通道的命令，放行它的条目记录为 `ruleIds`）。
+`/clearance rules` 列出正在使用的程序和规则及其来源文件；`/clearance rules <程序 | 规则 id>` 显示其中一项。`explain` 会给出起决定作用的规则，审计日志将其记录为 `ruleId` 和 `ruleSource`（对于走快速通道的命令，放行它的条目记录为 `ruleIds`）。
 
 #### 模式
 
@@ -324,7 +322,7 @@ allow 规则的 `prefix` 是按原样书写的命令开头（包含引号，不�
 
 ## 分类器模型
 
-默认情况下，审批分类器使用当前 OMP 会话模型。使用 `/auto-approval model` 可以从 OMP 的模型选择器中选择另一个可用模型。
+默认情况下，审批分类器使用当前 OMP 会话模型。使用 `/clearance model` 可以从 OMP 的模型选择器中选择另一个可用模型。
 
 选中的值会保存为 `config.jsonc` 中的 `classifierModel`。`null` 表示“使用当前会话模型”。
 
@@ -342,15 +340,15 @@ OMP 代替他人放入 user 角色的消息（`attribution: "agent"`）不算作
 
 当扩展的 `tool_call` 处理器运行时间超过 `extensionHandlers.toolCallTimeoutMs`（默认 30 秒）时，OMP 会直接阻止该工具调用：分类器还没给出结果，即使在 `fallback` 模式下也不会询问你。根据该设置的说明，在 OMP 自身对话框（例如审批界面）中等待的时间不计入。因此 `classifierTimeoutSeconds` 默认是 25 秒：较慢的分类器会先超时，于是 `fallback` 会询问你，`auto` 会给出明确原因并阻止。
 
-如果使用较慢的分类器模型，请同时调高两者：OMP 的 `extensionHandlers.toolCallTimeoutMs`，以及低于它的 `classifierTimeoutSeconds`。当 `classifierTimeoutSeconds` 为 30 秒或更长时，`/auto-approval status` 会给出警告。0.3.0 之前默认值是 90 秒，并且会写入每个配置文件；现在读取到的 90 会被视为 25。
+如果使用较慢的分类器模型，请同时调高两者：OMP 的 `extensionHandlers.toolCallTimeoutMs`，以及低于它的 `classifierTimeoutSeconds`。当 `classifierTimeoutSeconds` 为 30 秒或更长时，`/clearance status` 会给出警告。0.3.0 之前默认值是 90 秒，并且会写入每个配置文件；现在读取到的 90 会被视为 25。
 
 ## 配置
 
-`config.jsonc` 位于扩展目录中，或由 `PI_AUTO_APPROVAL_CONFIG_PATH` 指定。只保存与默认值不同的配置，因此以后默认值的变化会生效。`/auto-approval status` 会报告未知的键（例如拼写错误）。完整 schema 见 [`schemas/config.schema.json`](schemas/config.schema.json)，带注释的示例见 [`config/config.example.jsonc`](config/config.example.jsonc)。
+`config.jsonc` 位于扩展目录中，或由 `CLEARANCE_CONFIG_PATH` 指定。只保存与默认值不同的配置，因此以后默认值的变化会生效。`/clearance status` 会报告未知的键（例如拼写错误）。完整 schema 见 [`schemas/config.schema.json`](schemas/config.schema.json)，带注释的示例见 [`config/config.example.jsonc`](config/config.example.jsonc)。
 
 | 键 | 默认值 | 含义 |
 | --- | --- | --- |
-| `enabled`、`mode` | `false`、`"fallback"` | 由 `/auto-approval off / fallback / auto` 设置。 |
+| `enabled`、`mode` | `false`、`"fallback"` | 由 `/clearance off / fallback / auto` 设置。 |
 | `classifierModel` | `null` | `provider/model`，或 `null` 表示使用会话模型。 |
 | `classifierTimeoutSeconds` | `25` | 见[分类器超时](#分类器超时)。 |
 | `approvalTimeoutSeconds` | `30` | 人工审批界面等待多久后视为拒绝。 |
@@ -373,4 +371,4 @@ OMP 代替他人放入 user 角色的消息（`attribution: "agent"`）不算作
 npm run smoke:omp
 ```
 
-该脚本会在临时配置和日志目录中运行，验证 `/auto-approval fallback`、`/auto-approval auto`、安全 bash 命令放行、可疑 bash 命令的人工兜底或拒绝，以及 JSONL 审计日志内容。
+该脚本会在临时配置和日志目录中运行，验证 `/clearance fallback`、`/clearance auto`、安全 bash 命令放行、可疑 bash 命令的人工兜底或拒绝，以及 JSONL 审计日志内容。

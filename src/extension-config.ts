@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { AutoReviewConfig, AutoReviewMode } from "./types.js";
 import { toRecord } from "./common.js";
 
-export const EXTENSION_ID = "omp-auto-approval";
+export const EXTENSION_ID = "omp-clearance";
 
 export const DEFAULT_CONFIG: AutoReviewConfig = {
   enabled: false,
@@ -36,14 +36,12 @@ export function extensionRoot(moduleUrl = import.meta.url): string {
 }
 
 export function configPath(): string {
-  return process.env.PI_AUTO_APPROVAL_CONFIG_PATH?.trim()
-    || process.env.PI_AUTO_REVIEW_CONFIG_PATH?.trim()
+  return process.env.CLEARANCE_CONFIG_PATH?.trim()
     || join(extensionRoot(), "config.jsonc");
 }
 
 export function logsDir(): string {
-  return process.env.PI_AUTO_APPROVAL_LOGS_DIR?.trim()
-    || process.env.PI_AUTO_REVIEW_LOGS_DIR?.trim()
+  return process.env.CLEARANCE_LOGS_DIR?.trim()
     || join(extensionRoot(), "logs");
 }
 
@@ -119,7 +117,7 @@ function configNotices(path: string, raw: unknown, config: AutoReviewConfig): st
   const notices: string[] = [];
   const unknownKeys = unknownConfigKeys(raw);
   if (unknownKeys.length > 0) {
-    notices.push(`omp-auto-approval config at '${path}' has unknown key(s) that are ignored: ${unknownKeys.join(", ")}.`);
+    notices.push(`omp-clearance config at '${path}' has unknown key(s) that are ignored: ${unknownKeys.join(", ")}.`);
   }
   for (const [key, kind] of Object.entries(MOVED_TO_RULES)) {
     const value = toRecord(raw)[key];
@@ -158,7 +156,7 @@ export function loadConfig(path = configPath()): { config: AutoReviewConfig; war
     return {
       config: { ...DEFAULT_CONFIG },
       created,
-      warning: `Failed to read omp-auto-approval config at '${path}': ${message}; using defaults.`,
+      warning: `Failed to read omp-clearance config at '${path}': ${message}; using defaults.`,
     };
   }
 }

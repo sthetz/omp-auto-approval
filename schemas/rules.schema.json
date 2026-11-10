@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "omp-auto-approval command rules",
+  "title": "omp-clearance command rules",
   "description": "Command rules: config/default-rules.jsonc, and a user's rules.jsonc over it. Programs, options and operands the bash fast path runs without review; see the comments at the top of config/default-rules.jsonc. src/command-rules.ts validates files more strictly than this schema can.",
   "type": "object",
   "additionalProperties": false,

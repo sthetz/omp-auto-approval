@@ -1,7 +1,7 @@
 import { defaultRulesPath, type CommandRule, type CommandRules, type OptionKind, type OperandRule, type ProgramEntry } from "./command-rules.js";
 
 /**
- * Text for `/auto-approval rules`: what the command rules in use say, and
+ * Text for `/clearance rules`: what the command rules in use say, and
  * where each part comes from.
  */
 
@@ -99,7 +99,7 @@ export function rulesOverview(rules: CommandRules): string {
     rules.rules.length ? "rules (block, then ask, then review wins over any allow):" : "rules: none",
     ...rules.rules.flatMap(ruleLines).map((line) => `  ${line}`),
     "",
-    "/auto-approval rules <program | rule id> shows one entry.",
+    "/clearance rules <program | rule id> shows one entry.",
   ].join("\n");
 }
 

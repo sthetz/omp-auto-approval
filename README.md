@@ -1,74 +1,68 @@
-# omp-auto-approval
+# omp-clearance
 
 English | [中文](./README.zh-CN.md)
 
-omp-auto-approval is an OMP fork of [pi-auto-approval](https://github.com/Europa2061/pi-auto-approval), an automatic approval extension inspired by Claude Code auto mode and Codex Auto-review.
+omp-clearance decides, for each tool call an OMP agent makes, whether it runs without asking, goes to an AI classifier, needs your approval, or is blocked. Command rules and per-program option tables let common read-only commands through at once and stop dangerous ones outright; the classifier, inspired by Claude Code auto mode and Codex Auto-review, judges the rest. Risky, denied, failed, or uncertain actions fall back to human approval or are blocked, depending on the mode.
 
-It uses an AI classifier to approve low-risk tool calls. Risky, denied, failed, or uncertain actions fall back to human approval or are blocked by the selected mode.
-
-> **Restoration and attribution notice**
+> **Origins**
 >
-> This repository is an independently maintained fork restored from the original [`omp-auto-approval@0.1.0` npm package](https://www.npmjs.com/package/omp-auto-approval/v/0.1.0). The original OMP extension was authored and published by **HayabusaC** ([`hayabusac` on npm](https://www.npmjs.com/~hayabusac)); its declared source repository is no longer publicly available. This is not an official repository of the original author. The original Apache-2.0 license is retained in [`LICENSE`](./LICENSE).
+> omp-clearance began as a fork of [pi-auto-approval](https://github.com/Europa2061/pi-auto-approval), by way of HayabusaC's OMP adaptation, published on npm as [`omp-auto-approval@0.1.0`](https://www.npmjs.com/package/omp-auto-approval/v/0.1.0) (its source repository is no longer public). It was restored from that package, rewritten for the most part, and renamed in 0.4.0. It is not affiliated with either project. Both are Apache-2.0, and that license is kept in [`LICENSE`](./LICENSE); the git history records each author's commits.
 
 ## Installation
 
-Install the latest version of this fork directly from GitHub:
+Install the latest version directly from GitHub:
 
 ```bash
-omp plugin install https://github.com/sthetz/omp-auto-approval
+omp plugin install https://github.com/sthetz/omp-clearance
 ```
 
 Install the pinned `0.3.1` release:
 
 ```bash
-omp plugin install github:sthetz/omp-auto-approval#v0.3.1
+omp plugin install github:sthetz/omp-clearance#v0.3.1
 ```
 
-The original `0.1.0` release remains available on npm as `omp-auto-approval`, but that package contains the original code rather than this restored fork. This fork is distributed through GitHub and is not published to npm.
+omp-clearance is distributed through GitHub. The `omp-auto-approval` package on npm is HayabusaC's original 0.1.0, not this project.
 
 Remove the plugin:
 
 ```bash
-omp plugin uninstall omp-auto-approval
+omp plugin uninstall omp-clearance
 ```
 
 Restart the OMP RPC process and enable the recommended mode:
 
 ```text
-/auto-approval fallback
+/clearance fallback
 ```
 
 OMP has its own approval setting, `tools.approvalMode`, which runs after this extension has allowed a call. Its default, `yolo`, adds no prompts. With `always-ask`, `always-ask-cached` or `write`, OMP still asks you about calls this extension already approved.
 
-This fork registers the same `/auto-approval` command as the original Pi package. Remove or disable the original package before enabling this fork to avoid duplicate command registration. Back up custom settings before switching; the fork uses its own config and audit-log paths.
+Don't run omp-clearance alongside pi-auto-approval or omp-auto-approval: each reviews every tool call on its own.
+
+Before 0.4.0 this project was called omp-auto-approval. To upgrade, uninstall it (`omp plugin uninstall omp-auto-approval`), rename the environment variables `PI_AUTO_APPROVAL_CONFIG_PATH`, `PI_AUTO_APPROVAL_RULES_PATH` and `PI_AUTO_APPROVAL_LOGS_DIR` to `CLEARANCE_CONFIG_PATH`, `CLEARANCE_RULES_PATH` and `CLEARANCE_LOGS_DIR`, and move `config.jsonc` along if it lived in the old extension directory. The command is now `/clearance`.
 
 ## Commands
 
-`/auto-approval` is the only slash command. Type `/auto-approval ` with a trailing space to see available arguments.
+`/clearance` is the only slash command. Type `/clearance ` with a trailing space to see available arguments.
 
 | Command | Effect |
 | --- | --- |
-| `/auto-approval status` | Show current state, approval classifier model, config path, audit log path, and any config problems. |
-| `/auto-approval off` | Disable automatic approval. Tool approvals return to OMP's normal behavior. |
-| `/auto-approval fallback` | Enable AI review with human approval fallback when the classifier denies or fails. |
-| `/auto-approval auto` | Enable AI review only. Classifier denial or failure blocks the tool call. |
-| `/auto-approval model` | Open the model selector for the approval classifier model. |
-| `/auto-approval model current` | Use the active OMP session model for approval classification. |
-| `/auto-approval rules [program \| rule id]` | List the command rules in use and the file each comes from, or show one program's entry or one rule. See [Your own command rules](#your-own-command-rules). |
-| `/auto-approval explain <tool> [args]` | Show how a tool call would be routed, without running it. `args` is a path, a JSON object, or (for `bash`) a command, e.g. `/auto-approval explain read ~/.ssh/id_ed25519`. If the first word isn't a tool in the session, the whole input is explained as a bash command: `/auto-approval explain ls -la`. |
-
-## Screenshot
-
-`/auto-approval` argument completions expose the available modes and model selector directly in OMP.
-
-![auto-approval command autocomplete](docs/images/auto-approval-command.png)
+| `/clearance status` | Show current state, approval classifier model, config path, audit log path, and any config problems. |
+| `/clearance off` | Disable automatic approval. Tool approvals return to OMP's normal behavior. |
+| `/clearance fallback` | Enable AI review with human approval fallback when the classifier denies or fails. |
+| `/clearance auto` | Enable AI review only. Classifier denial or failure blocks the tool call. |
+| `/clearance model` | Open the model selector for the approval classifier model. |
+| `/clearance model current` | Use the active OMP session model for approval classification. |
+| `/clearance rules [program \| rule id]` | List the command rules in use and the file each comes from, or show one program's entry or one rule. See [Your own command rules](#your-own-command-rules). |
+| `/clearance explain <tool> [args]` | Show how a tool call would be routed, without running it. `args` is a path, a JSON object, or (for `bash`) a command, e.g. `/clearance explain read ~/.ssh/id_ed25519`. If the first word isn't a tool in the session, the whole input is explained as a bash command: `/clearance explain ls -la`. |
 
 ## Architecture
 
-omp-auto-approval sits between OMP tool calls and the normal approval path:
+omp-clearance sits between OMP tool calls and the normal approval path:
 
-- command layer registers `/auto-approval` and persists local config;
-- prompt layer adds a short note to the system prompt while auto-approval is on, asking the agent to report a blocked call instead of retrying it in another form;
+- command layer registers `/clearance` and persists local config;
+- prompt layer adds a short note to the system prompt while omp-clearance is on, asking the agent to report a blocked call instead of retrying it in another form;
 - routing layer fast-paths disabled, workspace read-only, workspace-safe, and session-approved actions;
 - classifier layer projects recent session context and asks the selected model for a structured allow or deny decision;
 - fallback layer asks the user when classifier review cannot safely approve;
@@ -80,7 +74,7 @@ omp-auto-approval sits between OMP tool calls and the normal approval path:
 sequenceDiagram
     participant User
     participant OMP as OMP Agent
-    participant Ext as omp-auto-approval
+    participant Ext as omp-clearance
     participant Store as Session Cache
     participant Classifier as Approval Classifier Model
     participant Human as Human Approval UI
@@ -149,7 +143,7 @@ sequenceDiagram
 
 After `maxConsecutiveDenials` automatic denials in a row (default 3: classifier denials or failures, and ask and block rule denials), the extension ends the agent's turn instead of trusting the agent to stop on its own. The human approval prompt in `fallback` mode also offers **Reject and Stop the Turn**.
 
-While auto-approval is on, a short note is added to the system prompt asking the agent to report a blocked call to you instead of retrying it in another form.
+While omp-clearance is on, a short note is added to the system prompt asking the agent to report a blocked call to you instead of retrying it in another form.
 
 ## Safety
 
@@ -194,7 +188,7 @@ Fast paths approve without classifier review, so they are deliberately narrow:
 
   OMP runs every bash call in one persistent shell per session, so an earlier call can leave an alias, a function, or a workspace directory on PATH that turns `git status` into something else. A fast-pathed command is therefore rewritten to run every program by absolute path, looked up on the PATH OMP started with, skipping directories inside the workspace: `git status` runs as `/run/current-system/sw/bin/git status`. A leading `~` is written out as OMP's home directory too, since bash expands it from the shell's `HOME`, which an earlier call can change. If a program isn't found there, the command is reviewed. The rewritten command appears in the transcript and in the audit log as `pinnedCommand`, with `pinnedCwd` when a leading `cd` moved it. A command wrapped in `bash -lc` is reviewed, since the wrapper's own `bash` would be looked up on that PATH. A bash call whose `cwd` is outside the working directory is reviewed; one inside it has its paths checked from there. Variables exported by an earlier call (`GIT_EXTERNAL_DIFF`, `LD_PRELOAD`, …) still reach the pinned program, but setting them takes a reviewed call.
 
-  Some shell state runs code by itself, before or after every later command, and pinning cannot stop it: a `trap … DEBUG` runs before the pinned program, and before anything placed in front of it. So once a bash command that may set up such a hook has run, by whatever route or with the extension off, every bash command is reviewed for the rest of the session, and OMP shows a warning. That covers `trap`, `eval`, `exec`, `enable`, a command named by a variable (`$cmd`) unless the same command set it to plain text, aliases or variables set to those, `PS4`, `BASH_ENV`, `PROMPT_COMMAND`, `extdebug` and `functrace`, and `source`/`.` of a file that could not be read or that contains any of these. A sourced file with a literal path is read and checked the same way, so `source .venv/bin/activate` keeps the fast path. Heredoc bodies are a command's input and are not checked. Across about 15,000 recorded agent commands, 1.7% would turn the fast path off. `/auto-approval status` and `explain` say when the fast path is off; a new session turns it back on, and `/auto-approval off` does not. This check reads text, so a hook built in pieces (`$'\x74rap'`) can get past it; the command that sets one is still reviewed first.
+  Some shell state runs code by itself, before or after every later command, and pinning cannot stop it: a `trap … DEBUG` runs before the pinned program, and before anything placed in front of it. So once a bash command that may set up such a hook has run, by whatever route or with the extension off, every bash command is reviewed for the rest of the session, and OMP shows a warning. That covers `trap`, `eval`, `exec`, `enable`, a command named by a variable (`$cmd`) unless the same command set it to plain text, aliases or variables set to those, `PS4`, `BASH_ENV`, `PROMPT_COMMAND`, `extdebug` and `functrace`, and `source`/`.` of a file that could not be read or that contains any of these. A sourced file with a literal path is read and checked the same way, so `source .venv/bin/activate` keeps the fast path. Heredoc bodies are a command's input and are not checked. Across about 15,000 recorded agent commands, 1.7% would turn the fast path off. `/clearance status` and `explain` say when the fast path is off; a new session turns it back on, and `/clearance off` does not. This check reads text, so a hook built in pieces (`$'\x74rap'`) can get past it; the command that sets one is still reviewed first.
 
   A bash call is also reviewed when it carries fields that change how or where it runs: `pty: true` (a terminal on stdin), `async`, a service `name` with `ready`/`log`/`port`/`host`, an `env`, or any field the extension does not know. Only `command`, `cwd`, `timeout` and `description` are allowed.
 
@@ -215,15 +209,15 @@ Files a program reads, as operands or option values (`grep -f`, `diff --from-fil
 
 ### Your own command rules
 
-A `rules.jsonc` next to `config.jsonc` (or at `PI_AUTO_APPROVAL_RULES_PATH`) adds to the built-in rules, in the same format as [`config/default-rules.jsonc`](config/default-rules.jsonc). [`config/rules.example.jsonc`](config/rules.example.jsonc) is a commented example that fast-paths `kubectl get`, `describe` and `logs`, but not `kubectl get secrets`, and changes some built-in entries.
+A `rules.jsonc` next to `config.jsonc` (or at `CLEARANCE_RULES_PATH`) adds to the built-in rules, in the same format as [`config/default-rules.jsonc`](config/default-rules.jsonc). [`config/rules.example.jsonc`](config/rules.example.jsonc) is a commented example that fast-paths `kubectl get`, `describe` and `logs`, but not `kubectl get secrets`, and changes some built-in entries.
 
 - A program entry of your own **replaces** the built-in one. With `"extends": "default"` it is **merged** into it instead: option and subcommand keys one by one, where `null` deletes a built-in key (written exactly as the built-in file writes it, such as `"-n --lines"`); `except` lists are joined; other keys replace the built-in ones.
 - `"disable": ["program:sed", "program:git blame"]` removes built-in entries.
 - A key with several names, such as `"get describe"`, lists subcommands that share one entry. Subcommands of subcommands are not entries of their own, so `"worktree list"` means `worktree` and `list`; to allow only `git worktree list`, give `worktree` the operand check `{ "literals": { "min": 1, "max": 1, "pattern": "^list$" } }`, as the example does.
 - `"include": ["~/…/kubectl.jsonc"]` reads more files, by absolute path or `~/`. Each program may be defined in one file only.
 - Options and subcommands an entry does not list are reviewed, as with the built-in rules, and every check in code still applies: programs run from OMP's startup PATH, files are read only inside the read roots, and so on.
-- If any of these files has an error (an unknown key, kind or check, an option listed twice, a broken include), no rules are used: since the file might have held block or ask rules, every bash command asks you first until it is fixed (and is denied in `auto` mode or without a UI). OMP shows an error at session start, and `/auto-approval status` shows the files in use or the error; after fixing the file, any `/auto-approval` command reloads it.
-- The files are read at session start and on any `/auto-approval` command. The write fast path never writes them, nor `config.jsonc`, even when they are inside the working directory.
+- If any of these files has an error (an unknown key, kind or check, an option listed twice, a broken include), no rules are used: since the file might have held block or ask rules, every bash command asks you first until it is fixed (and is denied in `auto` mode or without a UI). OMP shows an error at session start, and `/clearance status` shows the files in use or the error; after fixing the file, any `/clearance` command reloads it.
+- The files are read at session start and on any `/clearance` command. The write fast path never writes them, nor `config.jsonc`, even when they are inside the working directory.
 
 There are no per-project rules files: a cloned repository could ship one.
 
@@ -248,7 +242,7 @@ Program entries say what may skip review by reading options and operands. A `rul
 
 Among the rules a command matches, the most restrictive decides: block, then ask, then review. Any of them overrides program entries, allow rules and `reviewExemptTools`, so a broad allow can never hide an exception. Ask and block denials count toward `maxConsecutiveDenials`. `why` is shown in the denial, in the approval prompt, and to the classifier as your reason. `id`s are unique; `disable` removes a built-in rule by its id (see [Built-in rules](#built-in-rules)).
 
-`/auto-approval rules` lists the programs and rules in use and the file each comes from; `/auto-approval rules <program | rule id>` shows one. `explain` names the rule that decided, and the audit log records it as `ruleId` and `ruleSource` (and, for a fast-pathed command, the entries that let it through as `ruleIds`).
+`/clearance rules` lists the programs and rules in use and the file each comes from; `/clearance rules <program | rule id>` shows one. `explain` names the rule that decided, and the audit log records it as `ruleId` and `ruleSource` (and, for a fast-pathed command, the entries that let it through as `ruleIds`).
 
 #### Patterns
 
@@ -328,7 +322,7 @@ Tool names are case-insensitive. This is a deterministic bypass, including for t
 
 ## Classifier Model
 
-By default, the approval classifier uses the current OMP session model. Use `/auto-approval model` to choose another available model from OMP's model selector.
+By default, the approval classifier uses the current OMP session model. Use `/clearance model` to choose another available model from OMP's model selector.
 
 The selected value is stored as `classifierModel` in `config.jsonc`. `null` means "use the current session model".
 
@@ -344,15 +338,15 @@ If the classifier allows an action it rated `high` risk without `high` user auth
 
 OMP blocks a tool call when an extension's `tool_call` handler runs longer than `extensionHandlers.toolCallTimeoutMs` (30 s by default), before the classifier answers and without asking you, even in `fallback` mode. According to the setting's description, time spent in OMP's own dialogs, such as the approval prompt, doesn't count. `classifierTimeoutSeconds` therefore defaults to 25 s. A slow classifier then times out first, so `fallback` asks you and `auto` blocks with a clear reason.
 
-If you use a slower classifier model, raise both: OMP's `extensionHandlers.toolCallTimeoutMs`, and `classifierTimeoutSeconds` below it. `/auto-approval status` warns when `classifierTimeoutSeconds` is 30 s or more. Before 0.3.0 the default was 90 s and was written into every config file; a stored 90 is now read as 25.
+If you use a slower classifier model, raise both: OMP's `extensionHandlers.toolCallTimeoutMs`, and `classifierTimeoutSeconds` below it. `/clearance status` warns when `classifierTimeoutSeconds` is 30 s or more. Before 0.3.0 the default was 90 s and was written into every config file; a stored 90 is now read as 25.
 
 ## Configuration
 
-`config.jsonc` lives in the extension directory, or at `PI_AUTO_APPROVAL_CONFIG_PATH`. Only values that differ from the defaults are saved, so later default changes take effect. `/auto-approval status` reports unknown keys, such as typos. The full schema is in [`schemas/config.schema.json`](schemas/config.schema.json) and an annotated example in [`config/config.example.jsonc`](config/config.example.jsonc).
+`config.jsonc` lives in the extension directory, or at `CLEARANCE_CONFIG_PATH`. Only values that differ from the defaults are saved, so later default changes take effect. `/clearance status` reports unknown keys, such as typos. The full schema is in [`schemas/config.schema.json`](schemas/config.schema.json) and an annotated example in [`config/config.example.jsonc`](config/config.example.jsonc).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled`, `mode` | `false`, `"fallback"` | Set by `/auto-approval off / fallback / auto`. |
+| `enabled`, `mode` | `false`, `"fallback"` | Set by `/clearance off / fallback / auto`. |
 | `classifierModel` | `null` | `provider/model`, or `null` for the session model. |
 | `classifierTimeoutSeconds` | `25` | See [Classifier timeout](#classifier-timeout). |
 | `approvalTimeoutSeconds` | `30` | How long the human prompt waits before rejecting. |
@@ -377,4 +371,4 @@ Run the local OMP-side smoke regression with:
 npm run smoke:omp
 ```
 
-The smoke script runs in temporary config and log directories. It verifies `/auto-approval fallback`, `/auto-approval auto`, safe bash command allow, suspicious bash command human fallback or denial, and JSONL audit log contents.
+The smoke script runs in temporary config and log directories. It verifies `/clearance fallback`, `/clearance auto`, safe bash command allow, suspicious bash command human fallback or denial, and JSONL audit log contents.

@@ -3,12 +3,12 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import ompAutoApprovalExtension, { SYSTEM_PROMPT_NOTE } from "../index.js";
+import ompClearanceExtension, { SYSTEM_PROMPT_NOTE } from "../index.js";
 import { applyDecisionPolicy, classifyAction, parseReviewDecision } from "../src/classifier.js";
 import { compileCommandPattern } from "../src/command-patterns.js";
 import { isWorkspaceWriteFastPath, resolveReadRoots } from "../src/tool-routing.js";
 import { buildProjectedContext } from "../src/context-projection.js";
-import { configPath, DEFAULT_CONFIG, loadConfig, logPath, logsDir, normalizeConfig, saveConfig } from "../src/extension-config.js";
+import { configPath, DEFAULT_CONFIG, extensionRoot, loadConfig, logPath, logsDir, normalizeConfig, saveConfig } from "../src/extension-config.js";
 import { evaluateToolCall, selectFastPath } from "../src/decision.js";
 import { columnWidth, truncateVisible } from "../src/model-selector.js";
 import { planSafeCommand } from "../src/safe-command.js";
@@ -30,7 +30,7 @@ const STUB_PROGRAMS = [
   "basename", "cat", "cut", "date", "dd", "diff", "du", "echo", "fd", "find", "git", "grep", "head", "jq", "kubectl", "ls", "npm",
   "printf", "pwd", "python", "rg", "sed", "sleep", "sort", "stat", "tail", "tar", "timeout", "tr", "uname", "uniq", "wc", "which",
 ];
-const STUB_BIN = mkdtempSync(join(tmpdir(), "omp-auto-approval-bin-"));
+const STUB_BIN = mkdtempSync(join(tmpdir(), "omp-clearance-bin-"));
 for (const name of STUB_PROGRAMS) {
   writeFileSync(join(STUB_BIN, name), "#!/bin/sh\n");
   chmodSync(join(STUB_BIN, name), 0o755);
@@ -38,7 +38,7 @@ for (const name of STUB_PROGRAMS) {
 const TEST_PATH = `${STUB_BIN}:${process.env.PATH ?? ""}`;
 process.on("exit", () => rmSync(STUB_BIN, { recursive: true, force: true }));
 // No user rules file unless a test names one.
-process.env.PI_AUTO_APPROVAL_RULES_PATH = join(STUB_BIN, "no-rules.jsonc");
+process.env.CLEARANCE_RULES_PATH = join(STUB_BIN, "no-rules.jsonc");
 
 function isSafeReadOnlyCommand(command: string, cfg: TestConfig, cwd: string): boolean {
   return planSafeCommand(command, cfg, { workspace: cwd, searchPath: TEST_PATH, rules: cfg.rules }) !== null;
@@ -60,7 +60,7 @@ function test(name: string, fn: () => void | Promise<void>): Promise<void> {
 // A config, and the command rules to use with it: the built-in ones, plus
 // allow rules for `allowRules` prefixes and block rules for `blockRules` patterns.
 type TestConfig = AutoReviewConfig & { rules: CommandRules };
-const RULES_DIR = mkdtempSync(join(tmpdir(), "omp-auto-approval-test-rules-"));
+const RULES_DIR = mkdtempSync(join(tmpdir(), "omp-clearance-test-rules-"));
 process.on("exit", () => rmSync(RULES_DIR, { recursive: true, force: true }));
 let rulesFiles = 0;
 
@@ -97,7 +97,7 @@ function ctx(overrides: Partial<ExtensionContextLike> = {}): ExtensionContextLik
   };
 }
 
-const CLASSIFIER_DENY_REASON = "AI auto-approval rejected this action. Reason: needs review Do not retry the same action unless the user explicitly approves it.";
+const CLASSIFIER_DENY_REASON = "The approval classifier rejected this action. Reason: needs review Do not retry the same action unless the user explicitly approves it.";
 
 function classifierDenyOptions(reason = "needs review"): { classifierClient: NonNullable<Parameters<typeof evaluateToolCall>[4]>["classifierClient"] } {
   return {
@@ -114,43 +114,29 @@ async function run(): Promise<void> {
     assert.equal(normalizeConfig({ enabled: true, mode: "bad" }).mode, "fallback");
   });
 
-  await test("config paths prefer PI_AUTO_APPROVAL env vars and support legacy PI_AUTO_REVIEW env vars", () => {
-    const previousApprovalConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
-    const previousApprovalLogsDir = process.env.PI_AUTO_APPROVAL_LOGS_DIR;
-    const previousReviewConfigPath = process.env.PI_AUTO_REVIEW_CONFIG_PATH;
-    const previousReviewLogsDir = process.env.PI_AUTO_REVIEW_LOGS_DIR;
+  await test("config paths come from CLEARANCE env vars, else the extension directory", () => {
+    const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
+    const previousLogsDir = process.env.CLEARANCE_LOGS_DIR;
     try {
-      delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
-      delete process.env.PI_AUTO_APPROVAL_LOGS_DIR;
-      process.env.PI_AUTO_REVIEW_CONFIG_PATH = "/tmp/legacy-review-config.jsonc";
-      process.env.PI_AUTO_REVIEW_LOGS_DIR = "/tmp/legacy-review-logs";
-      assert.equal(configPath(), "/tmp/legacy-review-config.jsonc");
-      assert.equal(logsDir(), "/tmp/legacy-review-logs");
+      delete process.env.CLEARANCE_CONFIG_PATH;
+      delete process.env.CLEARANCE_LOGS_DIR;
+      assert.equal(configPath(), join(extensionRoot(), "config.jsonc"));
+      assert.equal(logsDir(), join(extensionRoot(), "logs"));
 
-      process.env.PI_AUTO_APPROVAL_CONFIG_PATH = "/tmp/approval-config.jsonc";
-      process.env.PI_AUTO_APPROVAL_LOGS_DIR = "/tmp/approval-logs";
-      assert.equal(configPath(), "/tmp/approval-config.jsonc");
-      assert.equal(logsDir(), "/tmp/approval-logs");
+      process.env.CLEARANCE_CONFIG_PATH = "/tmp/clearance-config.jsonc";
+      process.env.CLEARANCE_LOGS_DIR = "/tmp/clearance-logs";
+      assert.equal(configPath(), "/tmp/clearance-config.jsonc");
+      assert.equal(logsDir(), "/tmp/clearance-logs");
     } finally {
-      if (previousApprovalConfigPath === undefined) {
-        delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+      if (previousConfigPath === undefined) {
+        delete process.env.CLEARANCE_CONFIG_PATH;
       } else {
-        process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousApprovalConfigPath;
+        process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
       }
-      if (previousApprovalLogsDir === undefined) {
-        delete process.env.PI_AUTO_APPROVAL_LOGS_DIR;
+      if (previousLogsDir === undefined) {
+        delete process.env.CLEARANCE_LOGS_DIR;
       } else {
-        process.env.PI_AUTO_APPROVAL_LOGS_DIR = previousApprovalLogsDir;
-      }
-      if (previousReviewConfigPath === undefined) {
-        delete process.env.PI_AUTO_REVIEW_CONFIG_PATH;
-      } else {
-        process.env.PI_AUTO_REVIEW_CONFIG_PATH = previousReviewConfigPath;
-      }
-      if (previousReviewLogsDir === undefined) {
-        delete process.env.PI_AUTO_REVIEW_LOGS_DIR;
-      } else {
-        process.env.PI_AUTO_REVIEW_LOGS_DIR = previousReviewLogsDir;
+        process.env.CLEARANCE_LOGS_DIR = previousLogsDir;
       }
     }
   });
@@ -227,7 +213,7 @@ async function run(): Promise<void> {
   });
 
   await test("commands allow rules match never fast-path exec, write, or out-of-workspace arguments", () => {
-    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-allow-"));
+    const root = mkdtempSync(join(tmpdir(), "omp-clearance-allow-"));
     const workspace = join(root, "workspace");
     mkdirSync(join(workspace, "src"), { recursive: true });
     writeFileSync(join(workspace, ".env"), "TOKEN=x\n");
@@ -379,7 +365,7 @@ async function run(): Promise<void> {
   });
 
   await test("fast-pathed commands are pinned to the program on OMP's startup PATH", () => {
-    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-pin-"));
+    const root = mkdtempSync(join(tmpdir(), "omp-clearance-pin-"));
     const workspace = join(root, "workspace");
     const spaced = join(root, "tool dir");
     mkdirSync(join(workspace, "bin"), { recursive: true });
@@ -408,7 +394,7 @@ async function run(): Promise<void> {
   });
 
   await test("the fast path reads chains and pipelines, safe redirections, and a leading cd", () => {
-    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-chain-"));
+    const root = mkdtempSync(join(tmpdir(), "omp-clearance-chain-"));
     const workspace = join(root, "workspace");
     mkdirSync(join(workspace, "sub"), { recursive: true });
     writeFileSync(join(workspace, "notes.txt"), "notes\n");
@@ -493,7 +479,7 @@ async function run(): Promise<void> {
   });
 
   await test("common read-only programs skip review by their option tables", () => {
-    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-programs-"));
+    const root = mkdtempSync(join(tmpdir(), "omp-clearance-programs-"));
     const workspace = join(root, "workspace");
     for (const file of ["notes.txt", "src/a.ts", "src/b.ts", ".env", "app/index.ts", "app/node_modules/pkg/.env", "dash/-o.txt", "dash/x.txt"]) {
       mkdirSync(dirname(join(workspace, file)), { recursive: true });
@@ -550,7 +536,7 @@ async function run(): Promise<void> {
   });
 
   await test("a leading ~ is pinned to OMP's home directory, since the shell's HOME can change", () => {
-    const home = mkdtempSync(join(tmpdir(), "omp-auto-approval-home-"));
+    const home = mkdtempSync(join(tmpdir(), "omp-clearance-home-"));
     const previousHome = process.env.HOME;
     process.env.HOME = home;
     writeFileSync(join(home, "notes.txt"), "x\n");
@@ -610,7 +596,7 @@ async function run(): Promise<void> {
   });
 
   await test("a rules file with any problem is not used, and every bash command is reviewed", () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-rules-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-rules-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
     const file = join(workspace, "rules.jsonc");
     try {
@@ -668,7 +654,7 @@ async function run(): Promise<void> {
   });
 
   await test("a word naming a file after any = is checked as that file", () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-equals-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-equals-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
     try {
       const cfg = config({ allowRules: ["npm view"] });
@@ -686,7 +672,7 @@ async function run(): Promise<void> {
   });
 
   await test("a git option naming a file outside the workspace is reviewed", () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-git-files-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-git-files-"));
     writeFileSync(join(workspace, "order.txt"), "*.ts\n");
     try {
       for (const command of ["git diff -O/etc/passwd", "git log --format=x=/etc/passwd", "git -C . show -O/etc/passwd HEAD"]) {
@@ -701,7 +687,7 @@ async function run(): Promise<void> {
   });
 
   await test("long options named like Object.prototype members are unknown options", () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-proto-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-proto-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
     try {
       for (const command of [
@@ -716,7 +702,7 @@ async function run(): Promise<void> {
   });
 
   await test("a user rules file replaces, extends, and disables built-in entries", () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-user-rules-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-user-rules-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
     const file = join(workspace, "rules.jsonc");
     try {
@@ -778,7 +764,7 @@ async function run(): Promise<void> {
   });
 
   await test("config/rules.example.jsonc loads and does what its comments say", () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-example-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-example-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
     try {
       const rules = loadCommandRules(new URL("../config/rules.example.jsonc", import.meta.url).pathname);
@@ -814,7 +800,7 @@ async function run(): Promise<void> {
   });
 
   await test("user rules files can include others, by absolute or ~/ paths", () => {
-    const home = mkdtempSync(join(tmpdir(), "omp-auto-approval-include-home-"));
+    const home = mkdtempSync(join(tmpdir(), "omp-clearance-include-home-"));
     const previousHome = process.env.HOME;
     process.env.HOME = home;
     try {
@@ -865,7 +851,7 @@ async function run(): Promise<void> {
   });
 
   await test("a user rules file with any problem turns every bash fast path off", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-user-broken-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-user-broken-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
     const file = join(workspace, "rules.jsonc");
     try {
@@ -917,13 +903,13 @@ async function run(): Promise<void> {
   });
 
   await test("while the rules file is broken, every bash command asks the user, and session start says so", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-broken-ask-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-broken-ask-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
     writeFileSync(join(workspace, "rules.jsonc"), "{ broken");
-    const previousRules = process.env.PI_AUTO_APPROVAL_RULES_PATH;
-    const previousConfig = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
-    process.env.PI_AUTO_APPROVAL_RULES_PATH = join(workspace, "rules.jsonc");
-    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = join(workspace, "config.jsonc");
+    const previousRules = process.env.CLEARANCE_RULES_PATH;
+    const previousConfig = process.env.CLEARANCE_CONFIG_PATH;
+    process.env.CLEARANCE_RULES_PATH = join(workspace, "rules.jsonc");
+    process.env.CLEARANCE_CONFIG_PATH = join(workspace, "config.jsonc");
     writeFileSync(join(workspace, "config.jsonc"), JSON.stringify({ enabled: true, mode: "auto" }));
     try {
       const rules = loadCommandRules(join(workspace, "rules.jsonc"));
@@ -945,12 +931,12 @@ async function run(): Promise<void> {
 
       // Session start shows an error.
       const handlers = new Map<string, (...args: any[]) => any>();
-      ompAutoApprovalExtension({ on: (event, handler) => { handlers.set(event, handler); }, getAllTools: () => [], registerCommand: () => {} });
+      ompClearanceExtension({ on: (event, handler) => { handlers.set(event, handler); }, getAllTools: () => [], registerCommand: () => {} });
       const notices: [string, string | undefined][] = [];
       await handlers.get("session_start")!({}, ctx({ cwd: workspace, ui: { notify: (message, type) => { notices.push([message, type]); }, setStatus: () => {} } }));
-      assert.ok(notices.some(([message, type]) => type === "error" && /^omp-auto-approval: the command rules could not be loaded, so every bash command asks you first/.test(message)), JSON.stringify(notices));
+      assert.ok(notices.some(([message, type]) => type === "error" && /^omp-clearance: the command rules could not be loaded, so every bash command asks you first/.test(message)), JSON.stringify(notices));
     } finally {
-      for (const [name, previous] of [["PI_AUTO_APPROVAL_RULES_PATH", previousRules], ["PI_AUTO_APPROVAL_CONFIG_PATH", previousConfig]] as const) {
+      for (const [name, previous] of [["CLEARANCE_RULES_PATH", previousRules], ["CLEARANCE_CONFIG_PATH", previousConfig]] as const) {
         if (previous === undefined) {
           delete process.env[name];
         } else {
@@ -962,11 +948,11 @@ async function run(): Promise<void> {
   });
 
   await test("the extension's config and rules files are never written by the write fast path", () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-protect-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-protect-"));
     writeFileSync(join(workspace, "rules.jsonc"), "{}");
     symlinkSync(join(workspace, "rules.jsonc"), join(workspace, "link.jsonc"));
-    const previousRules = process.env.PI_AUTO_APPROVAL_RULES_PATH;
-    const previousConfig = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+    const previousRules = process.env.CLEARANCE_RULES_PATH;
+    const previousConfig = process.env.CLEARANCE_CONFIG_PATH;
     try {
       const write = (path: string) => ({ path, content: "{}" });
       const protectedFiles = [join(workspace, "rules.jsonc"), join(workspace, "kube.jsonc")];
@@ -975,8 +961,8 @@ async function run(): Promise<void> {
         assert.equal(isWorkspaceWriteFastPath(write(path), workspace, protectedFiles), false, path);
       }
       // selectFastPath protects config.jsonc and rules.jsonc even before they exist.
-      process.env.PI_AUTO_APPROVAL_RULES_PATH = join(workspace, "new-rules.jsonc");
-      process.env.PI_AUTO_APPROVAL_CONFIG_PATH = join(workspace, "config.jsonc");
+      process.env.CLEARANCE_RULES_PATH = join(workspace, "new-rules.jsonc");
+      process.env.CLEARANCE_CONFIG_PATH = join(workspace, "config.jsonc");
       const route = (path: string) => selectFastPath("write", write(path), { cwd: workspace, config: config(), tools: [], hasUI: false });
       assert.equal(route("notes.txt"), "workspace_write");
       assert.equal(route("new-rules.jsonc"), null);
@@ -984,11 +970,11 @@ async function run(): Promise<void> {
       const rules: CommandRules = { ...defaultRules(), files: [join(workspace, "kube.jsonc")] };
       assert.equal(selectFastPath("write", write("kube.jsonc"), { cwd: workspace, config: config(), tools: [], hasUI: false, rules }), null);
     } finally {
-      process.env.PI_AUTO_APPROVAL_RULES_PATH = previousRules;
+      process.env.CLEARANCE_RULES_PATH = previousRules;
       if (previousConfig === undefined) {
-        delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+        delete process.env.CLEARANCE_CONFIG_PATH;
       } else {
-        process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfig;
+        process.env.CLEARANCE_CONFIG_PATH = previousConfig;
       }
       rmSync(workspace, { recursive: true, force: true });
     }
@@ -1015,7 +1001,7 @@ async function run(): Promise<void> {
 }`;
 
   await test("command rules match the command's text and the most restrictive one wins", () => {
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-kube-"));
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-kube-"));
     try {
       writeFileSync(join(dir, "rules.jsonc"), KUBE_RULES);
       const rules = loadCommandRules(join(dir, "rules.jsonc"));
@@ -1117,7 +1103,7 @@ async function run(): Promise<void> {
   });
 
   await test("a built-in rule can be disabled by id, and its id is then free", () => {
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-disable-rule-"));
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-disable-rule-"));
     try {
       writeFileSync(join(dir, "rules.jsonc"), '{ "disable": ["privilege"], "rules": [{ "id": "privilege", "match": "sudo rm", "outcome": "block" }] }');
       const rules = loadCommandRules(join(dir, "rules.jsonc"));
@@ -1181,7 +1167,7 @@ async function run(): Promise<void> {
   });
 
   await test("command rules are validated: ids, outcomes, patterns", () => {
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-rule-errors-"));
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-rule-errors-"));
     try {
       const broken: [string, RegExp][] = [
         ['{ "rules": [{ "match": "x y", "outcome": "review" }] }', /rules\[0\]\.id: expected a name/],
@@ -1219,7 +1205,7 @@ async function run(): Promise<void> {
   });
 
   await test("block, ask and review rules take precedence over every fast path", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-rule-routes-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-rule-routes-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
     const file = join(workspace, "rules.jsonc");
     try {
@@ -1296,9 +1282,9 @@ async function run(): Promise<void> {
   });
 
   await test("audit entries name the rules that decided", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-rule-audit-"));
-    const previousLogsDir = process.env.PI_AUTO_APPROVAL_LOGS_DIR;
-    process.env.PI_AUTO_APPROVAL_LOGS_DIR = join(dir, "logs");
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-rule-audit-"));
+    const previousLogsDir = process.env.CLEARANCE_LOGS_DIR;
+    process.env.CLEARANCE_LOGS_DIR = join(dir, "logs");
     try {
       writeFileSync(join(dir, "rules.jsonc"), '{ "rules": [{ "id": "no-reset", "match": "git reset --hard", "outcome": "block" }, { "id": "log-review", "match": "git log", "outcome": "review" }] }');
       const rules = loadCommandRules(join(dir, "rules.jsonc"));
@@ -1313,16 +1299,16 @@ async function run(): Promise<void> {
       ]);
     } finally {
       if (previousLogsDir === undefined) {
-        delete process.env.PI_AUTO_APPROVAL_LOGS_DIR;
+        delete process.env.CLEARANCE_LOGS_DIR;
       } else {
-        process.env.PI_AUTO_APPROVAL_LOGS_DIR = previousLogsDir;
+        process.env.CLEARANCE_LOGS_DIR = previousLogsDir;
       }
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  await test("/auto-approval rules describes the rules in use", () => {
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-rules-report-"));
+  await test("/clearance rules describes the rules in use", () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-rules-report-"));
     try {
       writeFileSync(join(dir, "rules.jsonc"), KUBE_RULES.replace('"programs": {', '"programs": { "git": { "extends": "default", "subcommands": { "reflog": { "options": "any", "operands": "git-operands" } } },'));
       const rules = loadCommandRules(join(dir, "rules.jsonc"));
@@ -1351,7 +1337,7 @@ async function run(): Promise<void> {
   });
 
   await test("an entry with subcommands reads its own options as whole words before the subcommand", () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-subcommands-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-subcommands-"));
     mkdirSync(join(workspace, "sub"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
     try {
@@ -1387,7 +1373,7 @@ async function run(): Promise<void> {
   });
 
   await test("a fast-pathed bash call runs pinned, and only from inside the workspace", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-pin-call-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-pin-call-"));
     mkdirSync(join(workspace, "sub"));
     try {
       const event = { toolName: "bash", input: { command: "git status --short" } as Record<string, unknown> };
@@ -1415,7 +1401,7 @@ async function run(): Promise<void> {
   });
 
   await test("writes that create or change a program are reviewed", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-program-write-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-program-write-"));
     writeFileSync(join(workspace, "tool.sh"), "#!/bin/sh\n");
     chmodSync(join(workspace, "tool.sh"), 0o755);
     writeFileSync(join(workspace, "notes.txt"), "notes\n");
@@ -1444,7 +1430,7 @@ async function run(): Promise<void> {
   });
 
   await test("commands allow rules match see through abbreviations, glued values, and name=value arguments", () => {
-    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-argv-"));
+    const root = mkdtempSync(join(tmpdir(), "omp-clearance-argv-"));
     const workspace = join(root, "workspace");
     mkdirSync(workspace);
     writeFileSync(join(workspace, "notes.txt"), "notes\n");
@@ -1529,9 +1515,9 @@ async function run(): Promise<void> {
   });
 
   await test("todo completion and wait bypass classifier review and audit local_state", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-orchestration-"));
-    const previousLogsDir = process.env.PI_AUTO_APPROVAL_LOGS_DIR;
-    process.env.PI_AUTO_APPROVAL_LOGS_DIR = dir;
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-orchestration-"));
+    const previousLogsDir = process.env.CLEARANCE_LOGS_DIR;
+    process.env.CLEARANCE_LOGS_DIR = dir;
     let classifierCalls = 0;
     try {
       for (const event of [
@@ -1565,9 +1551,9 @@ async function run(): Promise<void> {
       ]);
     } finally {
       if (previousLogsDir === undefined) {
-        delete process.env.PI_AUTO_APPROVAL_LOGS_DIR;
+        delete process.env.CLEARANCE_LOGS_DIR;
       } else {
-        process.env.PI_AUTO_APPROVAL_LOGS_DIR = previousLogsDir;
+        process.env.CLEARANCE_LOGS_DIR = previousLogsDir;
       }
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1755,7 +1741,7 @@ async function run(): Promise<void> {
   });
 
   await test("read fast path allows non-sensitive workspace targets and session-local URLs", async () => {
-    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-read-"));
+    const root = mkdtempSync(join(tmpdir(), "omp-clearance-read-"));
     const workspace = join(root, "workspace");
     mkdirSync(join(workspace, "src"), { recursive: true });
     try {
@@ -1793,7 +1779,7 @@ async function run(): Promise<void> {
   });
 
   await test("read fast path reviews outside, sensitive, remote, and rewritten targets", async () => {
-    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-read-"));
+    const root = mkdtempSync(join(tmpdir(), "omp-clearance-read-"));
     const workspace = join(root, "workspace");
     const outside = join(root, "outside");
     mkdirSync(join(workspace, "src"), { recursive: true });
@@ -1873,7 +1859,7 @@ async function run(): Promise<void> {
   });
 
   await test("workspace write fast path rejects symlink escape", async () => {
-    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-symlink-"));
+    const root = mkdtempSync(join(tmpdir(), "omp-clearance-symlink-"));
     const workspace = join(root, "workspace");
     const outside = join(root, "outside");
     mkdirSync(workspace);
@@ -1887,14 +1873,14 @@ async function run(): Promise<void> {
         new SessionApprovalStore(),
         { classifierClient: async () => ({ content: [{ type: "text", text: '{"outcome":"deny","rationale":"outside workspace"}' }] }) },
       );
-      assert.deepEqual(result, { block: true, reason: "AI auto-approval rejected this action. Reason: outside workspace Do not retry the same action unless the user explicitly approves it." });
+      assert.deepEqual(result, { block: true, reason: "The approval classifier rejected this action. Reason: outside workspace Do not retry the same action unless the user explicitly approves it." });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
   await test("workspace write fast path canonicalizes relative and traversal paths", async () => {
-    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-paths-"));
+    const root = mkdtempSync(join(tmpdir(), "omp-clearance-paths-"));
     const workspace = join(root, "workspace");
     const outside = join(root, "outside");
     mkdirSync(join(workspace, "src"), { recursive: true });
@@ -1921,7 +1907,7 @@ async function run(): Promise<void> {
   });
 
   await test("workspace write fast path rejects protected entries, rewritten path forms, and outside renames", async () => {
-    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-protected-"));
+    const root = mkdtempSync(join(tmpdir(), "omp-clearance-protected-"));
     const workspace = join(root, "workspace");
     mkdirSync(join(workspace, "src"), { recursive: true });
     mkdirSync(join(workspace, ".git"));
@@ -2010,7 +1996,7 @@ async function run(): Promise<void> {
       new SessionApprovalStore(),
       { classifierClient: async () => ({ content: [{ type: "text", text: '{"outcome":"deny","rationale":"remote execution"}' }] }) },
     );
-    assert.deepEqual(deny, { block: true, reason: "AI auto-approval rejected this action. Reason: remote execution Do not retry the same action unless the user explicitly approves it." });
+    assert.deepEqual(deny, { block: true, reason: "The approval classifier rejected this action. Reason: remote execution Do not retry the same action unless the user explicitly approves it." });
   });
 
   await test("classifier uses current model by default", async () => {
@@ -2061,12 +2047,12 @@ async function run(): Promise<void> {
     assert.equal(usedModel, reviewModel);
   });
 
-  await test("auto-approval model command opens model selector and persists selection", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-config-"));
-    const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
-    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = join(dir, "config.jsonc");
+  await test("clearance model command opens model selector and persists selection", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-config-"));
+    const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
+    process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
     const commandHandlers = new Map<string, (args: string, context: ExtensionContextLike) => Promise<void> | void>();
-    ompAutoApprovalExtension({
+    ompClearanceExtension({
       on: () => {},
       registerCommand: (name, definition) => {
         commandHandlers.set(name, definition.handler);
@@ -2075,7 +2061,7 @@ async function run(): Promise<void> {
 
     let title = "";
     const selectedOptions: string[][] = [];
-    await commandHandlers.get("auto-approval")?.("model", ctx({
+    await commandHandlers.get("clearance")?.("model", ctx({
       ui: {
         notify: () => {},
         select: async (nextTitle, options) => {
@@ -2098,21 +2084,21 @@ async function run(): Promise<void> {
       "other-provider/other-model",
       "review-provider/review-model",
     ]);
-    assert.equal(loadConfig(process.env.PI_AUTO_APPROVAL_CONFIG_PATH).config.classifierModel, "review-provider/review-model");
+    assert.equal(loadConfig(process.env.CLEARANCE_CONFIG_PATH).config.classifierModel, "review-provider/review-model");
     rmSync(dir, { recursive: true, force: true });
     if (previousConfigPath === undefined) {
-      delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+      delete process.env.CLEARANCE_CONFIG_PATH;
     } else {
-      process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfigPath;
+      process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
     }
   });
 
-  await test("auto-approval model command uses the OMP custom selector in TUI mode", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-config-"));
-    const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
-    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = join(dir, "config.jsonc");
+  await test("clearance model command uses the OMP custom selector in TUI mode", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-config-"));
+    const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
+    process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
     const commandHandlers = new Map<string, (args: string, context: ExtensionContextLike) => Promise<void> | void>();
-    ompAutoApprovalExtension({
+    ompClearanceExtension({
       on: () => {},
       registerCommand: (name, definition) => {
         commandHandlers.set(name, definition.handler);
@@ -2122,7 +2108,7 @@ async function run(): Promise<void> {
     let rendered: string[] = [];
     let usedCustom = false;
     let usedSelect = false;
-    await commandHandlers.get("auto-approval")?.("model", ctx({
+    await commandHandlers.get("clearance")?.("model", ctx({
       mode: "tui",
       ui: {
         notify: () => {},
@@ -2154,14 +2140,14 @@ async function run(): Promise<void> {
     assert.equal(usedCustom, true);
     assert.equal(usedSelect, false);
     assert.equal(rendered.some((line) => line.includes("Search:")), true);
-    assert.equal(rendered.some((line) => line.includes("current [auto-approval]")), true);
+    assert.equal(rendered.some((line) => line.includes("current [clearance]")), true);
     assert.equal(rendered.some((line) => line.includes("review-model [review-provider]")), true);
-    assert.equal(loadConfig(process.env.PI_AUTO_APPROVAL_CONFIG_PATH).config.classifierModel, "review-provider/review-model");
+    assert.equal(loadConfig(process.env.CLEARANCE_CONFIG_PATH).config.classifierModel, "review-provider/review-model");
     rmSync(dir, { recursive: true, force: true });
     if (previousConfigPath === undefined) {
-      delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+      delete process.env.CLEARANCE_CONFIG_PATH;
     } else {
-      process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfigPath;
+      process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
     }
   });
 
@@ -2177,11 +2163,11 @@ async function run(): Promise<void> {
     assert.equal(truncateVisible("", 10), "");
     assert.equal(truncateVisible("abcdef", 0), "");
 
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-config-"));
-    const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
-    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = join(dir, "config.jsonc");
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-config-"));
+    const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
+    process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
     const commandHandlers = new Map<string, (args: string, context: ExtensionContextLike) => Promise<void> | void>();
-    ompAutoApprovalExtension({
+    ompClearanceExtension({
       on: () => {},
       registerCommand: (name, definition) => {
         commandHandlers.set(name, definition.handler);
@@ -2189,7 +2175,7 @@ async function run(): Promise<void> {
     });
 
     let rendered: string[] = [];
-    await commandHandlers.get("auto-approval")?.("model", ctx({
+    await commandHandlers.get("clearance")?.("model", ctx({
       mode: "tui",
       ui: {
         notify: () => {},
@@ -2234,18 +2220,18 @@ async function run(): Promise<void> {
 
     rmSync(dir, { recursive: true, force: true });
     if (previousConfigPath === undefined) {
-      delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+      delete process.env.CLEARANCE_CONFIG_PATH;
     } else {
-      process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfigPath;
+      process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
     }
   });
 
-  await test("auto-approval model command does not accept model IDs as arguments", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-config-"));
-    const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
-    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = join(dir, "config.jsonc");
+  await test("clearance model command does not accept model IDs as arguments", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-config-"));
+    const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
+    process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
     const commandHandlers = new Map<string, (args: string, context: ExtensionContextLike) => Promise<void> | void>();
-    ompAutoApprovalExtension({
+    ompClearanceExtension({
       on: () => {},
       registerCommand: (name, definition) => {
         commandHandlers.set(name, definition.handler);
@@ -2253,52 +2239,52 @@ async function run(): Promise<void> {
     });
 
     const notifications: string[] = [];
-    const command = commandHandlers.get("auto-approval");
+    const command = commandHandlers.get("clearance");
     const commandContext = ctx({ ui: { notify: (message) => notifications.push(message) } });
     await command?.("model review-model", commandContext);
     await command?.("model review-provider/review-model", commandContext);
 
-    assert.equal(loadConfig(process.env.PI_AUTO_APPROVAL_CONFIG_PATH).config.classifierModel, null);
-    assert.deepEqual(notifications.filter((message) => message.includes("Use /auto-approval model")), [
-      "Use /auto-approval model to select an approval classifier model.",
-      "Use /auto-approval model to select an approval classifier model.",
+    assert.equal(loadConfig(process.env.CLEARANCE_CONFIG_PATH).config.classifierModel, null);
+    assert.deepEqual(notifications.filter((message) => message.includes("Use /clearance model")), [
+      "Use /clearance model to select an approval classifier model.",
+      "Use /clearance model to select an approval classifier model.",
     ]);
 
     rmSync(dir, { recursive: true, force: true });
     if (previousConfigPath === undefined) {
-      delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+      delete process.env.CLEARANCE_CONFIG_PATH;
     } else {
-      process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfigPath;
+      process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
     }
   });
 
   await test("extension registers one slash command with subcommands", () => {
-    const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
-    const configPath = join(tmpdir(), `omp-auto-approval-${Date.now()}.jsonc`);
-    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = configPath;
+    const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
+    const configPath = join(tmpdir(), `omp-clearance-${Date.now()}.jsonc`);
+    process.env.CLEARANCE_CONFIG_PATH = configPath;
     const commands: string[] = [];
-    ompAutoApprovalExtension({
+    ompClearanceExtension({
       on: () => {},
       registerCommand: (name) => {
         commands.push(name);
       },
     });
-    assert.deepEqual(commands, ["auto-approval"]);
+    assert.deepEqual(commands, ["clearance"]);
     rmSync(configPath, { force: true });
     if (previousConfigPath === undefined) {
-      delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+      delete process.env.CLEARANCE_CONFIG_PATH;
     } else {
-      process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfigPath;
+      process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
     }
   });
 
-  await test("auto-approval command provides argument completions", async () => {
-    const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
-    const configPath = join(tmpdir(), `omp-auto-approval-${Date.now()}.jsonc`);
-    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = configPath;
+  await test("clearance command provides argument completions", async () => {
+    const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
+    const configPath = join(tmpdir(), `omp-clearance-${Date.now()}.jsonc`);
+    process.env.CLEARANCE_CONFIG_PATH = configPath;
     let getArgumentCompletions: ((argumentPrefix: string) => unknown[] | null | Promise<unknown[] | null>) | undefined;
     let description = "";
-    ompAutoApprovalExtension({
+    ompClearanceExtension({
       on: () => {},
       registerCommand: (_name, definition) => {
         description = definition.description;
@@ -2319,23 +2305,23 @@ async function run(): Promise<void> {
     ]);
     rmSync(configPath, { force: true });
     if (previousConfigPath === undefined) {
-      delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+      delete process.env.CLEARANCE_CONFIG_PATH;
     } else {
-      process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfigPath;
+      process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
     }
   });
 
-  await test("/auto-approval rules answers through the command, also when the rules are broken", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-rules-command-"));
-    const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
-    const previousRulesPath = process.env.PI_AUTO_APPROVAL_RULES_PATH;
-    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = join(dir, "config.jsonc");
-    process.env.PI_AUTO_APPROVAL_RULES_PATH = join(dir, "rules.jsonc");
+  await test("/clearance rules answers through the command, also when the rules are broken", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-rules-command-"));
+    const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
+    const previousRulesPath = process.env.CLEARANCE_RULES_PATH;
+    process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
+    process.env.CLEARANCE_RULES_PATH = join(dir, "rules.jsonc");
     writeFileSync(join(dir, "config.jsonc"), JSON.stringify({ enabled: true, mode: "auto" }));
     // A user entry for a program that is installed, so that explain can fast-path it.
     writeFileSync(join(dir, "rules.jsonc"), KUBE_RULES.replace('"programs": {', '"programs": { "whoami": { "opensNoFiles": true, "operands": "none" },'));
     let handler: ((args: string, ctx: ExtensionContextLike) => Promise<void> | void) | undefined;
-    ompAutoApprovalExtension({ on: () => {}, getAllTools: () => [], registerCommand: (_name, definition) => { handler = definition.handler; } });
+    ompClearanceExtension({ on: () => {}, getAllTools: () => [], registerCommand: (_name, definition) => { handler = definition.handler; } });
     const messages: string[] = [];
     const commandCtx = ctx({ cwd: dir, ui: { notify: (message) => { messages.push(message); }, setStatus: () => {} } });
     const say = async (args: string) => {
@@ -2353,10 +2339,10 @@ async function run(): Promise<void> {
       assert.match(await say("explain bash git status"), /allowed by: program:git status \(default\)$/);
       writeFileSync(join(dir, "rules.jsonc"), "{ broken");
       for (const args of ["rules", "rules git"]) {
-        assert.match(await say(args), /^omp-auto-approval: the command rules could not be loaded, so every bash command asks you first \(and is denied in auto mode\): .*rules\.jsonc: expected a key.*Fix the file, then run \/auto-approval status to reload it\.$/, args);
+        assert.match(await say(args), /^omp-clearance: the command rules could not be loaded, so every bash command asks you first \(and is denied in auto mode\): .*rules\.jsonc: expected a key.*Fix the file, then run \/clearance status to reload it\.$/, args);
       }
     } finally {
-      for (const [name, previous] of [["PI_AUTO_APPROVAL_CONFIG_PATH", previousConfigPath], ["PI_AUTO_APPROVAL_RULES_PATH", previousRulesPath]] as const) {
+      for (const [name, previous] of [["CLEARANCE_CONFIG_PATH", previousConfigPath], ["CLEARANCE_RULES_PATH", previousRulesPath]] as const) {
         if (previous === undefined) {
           delete process.env[name];
         } else {
@@ -2367,13 +2353,13 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("auto-approval explain reports the route a tool call would take", async () => {
-    const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
-    const configFile = join(tmpdir(), `omp-auto-approval-explain-${Date.now()}.jsonc`);
-    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = configFile;
+  await test("clearance explain reports the route a tool call would take", async () => {
+    const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
+    const configFile = join(tmpdir(), `omp-clearance-explain-${Date.now()}.jsonc`);
+    process.env.CLEARANCE_CONFIG_PATH = configFile;
     writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, enabled: true, mode: "auto" }));
     let handler: ((args: string, ctx: ExtensionContextLike) => Promise<void> | void) | undefined;
-    ompAutoApprovalExtension({
+    ompClearanceExtension({
       on: () => {},
       getAllTools: () => [{ name: "read", sourceInfo: { source: "builtin" } }, { name: "deploy", sourceInfo: { source: "extension" } }],
       registerCommand: (_name, definition) => {
@@ -2399,33 +2385,33 @@ async function run(): Promise<void> {
       assert.match(await routeFor("git status 2>&1 && git log -1"), /route: allowed without review[\s\S]*runs as: \/\S+\/git status 2>&1 && \/\S+\/git log -1/);
       assert.match(await routeFor(`bash cd ${tmpdir()} && git status`), /route: classifier review/);
       assert.match(await routeFor("read {bad"), /not valid JSON/);
-      writeFileSync(process.env.PI_AUTO_APPROVAL_RULES_PATH!, '{ "rules": [{ "id": "no-apply", "match": "terraform apply", "outcome": "block" }] }');
+      writeFileSync(process.env.CLEARANCE_RULES_PATH!, '{ "rules": [{ "id": "no-apply", "match": "terraform apply", "outcome": "block" }] }');
       try {
         assert.match(await routeFor("bash terraform apply -auto-approve"), /route: blocked: matches a block command rule, never auto-approved or asked\nrule: no-apply \(block, .*no-rules\.jsonc\)/);
         assert.match(await routeFor("bash git push origin --force"), /route: blocked: [^\n]*\nrule: force-push \(block, default\)\nwhy: A force push rewrites history/);
       } finally {
-        rmSync(process.env.PI_AUTO_APPROVAL_RULES_PATH!, { force: true });
+        rmSync(process.env.CLEARANCE_RULES_PATH!, { force: true });
       }
-      assert.match(await routeFor(""), /Usage: \/auto-approval explain/);
+      assert.match(await routeFor(""), /Usage: \/clearance explain/);
     } finally {
       rmSync(configFile, { force: true });
       if (previousConfigPath === undefined) {
-        delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+        delete process.env.CLEARANCE_CONFIG_PATH;
       } else {
-        process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfigPath;
+        process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
       }
     }
   });
 
-  await test("system prompt note is appended only while auto-approval is enabled", async () => {
-    const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
-    const configFile = join(tmpdir(), `omp-auto-approval-prompt-${Date.now()}.jsonc`);
-    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = configFile;
+  await test("system prompt note is appended only while omp-clearance is enabled", async () => {
+    const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
+    const configFile = join(tmpdir(), `omp-clearance-prompt-${Date.now()}.jsonc`);
+    process.env.CLEARANCE_CONFIG_PATH = configFile;
     try {
       for (const enabled of [true, false]) {
         writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, enabled }));
         const handlers = new Map<string, (...args: any[]) => any>();
-        ompAutoApprovalExtension({ on: (event, handler) => { handlers.set(event, handler); } });
+        ompClearanceExtension({ on: (event, handler) => { handlers.set(event, handler); } });
         const beforeAgentStart = handlers.get("before_agent_start");
         assert.ok(beforeAgentStart);
         const fromArray = await beforeAgentStart({ type: "before_agent_start", systemPrompt: ["base"] });
@@ -2442,23 +2428,23 @@ async function run(): Promise<void> {
     } finally {
       rmSync(configFile, { force: true });
       if (previousConfigPath === undefined) {
-        delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+        delete process.env.CLEARANCE_CONFIG_PATH;
       } else {
-        process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfigPath;
+        process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
       }
     }
   });
 
   await test("unknown config keys are reported once at session start, not on every tool call", async () => {
-    const configFile = join(tmpdir(), `omp-auto-approval-keys-${Date.now()}.jsonc`);
+    const configFile = join(tmpdir(), `omp-clearance-keys-${Date.now()}.jsonc`);
     writeFileSync(configFile, JSON.stringify({ $schema: "./schemas/config.schema.json", enabled: true, safeCommandAllowList: ["make"], modes: "auto" }));
-    const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
-    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = configFile;
+    const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
+    process.env.CLEARANCE_CONFIG_PATH = configFile;
     try {
       const loaded = loadConfig(configFile);
       assert.equal(loaded.warning, undefined);
       assert.match(loaded.notice ?? "", /unknown key\(s\) that are ignored: safeCommandAllowList, modes\./);
-      const freshConfigFile = join(tmpdir(), `omp-auto-approval-fresh-${Date.now()}.jsonc`);
+      const freshConfigFile = join(tmpdir(), `omp-clearance-fresh-${Date.now()}.jsonc`);
       try {
         assert.equal(loadConfig(freshConfigFile).notice, undefined);
       } finally {
@@ -2466,7 +2452,7 @@ async function run(): Promise<void> {
       }
 
       const handlers = new Map<string, (...args: any[]) => any>();
-      ompAutoApprovalExtension({ on: (event, handler) => { handlers.set(event, handler); } });
+      ompClearanceExtension({ on: (event, handler) => { handlers.set(event, handler); } });
       const notices: string[] = [];
       const sessionCtx = ctx({ ui: { notify: (message) => { notices.push(message); }, setStatus: () => {} } });
       await handlers.get("session_start")?.({}, sessionCtx);
@@ -2476,9 +2462,9 @@ async function run(): Promise<void> {
     } finally {
       rmSync(configFile, { force: true });
       if (previousConfigPath === undefined) {
-        delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+        delete process.env.CLEARANCE_CONFIG_PATH;
       } else {
-        process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfigPath;
+        process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
       }
     }
   });
@@ -2491,16 +2477,16 @@ async function run(): Promise<void> {
             type: "message",
             message: {
               role: "user",
-              content: [{ type: "text", text: "删除文件：/tmp/omp-auto-approval-test/delete-target.json" }],
+              content: [{ type: "text", text: "删除文件：/tmp/omp-clearance-test/delete-target.json" }],
             },
           },
         ],
       },
     }), {
       toolName: "bash",
-      input: { command: "rm /tmp/omp-auto-approval-test/delete-target.json" },
+      input: { command: "rm /tmp/omp-clearance-test/delete-target.json" },
       cwd: "/workspace/project",
-      actionSummary: "bash: rm /tmp/omp-auto-approval-test/delete-target.json",
+      actionSummary: "bash: rm /tmp/omp-clearance-test/delete-target.json",
       actionHash: "test",
     });
     assert.match(projected, /Latest user request:\n删除文件/);
@@ -2549,7 +2535,7 @@ async function run(): Promise<void> {
   await test("classifier receives latest user request for current approval", async () => {
     let classifierContext = "";
     const result = await evaluateToolCall(
-      { toolName: "bash", input: { command: "rm /tmp/omp-auto-approval-test/delete-target.json" } },
+      { toolName: "bash", input: { command: "rm /tmp/omp-clearance-test/delete-target.json" } },
       ctx({
         cwd: "/workspace/project",
         sessionManager: {
@@ -2558,7 +2544,7 @@ async function run(): Promise<void> {
               type: "message",
               message: {
                 role: "user",
-                content: [{ type: "text", text: "删除文件：/tmp/omp-auto-approval-test/delete-target.json" }],
+                content: [{ type: "text", text: "删除文件：/tmp/omp-clearance-test/delete-target.json" }],
               },
             },
           ],
@@ -2635,7 +2621,7 @@ async function run(): Promise<void> {
   });
 
   await test("bash calls with fields that change how they run are not fast-pathed", () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-fields-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-fields-"));
     try {
       const route = (input: Record<string, unknown>) => selectFastPath("bash", input, { cwd: workspace, config: config(), tools: [], hasUI: false });
       assert.equal(route({ command: "git status", timeout: 30, description: "status" }), "safe_command");
@@ -2649,7 +2635,7 @@ async function run(): Promise<void> {
   });
 
   await test("commands that can leave a hook in the shell are recognised", () => {
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-hooks-"));
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-hooks-"));
     mkdirSync(join(dir, ".venv/bin"), { recursive: true });
     // Like a virtualenv activate script: functions, PS1 and PATH, no hooks.
     writeFileSync(join(dir, ".venv/bin/activate"), "# This file must be used with \"source bin/activate\" from bash\ndeactivate () {\n  unset VIRTUAL_ENV\n}\nVIRTUAL_ENV=/x\nexport PATH=\"$VIRTUAL_ENV/bin:$PATH\"\nPS1=\"(venv) $PS1\"\nhash -r 2>/dev/null\n");
@@ -2715,7 +2701,7 @@ async function run(): Promise<void> {
   });
 
   await test("an approved command that may hook the shell turns the bash fast path off for the session", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-latch-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-latch-"));
     const store = new SessionApprovalStore();
     const notices: string[] = [];
     let classifierCalls = 0;
@@ -2746,7 +2732,7 @@ async function run(): Promise<void> {
       assert.deepEqual(await run("git status"), {});
       assert.equal(classifierCalls, before + 1);
 
-      // /auto-approval off clears approvals but not the shell's latch; another session has its own.
+      // /clearance off clears approvals but not the shell's latch; another session has its own.
       store.clear();
       assert.equal(store.shellLatch("s1"), "`trap`");
       session = "s2";
@@ -2795,7 +2781,7 @@ async function run(): Promise<void> {
       new SessionApprovalStore(),
       { classifierClient: async () => { throw new Error("model down"); } },
     );
-    assert.deepEqual(result, { block: true, reason: "AI auto-approval could not approve this action: model down" });
+    assert.deepEqual(result, { block: true, reason: "The approval classifier could not approve this action: model down" });
   });
 
   await test("classifier surfaces provider errorMessage over generic no-text", async () => {
@@ -2821,7 +2807,7 @@ async function run(): Promise<void> {
     assert.deepEqual(result, {
       block: true,
       reason:
-        "AI auto-approval could not approve this action: Classifier request failed: Command Code API error 403: {\"error\":{\"code\":\"upgrade_required\"}}",
+        "The approval classifier could not approve this action: Classifier request failed: Command Code API error 403: {\"error\":{\"code\":\"upgrade_required\"}}",
     });
   });
 
@@ -2835,7 +2821,7 @@ async function run(): Promise<void> {
     );
     assert.deepEqual(result, {
       block: true,
-      reason: "AI auto-approval could not approve this action: Classifier returned no text.",
+      reason: "The approval classifier could not approve this action: Classifier returned no text.",
     });
   });
 
@@ -3109,7 +3095,7 @@ async function run(): Promise<void> {
   });
 
   await test("safe git commands reject operands outside the workspace or naming secrets", async () => {
-    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-git-"));
+    const root = mkdtempSync(join(tmpdir(), "omp-clearance-git-"));
     const workspace = join(root, "workspace");
     mkdirSync(join(workspace, "src"), { recursive: true });
     symlinkSync(root, join(workspace, "linked-parent"));
@@ -3147,7 +3133,7 @@ async function run(): Promise<void> {
   });
 
   await test("config saves only non-default values and maps the legacy 90s classifier timeout", () => {
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-config-"));
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-config-"));
     const file = join(dir, "config.jsonc");
     try {
       const created = loadConfig(file);
@@ -3250,7 +3236,7 @@ async function run(): Promise<void> {
   });
 
   await test("a subagent's classifier takes the user's messages from the parent session files", () => {
-    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-parent-"));
+    const root = mkdtempSync(join(tmpdir(), "omp-clearance-parent-"));
     const line = (value: unknown) => JSON.stringify(value);
     const message = (id: string, parentId: string | null, role: string, content: string, attribution: string) =>
       line({ type: "message", id, parentId, message: { role, content, attribution } });
@@ -3362,7 +3348,7 @@ async function run(): Promise<void> {
   });
 
   await test("readRoots extend the read fast path without exposing secrets", async () => {
-    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-roots-"));
+    const root = mkdtempSync(join(tmpdir(), "omp-clearance-roots-"));
     const workspace = join(root, "workspace");
     const library = join(root, "library");
     const sibling = join(root, "sibling");
@@ -3444,7 +3430,7 @@ async function run(): Promise<void> {
       [{ safeCommandAllowlist: ["rg"] }, "safeCommandAllowlist is no longer read and its 1 entry is ignored: write them as allow rules in rules.jsonc"],
       [{ blockCommands: ["git push --force", "x"] }, "blockCommands is no longer read and its 2 entries are ignored: write them as block rules in rules.jsonc"],
     ] as const) {
-      const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-moved-"));
+      const dir = mkdtempSync(join(tmpdir(), "omp-clearance-moved-"));
       try {
         writeFileSync(join(dir, "config.jsonc"), JSON.stringify(raw));
         const loaded = loadConfig(join(dir, "config.jsonc"));
@@ -3455,7 +3441,7 @@ async function run(): Promise<void> {
         rmSync(dir, { recursive: true, force: true });
       }
     }
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-moved-"));
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-moved-"));
     try {
       writeFileSync(join(dir, "config.jsonc"), JSON.stringify({ safeCommandAllowlist: [], blockCommands: [] }));
       assert.equal(loadConfig(join(dir, "config.jsonc")).notice, undefined);
@@ -3465,7 +3451,7 @@ async function run(): Promise<void> {
   });
 
   await test("allow rules let commands through by their prefix", () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-allow-rules-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-allow-rules-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
     writeFileSync(join(workspace, ".env"), "SECRET=1\n");
     try {
@@ -3484,7 +3470,7 @@ async function run(): Promise<void> {
   });
 
   await test("write fast path applies only to the host's own write and edit tools", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-write-source-"));
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-write-source-"));
     try {
       for (const [source, expectReview] of [["builtin", false], ["extension", true], ["mcp", true]] as const) {
         const result = await evaluateToolCall(
@@ -3537,8 +3523,8 @@ async function run(): Promise<void> {
   });
 
   await test("audit logging does not throw", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-test-"));
-    process.env.PI_AUTO_APPROVAL_LOGS_DIR = dir;
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-test-"));
+    process.env.CLEARANCE_LOGS_DIR = dir;
     await evaluateToolCall(
       { toolName: "bash", input: { command: "git status" } },
       ctx(),
@@ -3546,7 +3532,7 @@ async function run(): Promise<void> {
       new SessionApprovalStore(),
     );
     rmSync(dir, { recursive: true, force: true });
-    delete process.env.PI_AUTO_APPROVAL_LOGS_DIR;
+    delete process.env.CLEARANCE_LOGS_DIR;
   });
 }
 

@@ -63,7 +63,7 @@ export async function requestHumanApproval(
 
   const choices = [ALLOW_ONCE, ALLOW_EXACT, REJECT, REJECT_WITH_REASON, ...(ctx.abort ? [REJECT_AND_STOP] : [])];
   const selected = await ctx.ui.select(
-    `${options.title ?? "Auto Approval"}\n${details}`,
+    `${options.title ?? "omp-clearance"}\n${details}`,
     choices,
     { timeout: options.timeoutSeconds * 1000 },
   );

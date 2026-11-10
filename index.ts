@@ -22,12 +22,12 @@ type ExtensionAPI = {
   ) => void;
 };
 
-const STATUS_KEY = "omp-auto-approval";
+const STATUS_KEY = "omp-clearance";
 
-// Appended to the system prompt while auto-approval is on, so a blocked call
+// Appended to the system prompt while omp-clearance is on, so a blocked call
 // is reported instead of retried in another form.
 export const SYSTEM_PROMPT_NOTE = [
-  "Tool calls in this session are reviewed by omp-auto-approval before they run.",
+  "Tool calls in this session are reviewed by omp-clearance before they run.",
   "If a call is blocked, do not retry it in another form or route around the block",
   "(another tool, an encoded or rewritten command, a script that does the same thing).",
   "Tell the user what was blocked and why, and wait for their guidance.",
@@ -63,7 +63,7 @@ function statusText(config: AutoReviewConfig): string | undefined {
   if (!config.enabled) {
     return undefined;
   }
-  return `auto-approval:${config.mode}`;
+  return `clearance:${config.mode}`;
 }
 
 function stateText(config: AutoReviewConfig): "off" | "fallback" | "auto" {
@@ -71,7 +71,7 @@ function stateText(config: AutoReviewConfig): "off" | "fallback" | "auto" {
 }
 
 function rulesProblemText(rules: CommandRules): string {
-  return `omp-auto-approval: the command rules could not be loaded, so every bash command asks you first (and is denied in auto mode): ${rules.problem}. Fix the file, then run /auto-approval status to reload it.`;
+  return `omp-clearance: the command rules could not be loaded, so every bash command asks you first (and is denied in auto mode): ${rules.problem}. Fix the file, then run /clearance status to reload it.`;
 }
 
 function rulesStatusText(rules: CommandRules): string[] {
@@ -126,11 +126,11 @@ function getAutoReviewArgumentCompletions(argumentPrefix: string): Array<{ value
   return filtered.length ? filtered : null;
 }
 
-export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
+export default function ompClearanceExtension(omp: ExtensionAPI): void {
   let loadResult = loadConfig();
   let config = loadResult.config;
   // The command rules for this session: re-read at session start and on any
-  // /auto-approval command.
+  // /clearance command.
   let rules = loadCommandRules();
   const approvals = new SessionApprovalStore();
   let lastContext: ExtensionContextLike | null = null;
@@ -161,7 +161,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
   function explain(rest: string, ctx: ExtensionContextLike): void {
     const firstWord = rest.split(/\s+/, 1)[0] ?? "";
     if (!firstWord) {
-      notify(ctx, "Usage: /auto-approval explain <tool> [path | JSON arguments | bash command], or a bash command", "warning");
+      notify(ctx, "Usage: /clearance explain <tool> [path | JSON arguments | bash command], or a bash command", "warning");
       return;
     }
     const tools = omp.getAllTools?.() ?? [];
@@ -217,7 +217,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
   function persist(next: AutoReviewConfig, ctx: ExtensionContextLike): void {
     const saved = saveConfig(next);
     if (!saved.success) {
-      notify(ctx, `Failed to save omp-auto-approval config: ${saved.error ?? "unknown error"}`, "error");
+      notify(ctx, `Failed to save omp-clearance config: ${saved.error ?? "unknown error"}`, "error");
       return;
     }
     config = next;
@@ -232,15 +232,15 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
         persist({ ...config, enabled: false }, ctx);
         // The shell keeps whatever earlier commands set up, so its latch stays.
         approvals.clear();
-        notify(ctx, "omp-auto-approval state: off.");
+        notify(ctx, "omp-clearance state: off.");
         break;
       case "fallback":
         persist({ ...config, enabled: true, mode: "fallback" }, ctx);
-        notify(ctx, "omp-auto-approval state: fallback.");
+        notify(ctx, "omp-clearance state: fallback.");
         break;
       case "auto":
         persist({ ...config, enabled: true, mode: "auto" }, ctx);
-        notify(ctx, "omp-auto-approval state: auto.");
+        notify(ctx, "omp-clearance state: auto.");
         break;
       case "model": {
         if (!rest) {
@@ -257,7 +257,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
           notify(ctx, "approval classifier model: current");
           break;
         }
-        notify(ctx, "Use /auto-approval model to select an approval classifier model.", "warning");
+        notify(ctx, "Use /clearance model to select an approval classifier model.", "warning");
         break;
       }
       case "explain":
@@ -267,7 +267,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
         if (rules.problem) {
           notify(ctx, rulesProblemText(rules), "warning");
         } else if (rest) {
-          notify(ctx, describeRule(rules, rest) ?? `No program or rule named "${rest}". /auto-approval rules lists them.`, "info");
+          notify(ctx, describeRule(rules, rest) ?? `No program or rule named "${rest}". /clearance rules lists them.`, "info");
         } else {
           notify(ctx, rulesOverview(rules));
         }
@@ -290,7 +290,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
     }
   }
 
-  omp.registerCommand?.("auto-approval", {
+  omp.registerCommand?.("clearance", {
     description: "args: status | off | fallback | auto | model | rules | explain",
     getArgumentCompletions: getAutoReviewArgumentCompletions,
     handler: async (args, ctx) => {

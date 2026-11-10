@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
  *   node --import tsx tests/shell-oracle/extract-corpus.ts [--out FILE] [--claude DIR] [--omp DIR] [--kimi DIR]
  */
 
-export const DEFAULT_CORPUS = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "omp-auto-approval", "shell-corpus.jsonl");
+export const DEFAULT_CORPUS = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "omp-clearance", "shell-corpus.jsonl");
 
 export interface CorpusEntry {
   command: string;

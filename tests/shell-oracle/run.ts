@@ -10,7 +10,7 @@ import { PARSERS } from "./parsers.js";
  * Check a shell parser against bash on hand-written cases, the local corpus
  * of real agent commands (see extract-corpus.ts), and seeded fuzz.
  *
- * The corpus is every `shell-corpus*.jsonl` in ~/.cache/omp-auto-approval,
+ * The corpus is every `shell-corpus*.jsonl` in ~/.cache/omp-clearance,
  * or one file given with --corpus.
  *
  *   node --import tsx tests/shell-oracle/run.ts [--parser recognizer] [--corpus FILE | --no-corpus]

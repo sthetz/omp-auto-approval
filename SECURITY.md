@@ -26,4 +26,4 @@ Security-sensitive areas include:
 
 ## Notes
 
-`/auto-approval fallback` is the recommended mode for normal use. `/auto-approval auto` is fail-closed, but it still relies on a model-based classifier and should be used only in trusted unattended contexts.
+`/clearance fallback` is the recommended mode for normal use. `/clearance auto` is fail-closed, but it still relies on a model-based classifier and should be used only in trusted unattended contexts.

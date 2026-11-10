@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "omp-auto-approval config",
+  "title": "omp-clearance config",
   "type": "object",
   "additionalProperties": false,
   "properties": {

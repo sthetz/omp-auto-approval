@@ -285,7 +285,7 @@ function createSelectorComponent(
 ) {
   const currentRef = selectedModelRef(config, ctx.model);
   const allItems: ModelItem[] = [
-    { value: null, provider: "auto-approval", id: "current", name: "Use active OMP session model" },
+    { value: null, provider: "clearance", id: "current", name: "Use active OMP session model" },
     ...items,
   ];
   let query = "";

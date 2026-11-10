@@ -226,7 +226,7 @@ export async function classifyAction(
 
   const model = resolveClassifierModel(ctx, config);
   if (!model) {
-    throw new Error("No active model is available for auto approval.");
+    throw new Error("No active model is available for the approval classifier.");
   }
 
   const auth = await resolveRequestAuth(ctx, model);

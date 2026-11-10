@@ -29,7 +29,7 @@ What happened instead?
 - Pi version:
 - Node.js version:
 - OS:
-- `omp-auto-approval` version or commit:
+- `omp-clearance` version or commit:
 
 ## Logs
 

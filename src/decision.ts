@@ -36,14 +36,14 @@ function deny(reason: string): ToolCallDecision {
 
 function classifierDenyReason(decision: ReviewDecision): string {
   return [
-    "AI auto-approval rejected this action.",
+    "The approval classifier rejected this action.",
     decision.rationale ? `Reason: ${decision.rationale}` : null,
     "Do not retry the same action unless the user explicitly approves it.",
   ].filter(Boolean).join(" ");
 }
 
 function failureDenyReason(reason: string): string {
-  return `AI auto-approval could not approve this action: ${reason}`;
+  return `The approval classifier could not approve this action: ${reason}`;
 }
 
 async function handleHumanFallback(
@@ -254,11 +254,11 @@ function automaticDeny(
   store.recordNonDenial();
   if (ctx.abort) {
     // The agent never sees this reason once the turn ends; tell the user why.
-    ctx.ui?.notify?.(`omp-auto-approval stopped the turn after ${denials} rejected actions in a row. Last: ${reason}`, "warning");
+    ctx.ui?.notify?.(`omp-clearance stopped the turn after ${denials} rejected actions in a row. Last: ${reason}`, "warning");
     ctx.abort();
-    return deny(`${reason} Auto-approval rejected ${denials} actions in a row and stopped the turn. Wait for the user's next message.`);
+    return deny(`${reason} omp-clearance rejected ${denials} actions in a row and stopped the turn. Wait for the user's next message.`);
   }
-  return deny(`${reason} Auto-approval rejected ${denials} actions in a row; stop and ask the user for guidance.`);
+  return deny(`${reason} omp-clearance rejected ${denials} actions in a row; stop and ask the user for guidance.`);
 }
 
 /** The session a tool call belongs to, which owns one persistent shell. */
@@ -319,7 +319,7 @@ export async function evaluateToolCall(
       reason,
     });
     if (config.enabled) {
-      ctx.ui?.notify?.(`omp-auto-approval: an approved bash command used ${reason}, which can make the shell run code before later commands. Bash commands are reviewed for the rest of this session.`, "warning");
+      ctx.ui?.notify?.(`omp-clearance: an approved bash command used ${reason}, which can make the shell run code before later commands. Bash commands are reviewed for the rest of this session.`, "warning");
     }
   }
   return decision;

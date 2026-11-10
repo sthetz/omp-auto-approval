@@ -494,9 +494,9 @@ export function defaultRulesPath(): string {
   return join(extensionRoot(), "config", "default-rules.jsonc");
 }
 
-/** The user's rules file: PI_AUTO_APPROVAL_RULES_PATH, else rules.jsonc next to config.jsonc. */
+/** The user's rules file: CLEARANCE_RULES_PATH, else rules.jsonc next to config.jsonc. */
 export function userRulesPath(): string {
-  return process.env.PI_AUTO_APPROVAL_RULES_PATH?.trim() || join(dirname(configPath()), "rules.jsonc");
+  return process.env.CLEARANCE_RULES_PATH?.trim() || join(dirname(configPath()), "rules.jsonc");
 }
 
 let defaults: { rules: CommandRules; document: Record<string, unknown> | null } | undefined;

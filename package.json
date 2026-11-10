@@ -1,14 +1,14 @@
 {
-  "name": "omp-auto-approval",
+  "name": "omp-clearance",
   "version": "0.3.1",
-  "description": "AI classifier based automatic approval extension for OMP.",
+  "description": "Command rules and an AI classifier decide whether each OMP tool call runs, asks you first, or is blocked.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sthetz/omp-auto-approval.git"
+    "url": "git+https://github.com/sthetz/omp-clearance.git"
   },
-  "homepage": "https://github.com/sthetz/omp-auto-approval#readme",
+  "homepage": "https://github.com/sthetz/omp-clearance#readme",
   "bugs": {
-    "url": "https://github.com/sthetz/omp-auto-approval/issues"
+    "url": "https://github.com/sthetz/omp-clearance/issues"
   },
   "type": "module",
   "main": "./index.ts",
@@ -43,6 +43,7 @@
     "pi-extension",
     "pi-coding-agent",
     "auto-approval",
+    "command-rules",
     "permissions"
   ],
   "license": "Apache-2.0",

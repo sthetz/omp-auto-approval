@@ -1,6 +1,6 @@
 // An example user rules file. Copy it to rules.jsonc next to config.jsonc
-// (or set PI_AUTO_APPROVAL_RULES_PATH) and edit it. It is read at session
-// start and on any /auto-approval command; /auto-approval status shows
+// (or set CLEARANCE_RULES_PATH) and edit it. It is read at session
+// start and on any /clearance command; /clearance status shows
 // which files are in use, or what is wrong with them.
 //
 // Entries only say what may skip review. Everything they don't list is
@@ -16,7 +16,7 @@
   "$schema": "../schemas/rules.schema.json",
 
   // More rules files, by absolute path or ~/.
-  // "include": ["~/.omp/agent/omp-auto-approval/kubectl.jsonc"],
+  // "include": ["~/.omp/agent/omp-clearance/kubectl.jsonc"],
 
   "programs": {
     // A program the built-in rules don't know. Its own options come before

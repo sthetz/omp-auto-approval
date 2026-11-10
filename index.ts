@@ -153,6 +153,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
       config,
       tools,
       hasUI: ctx.hasUI === true,
+      shellLatched: approvals.shellLatch() !== null,
     });
     const plan = route === "safe_command" ? planBashCommand(toolName, parsed.input, ctx.cwd || process.cwd(), config) : null;
     const review = config.mode === "fallback"
@@ -171,6 +172,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
       `route: ${outcome}`,
       ...(plan && plan.command !== toRecord(parsed.input).command ? [`runs as: ${plan.command}`] : []),
       ...(plan?.cwd ? [`runs in: ${plan.cwd}`] : []),
+      ...(toolName === "bash" && approvals.shellLatch() ? [`note: the bash fast path is off for this session: an approved command used ${approvals.shellLatch()}`] : []),
     ].join("\n"));
   }
 
@@ -190,6 +192,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
     switch (command) {
       case "off":
         persist({ ...config, enabled: false }, ctx);
+        // The shell keeps whatever earlier commands set up, so its latch stays.
         approvals.clear();
         notify(ctx, "omp-auto-approval state: off.");
         break;
@@ -231,6 +234,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
             `approval classifier model: ${classifierModelText(config)}`,
             `config: ${configPath()}`,
             `audit log: ${logPath()}`,
+            ...(approvals.shellLatch() ? [`bash fast path: off for this session (an approved command used ${approvals.shellLatch()})`] : []),
             ...(loadResult.notice ? [loadResult.notice] : []),
           ].join("\n"),
         );
@@ -247,7 +251,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
   });
 
   omp.on("session_start", async (_event: unknown, ctx: ExtensionContextLike) => {
-    approvals.clear();
+    approvals.reset();
     agentMessage = undefined;
     refresh(ctx, { announce: true });
   });
@@ -273,7 +277,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
   });
 
   omp.on("session_shutdown", async () => {
-    approvals.clear();
+    approvals.reset();
     lastContext?.ui?.setStatus?.(STATUS_KEY, undefined);
     lastContext = null;
   });

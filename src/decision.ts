@@ -19,6 +19,7 @@ import {
   resolveReadRoots,
 } from "./tool-routing.js";
 import { getString, relativePathWithin, resolvePathForCwd, toRecord } from "./common.js";
+import { shellHook } from "./shell-hooks.js";
 import { requestHumanApproval } from "./human-approval.js";
 
 export type ToolCallDecision = {} | { block: true; reason: string };
@@ -115,6 +116,20 @@ function bashCommand(toolName: string, input: unknown): string | undefined {
   return toolName === "bash" ? getString(toRecord(input).command) : undefined;
 }
 
+// Bash tool fields a fast-pathed call may carry. Others change how or where
+// it runs: `pty` gives it a terminal on stdin, `async`, `name` and the
+// service fields (`ready`, `log`, `port`, `host`) run it in the background or
+// as a service, and some hosts honour an `env` that can set PATH or
+// LD_PRELOAD. A field this list does not know is reviewed too.
+const PLAIN_BASH_FIELDS = new Set(["command", "cwd", "timeout", "description"]);
+const OFF_BY_DEFAULT_BASH_FIELDS = new Set(["pty", "async"]);
+
+function hasOnlyPlainBashFields(input: unknown): boolean {
+  return Object.entries(toRecord(input)).every(([key, value]) => (
+    PLAIN_BASH_FIELDS.has(key) || value === undefined || value === null || (OFF_BY_DEFAULT_BASH_FIELDS.has(key) && value === false)
+  ));
+}
+
 /**
  * How a bash call that skips review runs (see planSafeCommand), or null. OMP's
  * bash tool accepts a `cwd`; relative paths are resolved from it, and a
@@ -122,7 +137,7 @@ function bashCommand(toolName: string, input: unknown): string | undefined {
  */
 export function planBashCommand(toolName: string, input: unknown, cwd: string, config: AutoReviewConfig): SafeCommandPlan | null {
   const command = bashCommand(toolName, input);
-  if (!command) {
+  if (!command || !hasOnlyPlainBashFields(input)) {
     return null;
   }
   const requested = getString(toRecord(input).cwd);
@@ -147,7 +162,7 @@ export function plannedInput(input: unknown, plan: SafeCommandPlan): Record<stri
 export function selectFastPath(
   toolName: string,
   input: unknown,
-  options: { cwd: string; config: AutoReviewConfig; tools: unknown[]; hasUI: boolean },
+  options: { cwd: string; config: AutoReviewConfig; tools: unknown[]; hasUI: boolean; shellLatched?: boolean },
 ): FastPathRoute | null {
   const { cwd, config, tools, hasUI } = options;
   const toolDefinition = findToolDefinition(toolName, tools);
@@ -176,7 +191,7 @@ export function selectFastPath(
   if (isManualOnlyTool(toolName, toolDefinition)) {
     return "manual_only";
   }
-  if (planBashCommand(toolName, input, cwd, config) !== null) {
+  if (!options.shellLatched && planBashCommand(toolName, input, cwd, config) !== null) {
     return "safe_command";
   }
   return null;
@@ -207,17 +222,62 @@ function automaticDeny(
   return deny(`${reason} Auto-approval rejected ${denials} actions in a row; stop and ask the user for guidance.`);
 }
 
+type EvaluateOptions = {
+  tools?: unknown[];
+  classifierClient?: ClassifierClient;
+  // Text of the assistant message that issued this call, if known.
+  agentMessage?: string;
+};
+
+/**
+ * Decide a tool call. A bash command that runs (by any route, or with the
+ * extension off) and may leave a hook in the persistent shell turns the bash
+ * fast path off for the rest of the session: see shellHook.
+ */
 export async function evaluateToolCall(
   event: ToolCallEventLike,
   ctx: ExtensionContextLike,
   config: AutoReviewConfig,
   store: SessionApprovalStore,
-  options: {
-    tools?: unknown[];
-    classifierClient?: ClassifierClient;
-    // Text of the assistant message that issued this call, if known.
-    agentMessage?: string;
-  } = {},
+  options: EvaluateOptions = {},
+): Promise<ToolCallDecision> {
+  const toolName = getToolName(event);
+  const input = getToolInput(event);
+  const command = toolName ? bashCommand(toolName, input) : undefined;
+  const requested = getString(toRecord(input).cwd);
+  const cwd = ctx.cwd || process.cwd();
+  const directory = requested ? resolvePathForCwd(requested, cwd) : cwd;
+  const outcome = { fastPathed: false };
+  const decision = await decideToolCall(event, ctx, config, store, options, outcome);
+  // A fast-pathed command runs only pinned programs, which cannot change the shell.
+  if (command && !("block" in decision) && !outcome.fastPathed && store.shellLatch() === null) {
+    const reason = shellHook(command, directory);
+    if (reason) {
+      store.latchShell(reason);
+      const subject = createReviewSubject(toolName!, input, cwd);
+      await writeAudit(config, {
+        event: "shell_latch",
+        mode: config.mode,
+        toolName: toolName!,
+        actionSummary: subject.actionSummary,
+        actionHash: subject.actionHash,
+        reason,
+      });
+      if (config.enabled) {
+        ctx.ui?.notify?.(`omp-auto-approval: an approved bash command used ${reason}, which can make the shell run code before later commands. Bash commands are reviewed for the rest of this session.`, "warning");
+      }
+    }
+  }
+  return decision;
+}
+
+async function decideToolCall(
+  event: ToolCallEventLike,
+  ctx: ExtensionContextLike,
+  config: AutoReviewConfig,
+  store: SessionApprovalStore,
+  options: EvaluateOptions,
+  outcome: { fastPathed: boolean },
 ): Promise<ToolCallDecision> {
   const started = Date.now();
   const toolName = getToolName(event);
@@ -236,6 +296,7 @@ export async function evaluateToolCall(
     config,
     tools: options.tools ?? [],
     hasUI: ctx.hasUI === true,
+    shellLatched: store.shellLatch() !== null,
   });
   const audit = (entry: Omit<AuditEntry, "event" | "mode" | "toolName" | "actionSummary" | "actionHash" | "durationMs">) => writeAudit(config, {
     event: "decision",
@@ -268,6 +329,7 @@ export async function evaluateToolCall(
 
   if (route) {
     if (route === "safe_command") {
+      outcome.fastPathed = true;
       store.recordNonDenial();
       const plan = planBashCommand(toolName, input, cwd, config);
       if (plan) {

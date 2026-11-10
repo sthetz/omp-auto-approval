@@ -125,3 +125,13 @@ export interface AuditEntry {
   pinnedCwd?: string;
   durationMs?: number;
 }
+
+/** An approved bash command turned the session's bash fast path off (see shellHook). */
+export interface ShellLatchEntry {
+  event: "shell_latch";
+  mode: AutoReviewMode;
+  toolName: string;
+  actionSummary: string;
+  actionHash: string;
+  reason: string;
+}

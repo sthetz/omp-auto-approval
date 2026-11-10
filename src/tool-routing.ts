@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { getString, relativePathWithin, resolvePathForCwd, sha256, stableStringify, toRecord, truncateInline, type ReadRoots } from "./common.js";
 
 export { resolveReadRoots, type ReadRoots } from "./common.js";
-import { normalizeCommand } from "./safe-command.js";
 import { isSensitivePath } from "./sensitive-paths.js";
 import type { ReviewSubject, ToolCallEventLike } from "./types.js";
 
@@ -337,18 +336,20 @@ export function createReviewSubject(toolName: string, input: unknown, cwd: strin
   const record = toRecord(input);
   const command = toolName === "bash" ? getString(record.command) : undefined;
   const path = getPathFromInput(input);
-  const normalizedInput = toolName === "bash" && command
-    ? { ...record, command: normalizeCommand(command) }
-    : record;
+  // The classifier and the action hash get the command exactly as bash will
+  // read it: collapsing whitespace would turn `echo a⏎rm x` into one
+  // harmless-looking echo, and give both the same cached decision.
+  // One line for display, with line breaks shown as `\n`: the classifier and
+  // the approval dialog see this too, and must not see two commands as one.
   const actionSummary = toolName === "bash" && command
-    ? `bash: ${truncateInline(normalizeCommand(command))}`
+    ? `bash: ${truncateInline(command.replace(/\r/g, "\\r").replace(/\n/g, "\\n"))}`
     : path
       ? `${toolName}: ${truncateInline(path)}`
       : `${toolName}: ${truncateInline(stableStringify(input))}`;
-  const hashSource = stableStringify({ toolName, cwd, input: normalizedInput });
+  const hashSource = stableStringify({ toolName, cwd, input: record });
   return {
     toolName,
-    input: normalizedInput,
+    input: record,
     cwd,
     actionSummary,
     actionHash: sha256(hashSource),

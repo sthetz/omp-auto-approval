@@ -1,9 +1,8 @@
 import type { AuditEntry, AutoReviewConfig, ExtensionContextLike, ReviewDecision, ToolCallEventLike } from "./types.js";
-import { matchBlockedCommand } from "./block-commands.js";
 import { classifyAction, type ClassifierClient } from "./classifier.js";
 import { writeAudit } from "./logging.js";
 import { planSafeCommand, type SafeCommandPlan } from "./safe-command.js";
-import { defaultRules, userRulesPath, type CommandRules } from "./command-rules.js";
+import { defaultRules, escalateCommand, userRulesPath, type CommandRule, type CommandRules, type Escalation } from "./command-rules.js";
 import { configPath } from "./extension-config.js";
 import { SessionApprovalStore } from "./session-approval-store.js";
 import {
@@ -26,6 +25,11 @@ import { requestHumanApproval } from "./human-approval.js";
 
 export type ToolCallDecision = {} | { block: true; reason: string };
 
+/** The audit fields naming the command rule that decided, if any. */
+function ruleFields(rule: CommandRule | undefined): Pick<AuditEntry, "ruleId" | "ruleSource"> {
+  return rule ? { ruleId: rule.id, ruleSource: rule.source } : {};
+}
+
 function deny(reason: string): ToolCallDecision {
   return { block: true, reason };
 }
@@ -47,11 +51,12 @@ async function handleHumanFallback(
   config: AutoReviewConfig,
   store: SessionApprovalStore,
   subject: ReturnType<typeof createReviewSubject>,
-  auditBase: { started: number; route: "classifier" | "manual_only"; classifierDecision?: ReviewDecision; failureReason?: string },
+  auditBase: { started: number; route: "classifier" | "manual_only" | "ask_rule"; classifierDecision?: ReviewDecision; failureReason?: string; rule?: CommandRule },
 ): Promise<ToolCallDecision> {
   const human = await requestHumanApproval(ctx, subject, {
     classifierDecision: auditBase.classifierDecision,
     failureReason: auditBase.failureReason,
+    rule: auditBase.rule,
     timeoutSeconds: config.approvalTimeoutSeconds,
   });
   if (human.approved) {
@@ -70,6 +75,7 @@ async function handleHumanFallback(
       outcome: "allow",
       classifierDecision: auditBase.classifierDecision,
       humanDecision: human.persistence,
+      ...ruleFields(auditBase.rule),
       durationMs: Date.now() - auditBase.started,
     });
     return {};
@@ -85,6 +91,7 @@ async function handleHumanFallback(
   const reason = human.state === "stop"
     ? "The user rejected this action and stopped the turn. Wait for the user's next message."
     : human.reason
+      ?? (auditBase.route === "ask_rule" ? `The user rejected this action, which the command rule "${auditBase.rule?.id}" asks them to approve.` : undefined)
       ?? auditBase.classifierDecision?.rationale
       ?? auditBase.failureReason
       ?? "Manual approval was rejected.";
@@ -99,6 +106,7 @@ async function handleHumanFallback(
     classifierDecision: auditBase.classifierDecision,
     humanDecision: human.state,
     reason,
+    ...ruleFields(auditBase.rule),
     durationMs: Date.now() - auditBase.started,
   });
   return deny(reason);
@@ -106,6 +114,7 @@ async function handleHumanFallback(
 
 export type FastPathRoute =
   | "blocked_command"
+  | "ask_rule"
   | "local_state"
   | "ui_only"
   | "tool_allowlist"
@@ -161,10 +170,28 @@ export function plannedInput(input: unknown, plan: SafeCommandPlan): Record<stri
  * null for review. Name-based fast paths apply only to the host's own builtin
  * tools.
  */
+/**
+ * What the command rules and blockCommands call for, for a bash call; null
+ * for other tools and for commands no rule matches.
+ */
+export function bashEscalation(toolName: string, input: unknown, config: AutoReviewConfig, rules: CommandRules = defaultRules()): Escalation | null {
+  const command = bashCommand(toolName, input);
+  return command ? escalateCommand(command, rules, config.blockCommands) : null;
+}
+
 export function selectFastPath(
   toolName: string,
   input: unknown,
-  options: { cwd: string; config: AutoReviewConfig; tools: unknown[]; hasUI: boolean; shellLatched?: boolean; rules?: CommandRules },
+  options: {
+    cwd: string;
+    config: AutoReviewConfig;
+    tools: unknown[];
+    hasUI: boolean;
+    shellLatched?: boolean;
+    rules?: CommandRules;
+    // As bashEscalation gives it; computed when absent.
+    escalation?: Escalation | null;
+  },
 ): FastPathRoute | null {
   const { cwd, config, tools, hasUI } = options;
   const rules = options.rules ?? defaultRules();
@@ -172,17 +199,27 @@ export function selectFastPath(
   const builtin = isBuiltinTool(toolDefinition, tools.length > 0);
   const normalizedToolName = toolName.trim().toLowerCase();
   const command = bashCommand(toolName, input);
+  const escalation = options.escalation === undefined ? bashEscalation(toolName, input, config, rules) : options.escalation;
 
-  if (command && matchBlockedCommand(command, config.blockCommands)) {
+  // The most restrictive outcome wins: block, then ask, then review, then
+  // any fast path.
+  if (escalation?.outcome === "block") {
     return "blocked_command";
   }
+  if (escalation?.outcome === "ask") {
+    return "ask_rule";
+  }
+  // A bash command a review rule matches, or any bash command while the
+  // rules cannot be read (they might have held a block), is reviewed even
+  // when bash is in reviewExemptTools.
+  const reviewBash = command !== undefined && (escalation?.outcome === "review" || rules.problem !== null);
   if (builtin && isLocalStateTool(toolName)) {
     return "local_state";
   }
   if (builtin && isInteractiveUiOnlyTool(toolName, input, hasUI)) {
     return "ui_only";
   }
-  if (config.reviewExemptTools.some((name) => name.trim().toLowerCase() === normalizedToolName)) {
+  if (!reviewBash && config.reviewExemptTools.some((name) => name.trim().toLowerCase() === normalizedToolName)) {
     return "tool_allowlist";
   }
   if (builtin && isReadOnlyTool(toolName) && isWorkspaceReadFastPath(input, resolveReadRoots(cwd, config.readRoots))) {
@@ -194,7 +231,7 @@ export function selectFastPath(
   if (isManualOnlyTool(toolName, toolDefinition)) {
     return "manual_only";
   }
-  if (!options.shellLatched && planBashCommand(toolName, input, cwd, config, rules) !== null) {
+  if (!reviewBash && !options.shellLatched && planBashCommand(toolName, input, cwd, config, rules) !== null) {
     return "safe_command";
   }
   return null;
@@ -310,6 +347,9 @@ async function decideToolCall(
   const cwd = ctx.cwd || process.cwd();
   const input = getToolInput(event);
   const subject = createReviewSubject(toolName, input, cwd);
+  // Decided once, so that the route and the reasons below agree.
+  const escalation = bashEscalation(toolName, input, config, options.rules);
+  const rule = escalation?.rule ?? undefined;
   let route = selectFastPath(toolName, input, {
     cwd,
     config,
@@ -317,6 +357,7 @@ async function decideToolCall(
     hasUI: ctx.hasUI === true,
     shellLatched,
     rules: options.rules,
+    escalation,
   });
   // The command a safe_command call runs as. Planned again with the same
   // inputs, so it agrees with the route; if not, the call is reviewed rather
@@ -332,12 +373,28 @@ async function decideToolCall(
     actionSummary: subject.actionSummary,
     actionHash: subject.actionHash,
     durationMs: Date.now() - started,
+    ...ruleFields(rule),
     ...entry,
   });
 
   if (route === "blocked_command") {
-    const pattern = matchBlockedCommand(bashCommand(toolName, input) ?? "", config.blockCommands);
-    const reason = `This command matches the blockCommands rule "${pattern}" and is never auto-approved. Do not retry it in another form; tell the user what you wanted to run and why.`;
+    const reason = rule
+      ? `This command matches the command rule "${rule.id}" (block) and is never auto-approved.${rule.why ? ` Why: ${rule.why}` : ""} Do not retry it in another form; tell the user what you wanted to run and why.`
+      : `This command matches the blockCommands rule "${escalation?.blockPattern}" and is never auto-approved. Do not retry it in another form; tell the user what you wanted to run and why.`;
+    await audit({ route, outcome: "deny", reason });
+    return automaticDeny(ctx, config, store, reason);
+  }
+
+  if (route === "ask_rule") {
+    // A human gave an exact approval; a classifier's never stands in for one.
+    if (store.isExactApproved(subject.actionHash)) {
+      await audit({ route: "session_approval", outcome: "allow" });
+      return {};
+    }
+    if (config.mode === "fallback" && ctx.hasUI) {
+      return handleHumanFallback(ctx, config, store, subject, { started, route: "ask_rule", rule });
+    }
+    const reason = `This command matches the command rule "${rule?.id}", which asks the user to approve it, and the user cannot be asked${config.mode === "auto" ? " in auto mode" : " without an interactive UI"}.${rule?.why ? ` Why: ${rule.why}` : ""} Do not retry it in another form; tell the user what you wanted to run and why.`;
     await audit({ route, outcome: "deny", reason });
     return automaticDeny(ctx, config, store, reason);
   }
@@ -362,11 +419,11 @@ async function decideToolCall(
       const record = toRecord(input);
       if (plan && (plan.command !== record.command || plan.cwd)) {
         Object.assign(record, plannedInput(input, plan));
-        await audit({ route, outcome: "allow", pinnedCommand: plan.command, ...(plan.cwd ? { pinnedCwd: plan.cwd } : {}) });
+        await audit({ route, outcome: "allow", pinnedCommand: plan.command, ...(plan.cwd ? { pinnedCwd: plan.cwd } : {}), ruleIds: plan.rules.map((used) => used.id) });
         return {};
       }
     }
-    await audit({ route, outcome: "allow" });
+    await audit({ route, outcome: "allow", ...(plan ? { ruleIds: plan.rules.map((used) => used.id) } : {}) });
     return {};
   }
 
@@ -384,7 +441,7 @@ async function decideToolCall(
   }
   if (cached) {
     if (askHuman) {
-      return handleHumanFallback(ctx, config, store, subject, { started, route: "classifier", classifierDecision: cached });
+      return handleHumanFallback(ctx, config, store, subject, { started, route: "classifier", classifierDecision: cached, rule });
     }
     await audit({ route: "classifier_cache", outcome: "deny", classifierDecision: cached, reason: cached.rationale });
     return automaticDeny(ctx, config, store, classifierDenyReason(cached));
@@ -392,12 +449,12 @@ async function decideToolCall(
 
   let classifierDecision: ReviewDecision;
   try {
-    classifierDecision = await classifyAction(ctx, config, subject, options.classifierClient, { agentMessage: options.agentMessage });
+    classifierDecision = await classifyAction(ctx, config, subject, options.classifierClient, { agentMessage: options.agentMessage, rule });
     store.cacheDecision(subject.actionHash, classifierDecision);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     if (askHuman) {
-      return handleHumanFallback(ctx, config, store, subject, { started, route: "classifier", failureReason: reason });
+      return handleHumanFallback(ctx, config, store, subject, { started, route: "classifier", failureReason: reason, rule });
     }
     await audit({ route: "classifier", outcome: "deny", reason });
     return automaticDeny(ctx, config, store, failureDenyReason(reason));
@@ -410,7 +467,7 @@ async function decideToolCall(
   }
 
   if (askHuman) {
-    return handleHumanFallback(ctx, config, store, subject, { started, route: "classifier", classifierDecision });
+    return handleHumanFallback(ctx, config, store, subject, { started, route: "classifier", classifierDecision, rule });
   }
   await audit({ route: "classifier", outcome: "deny", classifierDecision, reason: classifierDecision.rationale });
   return automaticDeny(ctx, config, store, classifierDenyReason(classifierDecision));

@@ -26,11 +26,18 @@
       }
     },
     "disable": {
-      "description": "User rules files only: built-in entries to remove, by id.",
+      "description": "User rules files only: built-in entries to remove, by id: \"program:<name>\", \"program:<name> <subcommand>\", or a rule's id.",
       "type": "array",
       "items": {
         "type": "string",
-        "pattern": "^program:[A-Za-z0-9_][A-Za-z0-9._+-]*( [A-Za-z0-9][A-Za-z0-9._:-]*)?$"
+        "pattern": "^(program:[A-Za-z0-9_][A-Za-z0-9._+-]*( [A-Za-z0-9][A-Za-z0-9._:-]*)?|[A-Za-z0-9][A-Za-z0-9._-]*)$"
+      }
+    },
+    "rules": {
+      "description": "Rules that send matching bash commands to review, to the user, or to a block. The most restrictive matching rule wins: block, then ask, then review.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/rule"
       }
     }
   },
@@ -374,6 +381,50 @@
             "boolean",
             "null"
           ]
+        }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "match",
+        "outcome"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "match": {
+          "description": "A pattern or a list of them. \"/regex/flags\" is tested against the whole command; otherwise words: a program, then words that must follow it in order within one command. A word may list alternatives with |, use the globs * ? [...], and --name also matches --name=value; -f also matches grouped short flags such as -uf.",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          ]
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "review",
+            "ask",
+            "block"
+          ]
+        },
+        "why": {
+          "type": "string",
+          "description": "Shown in the denial, in the approval prompt, and to the classifier."
         }
       }
     }

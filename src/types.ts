@@ -107,7 +107,8 @@ export type RouteName =
   | "classifier"
   | "human"
   | "manual_only"
-  | "blocked_command";
+  | "blocked_command"
+  | "ask_rule";
 
 export interface AuditEntry {
   event: string;
@@ -124,6 +125,11 @@ export interface AuditEntry {
   pinnedCommand?: string;
   // The directory a leading `cd` in the command moved the call to.
   pinnedCwd?: string;
+  // For a fast-pathed bash command: the rules that let each part through.
+  ruleIds?: string[];
+  // The command rule that decided (block, ask, or review), and its file.
+  ruleId?: string;
+  ruleSource?: string;
   durationMs?: number;
 }
 

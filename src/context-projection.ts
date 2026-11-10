@@ -1,6 +1,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { stableStringify, toRecord, truncateInline } from "./common.js";
+import type { CommandRule } from "./command-rules.js";
 import type { ExtensionContextLike, ReviewSubject } from "./types.js";
 
 function stringifyMessageContent(content: unknown): string | null {
@@ -228,7 +229,7 @@ function agentText(entry: unknown): string | null {
 export function buildProjectedContext(
   ctx: ExtensionContextLike,
   subject: ReviewSubject,
-  options: { agentMessage?: string } = {},
+  options: { agentMessage?: string; rule?: CommandRule } = {},
 ): string {
   const allEntries = ctx.sessionManager?.getBranch?.() ?? ctx.sessionManager?.getEntries?.() ?? [];
   const entries = allEntries.slice(-RETAINED_ENTRIES);
@@ -258,6 +259,12 @@ export function buildProjectedContext(
       ? ["This action comes from a subagent. The user messages below come from the session that started it; the subagent's assignment was written by an agent."]
       : []),
     "",
+    ...(options.rule
+      ? [
+        `The user's command rules send this action to review (rule "${options.rule.id}", from the user's own configuration).${options.rule.why ? ` The user's reason: ${truncateInline(options.rule.why, MAX_EARLIER_USER_CHARS)}` : ""}`,
+        "",
+      ]
+      : []),
     "Latest user request:",
     latestUser ? truncateInline(latestUser, MAX_LATEST_USER_CHARS) : "<no user request available>",
     "",

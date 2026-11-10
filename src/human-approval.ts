@@ -1,4 +1,5 @@
 import type { ExtensionContextLike, ReviewDecision, ReviewSubject } from "./types.js";
+import type { CommandRule } from "./command-rules.js";
 
 export type HumanDecision =
   | { approved: true; persistence: "once" | "exact" }
@@ -28,6 +29,8 @@ export async function requestHumanApproval(
     title?: string;
     classifierDecision?: ReviewDecision;
     failureReason?: string;
+    // The command rule that sent this action here.
+    rule?: CommandRule;
     timeoutSeconds: number;
   },
 ): Promise<HumanDecision> {
@@ -35,18 +38,25 @@ export async function requestHumanApproval(
     return { approved: false, state: "unavailable", reason: "Interactive approval is unavailable." };
   }
 
+  const { rule } = options;
   const intro = options.classifierDecision
     ? "AI review recommends blocking this action."
-    : "AI review could not complete.";
+    : options.failureReason
+      ? "AI review could not complete."
+      : rule?.outcome === "ask"
+        ? "A command rule asks you to approve this action."
+        : "This action needs your approval.";
   const details = [
     intro,
     "",
     `Tool: ${subject.toolName}`,
     `Action: ${subject.actionSummary}`,
+    rule ? `Rule: ${rule.id} (${rule.outcome}, ${rule.source})` : null,
+    rule?.why ? `Why: ${rule.why}` : null,
     options.failureReason ? `Failure: ${options.failureReason}` : null,
     formatDecision(options.classifierDecision),
     "",
-    "Override this decision?",
+    options.classifierDecision || options.failureReason ? "Override this decision?" : "Allow it?",
   ].filter((line) => line !== null).join("\n");
 
   const choices = [ALLOW_ONCE, ALLOW_EXACT, REJECT, REJECT_WITH_REASON, ...(ctx.abort ? [REJECT_AND_STOP] : [])];

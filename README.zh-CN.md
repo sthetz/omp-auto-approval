@@ -218,6 +218,29 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 
 没有按项目区分的规则文件：克隆下来的仓库可能会自带一个。
 
+#### 审查、询问与阻止规则
+
+程序条目只说明哪些命令可以免审批。`rules` 列表则说明哪些命令不能：
+
+```jsonc
+"rules": [
+  { "id": "kube-secrets", "match": "kubectl get|describe *[Ss][Ee][Cc][Rr][Ee][Tt]*", "outcome": "review",
+    "why": "Secret values must not reach the model unreviewed." },
+  { "id": "kube-interactive", "match": "kubectl exec|port-forward|cp|edit|apply|rollout", "outcome": "ask" },
+  { "id": "kube-delete-all", "match": "kubectl delete --all", "outcome": "block" }
+]
+```
+
+- `review`：交给分类器，然后按模式交给你，与其他需审批的命令相同；永远不走快速通道。
+- `ask`：由你决定，不经过分类器。在 `auto` 模式下或没有交互界面时，命令会被拒绝。选择“Allow Always This Exact Action”后，本会话内完全相同的命令不再询问。
+- `block`：不询问任何人直接拒绝，与 `blockCommands` 相同。
+
+在命令匹配到的规则以及 `blockCommands` 中，最严格的一项生效：block，其次 ask，再次 review。任何一项都优先于程序条目、`safeCommandAllowlist` 和 `reviewExemptTools`，因此宽泛的允许永远不会掩盖例外。`why` 会显示在拒绝原因和审批提示中，并作为你的理由提供给分类器。
+
+`match` 是一个模式或模式列表，写法与 `blockCommands` 相同（见[阻止的命令](#阻止的命令)），并为单词增加了：`a|b` 多选、`*`、`?` 和 `[…]` 通配符，以及 `--name` 同时匹配 `--name=value`。规则读取的是命令文本，因此在循环、`$(…)` 和 `sh -c '…'` 中同样生效，而快速通道从不读取这些内容；由变量指定的程序（`$k delete`）可以绕过规则，此时它照常需要审批。`id` 必须唯一；`disable` 可按 id 移除内置规则（目前还没有）。
+
+`/auto-approval rules` 列出正在使用的程序和规则及其来源文件；`/auto-approval rules <程序 | 规则 id>` 显示其中一项。`explain` 会给出起决定作用的规则，审计日志将其记录为 `ruleId` 和 `ruleSource`（对于走快速通道的命令，放行它的程序条目记录为 `ruleIds`）。
+
 ### allowlist 中的命令
 
 `safeCommandAllowlist` 条目是前缀（`"rg *"`、`"find"`、`"npm test"`），单靠它会信任该程序的所有选项。即使条目匹配，以下命令仍需审批：
@@ -250,7 +273,7 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 }
 ```
 
-模式可以是 `/regex/flags`（对整条命令做匹配），也可以是一串单词：第一个单词是程序名，其余单词需按顺序出现在同一条命令中。`git push --force` 能匹配 `git push origin main --force`、`/usr/bin/git push --force`、`cd repo && git push --force` 和 `bash -lc "git push --force"`，但不匹配 `git push --force-with-lease`。长参数按字面比较，因此 `-f` 需要单独列出。单字母参数也能匹配合并的短参数：`git push -f` 能匹配 `git push -uf origin main`。在分支前加 `+`（`git push origin +main`）同样会强制推送，单词列表无法表达这种形式，上例中的正则表达式可以捕获它。匹配倾向于阻止：这些单词作为其他命令的参数出现时（例如 `echo git push --force`）也会匹配。
+模式可以是 `/regex/flags`（对整条命令做匹配），也可以是一串单词：第一个单词是程序名，其余单词需按顺序出现在同一条命令中。`git push --force` 能匹配 `git push origin main --force`、`/usr/bin/git push --force`、`cd repo && git push --force` 和 `bash -lc "git push --force"`，但不匹配 `git push --force-with-lease`。长参数按字面比较，因此 `-f` 需要单独列出。单字母参数也能匹配合并的短参数：`git push -f` 能匹配 `git push -uf origin main`。在分支前加 `+`（`git push origin +main`）同样会强制推送，单词列表无法表达这种形式，上例中的正则表达式可以捕获它。匹配倾向于阻止：这些单词作为其他命令的参数出现时（例如 `echo git push --force`）也会匹配；引号中的 `;` 或 `|`（`git -c 'x=a;b' push --force`）以及反斜杠换行也无法隐藏命令。
 
 这只是针对你绝不希望无人值守执行的命令的尽力而为的绊线，而不是沙箱：足够“有创意”的命令（变量、别名、脚本）仍可能绕过它，此时会照常由分类器审批。
 

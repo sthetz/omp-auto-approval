@@ -66,7 +66,26 @@
     "cat": { "options": { "-n --number": "flag" }, "operands": "read-files" }
   },
 
-  // Built-in entries to remove, by id: "program:<name>" or
-  // "program:<name> <subcommand>".
+  // Rules for commands the programs above don't settle. Among the rules a
+  // command matches, the most restrictive decides: "block" (never runs),
+  // "ask" (you decide, without the classifier; denied in auto mode), then
+  // "review" (the classifier, then you, as for any reviewed command). Any of
+  // them overrides the programs above, the allowlist and reviewExemptTools.
+  // They match the command's text, also inside loops and `sh -c '…'`; a
+  // program named by a variable (`$k delete`) gets past them.
+  "rules": [
+    // `secret|secrets|secret/*` would miss `Secrets` and `pods,secrets`;
+    // a glob with letter classes catches both.
+    { "id": "kube-secrets", "match": "kubectl get|describe *[Ss][Ee][Cc][Rr][Ee][Tt]*", "outcome": "review",
+      "why": "Secret values must not reach the model unreviewed." },
+    // `--as` also matches `--as=admin`.
+    { "id": "kube-impersonate", "match": "kubectl --as|--as-group|--token|--raw", "outcome": "review" },
+    { "id": "kube-interactive", "match": "kubectl exec|port-forward|cp|edit|apply|rollout", "outcome": "ask" },
+    { "id": "kube-delete-all", "match": "kubectl delete --all", "outcome": "block",
+      "why": "Deleting everything is never what an agent should do on its own." }
+  ],
+
+  // Built-in entries to remove, by id: "program:<name>",
+  // "program:<name> <subcommand>", or a built-in rule's id.
   "disable": ["program:sed", "program:git blame"]
 }

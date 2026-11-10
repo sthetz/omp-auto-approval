@@ -4,7 +4,7 @@ import { delimiter, isAbsolute, join } from "node:path";
 import { relativePathWithin, resolvePathForCwd, resolveReadRoots, type ReadRoots } from "./common.js";
 import { boundedGlobMatches, isTreeClean } from "./path-expansion.js";
 import { defaultRules, type CommandRules } from "./command-rules.js";
-import { isSafeByProgramRule, type RuleContext } from "./program-rules.js";
+import { safeByProgramRule, type RuleContext } from "./program-rules.js";
 import { isSensitivePath } from "./sensitive-paths.js";
 import { recognizeShell, type ShellCommand, type ShellRedirect, type ShellWord } from "./shell-syntax.js";
 import type { AutoReviewConfig } from "./types.js";
@@ -212,7 +212,8 @@ function isUserAllowlisted(words: ShellWord[], check: Check): boolean {
   // Entries match the command as written, quotes included, without its
   // redirections.
   const written = normalizeCommand(words.map((word) => check.source.slice(word.start, word.end)).join(" "));
-  if (!check.config.safeCommandAllowlist.some((entry) => matchesAllowlistEntry(written, entry))) {
+  const entry = check.config.safeCommandAllowlist.find((candidate) => matchesAllowlistEntry(written, candidate));
+  if (entry === undefined) {
     return false;
   }
   const [first, ...args] = words;
@@ -220,7 +221,11 @@ function isUserAllowlisted(words: ShellWord[], check: Check): boolean {
   if (first.expands || SCRIPT_PROGRAMS.has(program) || hasUnsafeOption(program, args.map((word) => word.text))) {
     return false;
   }
-  return args.every((word) => isAllowlistedArgumentSafe(word, check));
+  if (!args.every((word) => isAllowlistedArgumentSafe(word, check))) {
+    return false;
+  }
+  check.used.push({ id: `safeCommandAllowlist ${JSON.stringify(entry.trim())}`, source: "config.jsonc" });
+  return true;
 }
 
 /**
@@ -306,6 +311,8 @@ interface Check {
   rules: CommandRules;
   // Text to put in place of `source.slice(start, end)`.
   pins: { start: number; end: number; text: string }[];
+  // The rules that let each command through, in order.
+  used: { id: string; source: string }[];
 }
 
 /** What a program table may ask about the place a command runs in (see RuleContext). */
@@ -376,13 +383,23 @@ function isSafeCommand(words: ShellWord[], check: Check): boolean {
   // A failed attempt leaves no rewrites behind.
   const attempt = (safe: () => boolean): boolean => {
     const pins = check.pins.length;
+    const used = check.used.length;
     if (safe()) {
       return true;
     }
     check.pins.length = pins;
+    check.used.length = used;
     return false;
   };
-  const safe = (!program.text.includes("/") && attempt(() => isSafeByProgramRule(words, ruleContext(check), check.rules)))
+  const byRule = () => {
+    // Recorded after any command it runs (timeout), which records its own.
+    const entry = safeByProgramRule(words, ruleContext(check), check.rules);
+    if (entry) {
+      check.used.push({ id: entry.id, source: entry.source });
+    }
+    return entry !== null;
+  };
+  const safe = (!program.text.includes("/") && attempt(byRule))
     || attempt(() => isUserAllowlisted(words, check));
   return safe && pinProgram(program, check);
 }
@@ -408,6 +425,9 @@ export interface SafeCommandPlan {
   // The command to run in place of the original: every program named by its
   // absolute path, any leading `cd <dir> &&` removed.
   command: string;
+  // The rules that let it through: program entries, or safeCommandAllowlist
+  // entries, one per simple command (and per command `timeout` runs).
+  rules: { id: string; source: string }[];
   // The directory a leading `cd` moved it to; absent when there was none.
   cwd?: string;
 }
@@ -460,7 +480,7 @@ export function planSafeCommand(
     first += 1;
   }
   const commands = script.pipelines.slice(first).flat();
-  const check: Check = { source: command, config, place, searchPath: options.searchPath ?? STARTUP_PATH, rules, pins: [] };
+  const check: Check = { source: command, config, place, searchPath: options.searchPath ?? STARTUP_PATH, rules, pins: [], used: [] };
   for (const shellCommand of commands) {
     if (!shellCommand.redirects.every((redirect) => isSafeRedirect(redirect, place))) {
       return null;
@@ -473,5 +493,5 @@ export function planSafeCommand(
   for (const { start, end, text } of [...check.pins].sort((a, b) => b.start - a.start)) {
     pinned = `${pinned.slice(0, start)}${text}${pinned.slice(end)}`;
   }
-  return first === 0 ? { command: pinned } : { command: pinned.slice(commands[0].start), cwd: place.directory };
+  return first === 0 ? { command: pinned, rules: check.used } : { command: pinned.slice(commands[0].start), cwd: place.directory, rules: check.used };
 }

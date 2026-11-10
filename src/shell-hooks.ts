@@ -44,7 +44,7 @@ function unquote(word: string): string {
  * and run in this shell only through `source /dev/stdin` or `eval`, which
  * count on their own.
  */
-function commandLines(text: string): string[][] {
+export function commandLines(text: string): string[][] {
   const lines: string[][] = [];
   let words: string[] = [];
   let word = "";

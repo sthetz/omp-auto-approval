@@ -1,5 +1,6 @@
 import type { AutoReviewConfig, ExtensionContextLike, ReviewDecision, ReviewSubject } from "./types.js";
 import { buildProjectedContext } from "./context-projection.js";
+import type { CommandRule } from "./command-rules.js";
 import { buildSystemPrompt } from "./prompt.js";
 import { getProviderAttributionHeaders, isProviderAttributionEnabled } from "./provider-attribution.js";
 import { toRecord } from "./common.js";
@@ -213,7 +214,7 @@ export async function classifyAction(
   config: AutoReviewConfig,
   subject: ReviewSubject,
   client?: ClassifierClient,
-  context: { agentMessage?: string } = {},
+  context: { agentMessage?: string; rule?: CommandRule } = {},
 ): Promise<ReviewDecision> {
   let completeSimple = client;
   let codingAgentPackage: string | undefined;

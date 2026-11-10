@@ -61,6 +61,18 @@
 //     "git-stash-list"
 //   Each is described in src/command-rules.ts and implemented in
 //   src/program-rules.ts.
+//
+//   "rules": [{ "id", "match", "outcome", "why" }]
+//     Rules that send matching bash commands to review ("review"), to the
+//     user without the classifier ("ask"; denied in auto mode or without a
+//     UI), or to a block ("block"). Among the rules that match, the most
+//     restrictive decides, and any of them overrides the programs above.
+//     "match" is a pattern or a list: "/regex/flags" on the whole command,
+//     or words, a program and then words that follow it in order within one
+//     command; `a|b` alternatives, `*` `?` `[…]` globs, `--name` also
+//     matching `--name=value`, `-f` also matching `-uf`. Rules match the
+//     command's text, also inside loops and substitutions, but not a
+//     program named by a variable.
 {
   "$schema": "../schemas/rules.schema.json",
   "programs": {
@@ -677,5 +689,9 @@
         "stash": { "options": "any", "operands": "git-stash-list" }
       }
     }
-  }
+  },
+
+  // None built in yet: blockCommands in config.jsonc, and the user's
+  // rules.jsonc, hold them.
+  "rules": []
 }

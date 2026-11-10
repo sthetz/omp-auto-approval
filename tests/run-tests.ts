@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import ompAutoApprovalExtension, { SYSTEM_PROMPT_NOTE } from "../index.js";
 import { applyDecisionPolicy, classifyAction, parseReviewDecision } from "../src/classifier.js";
-import { matchBlockedCommand } from "../src/block-commands.js";
+import { compileCommandPattern, matchBlockedCommand } from "../src/block-commands.js";
 import { isWorkspaceWriteFastPath, resolveReadRoots } from "../src/tool-routing.js";
 import { buildProjectedContext } from "../src/context-projection.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, logsDir, normalizeConfig, saveConfig } from "../src/extension-config.js";
@@ -13,7 +13,8 @@ import { evaluateToolCall, selectFastPath } from "../src/decision.js";
 import { columnWidth, truncateVisible } from "../src/model-selector.js";
 import { planSafeCommand } from "../src/safe-command.js";
 import { isSafeSedScript } from "../src/program-rules.js";
-import { ARGUMENT_PARSERS, compileRules, defaultRules, loadCommandRules, loadRulesFile, OPERAND_CHECKS, type CommandRules } from "../src/command-rules.js";
+import { ARGUMENT_PARSERS, compileRules, defaultRules, escalateCommand, loadCommandRules, loadRulesFile, OPERAND_CHECKS, RULE_OUTCOMES, type CommandRules } from "../src/command-rules.js";
+import { describeRule, rulesOverview } from "../src/rules-report.js";
 import { parseJsonc } from "../src/jsonc.js";
 import { recognizeShell } from "../src/shell-syntax.js";
 import { shellHook } from "../src/shell-hooks.js";
@@ -443,15 +444,18 @@ async function run(): Promise<void> {
       }
 
       // Every program is pinned; a leading cd becomes the call's directory.
+      // The plan also names the rule that let each command through.
       assert.deepEqual(plan("git status && git log -1 | head -3 2>&1"), {
         command: `${STUB_BIN}/git status && ${STUB_BIN}/git log -1 | ${STUB_BIN}/head -3 2>&1`,
+        rules: [{ id: "program:git status", source: "default" }, { id: "program:git log", source: "default" }, { id: "program:head", source: "default" }],
       });
-      assert.deepEqual(plan("cd sub && git status"), { command: `${STUB_BIN}/git status`, cwd: join(workspace, "sub") });
-      assert.deepEqual(plan("cd sub &&\n  cd ..  &&  2>/dev/null git status # done"), {
+      const where = (planned: ReturnType<typeof plan>) => planned && { command: planned.command, cwd: planned.cwd };
+      assert.deepEqual(where(plan("cd sub && git status")), { command: `${STUB_BIN}/git status`, cwd: join(workspace, "sub") });
+      assert.deepEqual(where(plan("cd sub &&\n  cd ..  &&  2>/dev/null git status # done")), {
         command: `2>/dev/null ${STUB_BIN}/git status # done`,
         cwd: workspace,
       });
-      assert.deepEqual(planSafeCommand("cd .. && git status", cfg, { workspace, cwd: join(workspace, "sub"), searchPath: TEST_PATH }), {
+      assert.deepEqual(where(planSafeCommand("cd .. && git status", cfg, { workspace, cwd: join(workspace, "sub"), searchPath: TEST_PATH })), {
         command: `${STUB_BIN}/git status`,
         cwd: workspace,
       });
@@ -559,6 +563,7 @@ async function run(): Promise<void> {
     const schema = JSON.parse(readFileSync(new URL("../schemas/rules.schema.json", import.meta.url), "utf8"));
     assert.deepEqual([...schema.$defs.operandCheck.enum].sort(), Object.keys(OPERAND_CHECKS).sort());
     assert.deepEqual(schema.$defs.entry.properties.arguments.enum, [...ARGUMENT_PARSERS]);
+    assert.deepEqual(schema.$defs.rule.properties.outcome.enum, [...RULE_OUTCOMES]);
     const kinds = new Set<string>();
     for (const entry of defaultRules().programs.values()) {
       for (const sub of [entry, ...(entry.subcommands?.values() ?? [])]) {
@@ -585,7 +590,7 @@ async function run(): Promise<void> {
     try {
       const broken: [string, RegExp][] = [
         ['{ "programs": { "cat": { "operands": "read-files", "bogus": 1 } } }', /unknown key "bogus"/],
-        ['{ "rules": [] }', /unknown key "rules"/],
+        ['{ "rule": [] }', /unknown key "rule"/],
         ['{ "programs": { "cat": { "options": { "-n": "flag", "-n --number": "flag" }, "operands": "read-files" } } }', /"-n" is listed twice/],
         ['{ "programs": { "cat": { "options": { "-n": "flags" }, "operands": "read-files" } } }', /unknown kind "flags"/],
         ['{ "programs": { "cat": { "operands": "read-everything" } } }', /unknown check "read-everything"/],
@@ -722,7 +727,7 @@ async function run(): Promise<void> {
       assert.equal(rules.programs.get("grep")?.source, "default");
       assert.equal(rules.programs.get("git")?.subcommands?.get("log")?.source, `default, ${label}`);
       assert.equal(rules.programs.get("git")?.subcommands?.get("reflog")?.id, "program:git reflog");
-      assert.equal(rules.programs.get("git")?.subcommands?.get("diff")?.source, `default, ${label}`);
+      assert.equal(rules.programs.get("git")?.subcommands?.get("diff")?.source, "default");
       const safe = (command: string) => planSafeCommand(command, config(), { workspace, searchPath: TEST_PATH, rules }) !== null;
       for (const command of [
         "cat -n notes.txt", "head -c 3 notes.txt", "head -q notes.txt", "grep -n x notes.txt", "npm ls", "npm list notes.txt",
@@ -767,6 +772,16 @@ async function run(): Promise<void> {
       ]) {
         assert.equal(safe(command), false, command);
       }
+      const decided = (command: string) => {
+        const escalation = escalateCommand(command, rules, []);
+        return escalation && `${escalation.outcome} ${escalation.rule?.id}`;
+      };
+      assert.equal(decided("kubectl get pods"), null);
+      assert.equal(decided("kubectl get pods,Secrets"), "review kube-secrets");
+      assert.equal(decided("kubectl describe secret/db"), "review kube-secrets");
+      assert.equal(decided("kubectl get pods --as=admin"), "review kube-impersonate");
+      assert.equal(decided("kubectl exec -it api -- sh"), "ask kube-interactive");
+      assert.equal(decided("for n in a b; do kubectl delete pods --all -n $n; done"), "block kube-delete-all");
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
@@ -829,14 +844,15 @@ async function run(): Promise<void> {
     const file = join(workspace, "rules.jsonc");
     try {
       const broken: [string, RegExp][] = [
-        ['{ "programs": {}, "rules": [] }', /rules\.jsonc: unknown key "rules"/],
+        ['{ "programs": {}, "rule": [] }', /rules\.jsonc: unknown key "rule"/],
         ['{ "programs": { "sed": null } }', /to turn off a built-in program, list "program:sed" in "disable"/],
         ['{ "programs": { "head": { "extends": "builtin" } } }', /programs\["head"\]\.extends: only "default"/],
         ['{ "programs": { "kubectl": { "extends": "default" } } }', /programs\["kubectl"\]\.extends: only "default", for a program the defaults have$/],
         ['{ "disable": ["program:sed"], "programs": { "sed": { "extends": "default" } } }', /\(this one is disabled\)/],
         ['{ "disable": ["program:kubectl"] }', /disable: no built-in rule "program:kubectl"/],
         ['{ "disable": ["program:git worktree"] }', /disable: no built-in rule "program:git worktree"/],
-        ['{ "disable": ["sed"] }', /disable: expected ids like "program:sed"/],
+        ['{ "disable": ["sed"] }', /disable: no built-in rule "sed"; for the program, write "program:sed"/],
+        ['{ "disable": ["program:"] }', /disable: expected ids like "program:sed"/],
         ['{ "programs": { "head": { "extends": "default", "options": { "-n": null } } } }', /options\["-n"\]: no such option in the default entry; it lists "-n --lines"/],
         ['{ "programs": { "head": { "extends": "default", "options": { "-n": "number" } } } }', /"-n" is listed twice/],
         ['{ "programs": { "head": { "extends": "default", "stopAtOperand": null } } }', /stopAtOperand: the default entry has none to delete/],
@@ -907,6 +923,269 @@ async function run(): Promise<void> {
     }
   });
 
+  // The four kubectl rules from the design, over the example's kubectl table.
+  const KUBE_RULES = `{
+  "include": [],
+  "programs": {
+    "kubectl": {
+      "subcommands": {
+        "get describe": { "options": { "-n --namespace": "string", "-o --output": "string" }, "operands": "literals" },
+        "exec": { "options": "any", "operands": "any" }
+      }
+    }
+  },
+  "rules": [
+    { "id": "kube-secrets", "match": "kubectl get|describe secret|secrets|secret/*", "outcome": "review",
+      "why": "Secret values must not reach the model unreviewed." },
+    { "id": "kube-impersonate", "match": "kubectl --as|--as-group|--token|--raw", "outcome": "review" },
+    { "id": "kube-interactive", "match": "kubectl exec|port-forward|cp|edit|apply|rollout", "outcome": "ask" },
+    { "id": "kube-delete-all", "match": "kubectl delete --all", "outcome": "block" }
+  ]
+}`;
+
+  await test("command rules match the command's text and the most restrictive one wins", () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-kube-"));
+    try {
+      writeFileSync(join(dir, "rules.jsonc"), KUBE_RULES);
+      const rules = loadCommandRules(join(dir, "rules.jsonc"));
+      assert.equal(rules.problem, null);
+      assert.deepEqual(rules.rules.map((rule) => [rule.id, rule.outcome]), [
+        ["kube-secrets", "review"], ["kube-impersonate", "review"], ["kube-interactive", "ask"], ["kube-delete-all", "block"],
+      ]);
+      const decided = (command: string, blockCommands: string[] = []) => {
+        const escalation = escalateCommand(command, rules, blockCommands);
+        return escalation && `${escalation.outcome} ${escalation.rule?.id ?? escalation.blockPattern}`;
+      };
+      const cases: [string, string | null][] = [
+        ["kubectl get pods", null],
+        ["kubectl get secrets", "review kube-secrets"],
+        ["kubectl -n web describe secret db", "review kube-secrets"],
+        ["kubectl get secret/db -o yaml", "review kube-secrets"],
+        ["/usr/local/bin/kubectl get 'secrets'", "review kube-secrets"],
+        ["kubectl get pods --as=admin", "review kube-impersonate"],
+        ["kubectl get pods --as admin", "review kube-impersonate"],
+        ["kubectl get pods --assume", null],
+        ["kubectl exec -it api -- sh", "ask kube-interactive"],
+        ["kubectl delete pods --all", "block kube-delete-all"],
+        // Several rules match: the most restrictive decides.
+        ["kubectl get secrets && kubectl exec api -- ls", "ask kube-interactive"],
+        ["kubectl exec api -- kubectl delete --all pods", "block kube-delete-all"],
+        // Text rules apply where the fast path never looks.
+        ["for ns in a b; do kubectl delete --all -n $ns; done", "block kube-delete-all"],
+        ["echo $(kubectl get secrets)", "review kube-secrets"],
+        ["kubectl \\\ndelete --all", "block kube-delete-all"],
+        ["sh -c 'kubectl exec api -- ls'", "ask kube-interactive"],
+        // blockCommands are block rules too, and checked first.
+        ["kubectl get secrets", "review kube-secrets"],
+        // Known misses, documented: case and resource lists are not covered
+        // by these patterns, and a variable hides the program.
+        ["kubectl get Secrets", null],
+        ["kubectl get pods,secrets", null],
+        ["k=kubectl; $k delete --all", null],
+      ];
+      for (const [command, expected] of cases) {
+        assert.equal(decided(command), expected, command);
+      }
+      assert.equal(decided("kubectl get secrets", ["kubectl get"]), "block kubectl get");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test("command rule patterns: alternatives, globs, grouped flags, regexes", () => {
+    const rules = (match: string | string[]): CommandRules => {
+      const patterns = [match].flat();
+      return {
+        ...defaultRules(),
+        rules: [{ id: "r", match: patterns, patterns: patterns.map((pattern) => compileCommandPattern(pattern, { extended: true })), outcome: "review", why: null, source: "test" }],
+      };
+    };
+    const matches = (match: string | string[], command: string) => escalateCommand(command, rules(match), []) !== null;
+    assert.equal(matches("rm -r", "rm -rf build"), true);
+    assert.equal(matches("rm -r", "rm --recursive build"), false);
+    assert.equal(matches("rm -r|--recursive", "rm --recursive build"), true);
+    assert.equal(matches("terraform apply|destroy", "terraform destroy -auto-approve"), true);
+    assert.equal(matches("aws s3 rm|rb s3://prod-*", "aws s3 rm s3://prod-logs --recursive"), true);
+    assert.equal(matches("aws s3 rm|rb s3://prod-*", "aws s3 rm s3://staging-logs"), false);
+    assert.equal(matches("kubectl get *[Ss][Ee][Cc][Rr][Ee][Tt]*", "kubectl get pods,Secrets"), true);
+    assert.equal(matches("helm|kubectl --kube-context|--context", "helm list --kube-context=prod"), true);
+    assert.equal(matches("docker run --privileged", "docker run --privileged=true x"), true);
+    assert.equal(matches("/curl[^|]*\\|\\s*(ba)?sh/", "curl -s x | bash"), true);
+    assert.equal(matches(["git push --force", "git push -f"], "git push -uf origin"), true);
+    assert.equal(matches("*ctl delete", "systemctl delete x"), true);
+    // Quotes holding an operator do not split a command.
+    assert.equal(matches("git push --force", "git -c 'x=a;b' push --force"), true);
+    assert.equal(matchBlockedCommand("git -c \"a|b\" push --force", ["git push --force"]), "git push --force");
+    assert.equal(matchBlockedCommand("git pu\\\nsh --force", ["git push --force"]), "git push --force");
+    // blockCommands words stay plain: no alternatives or globs.
+    assert.equal(matchBlockedCommand("git push --force", ["git push|pull --force"]), null);
+    assert.equal(matchBlockedCommand("rm -rf /tmp", ["rm -rf /*"]), null);
+  });
+
+  await test("command rules are validated: ids, outcomes, patterns", () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-rule-errors-"));
+    try {
+      const broken: [string, RegExp][] = [
+        ['{ "rules": [{ "match": "x y", "outcome": "review" }] }', /rules\[0\]\.id: expected a name/],
+        ['{ "rules": [{ "id": "program:x", "match": "x", "outcome": "review" }] }', /rules\[0\]\.id: expected a name/],
+        ['{ "rules": [{ "id": "a", "match": "x", "outcome": "review" }, { "id": "a", "match": "y", "outcome": "block" }] }', /rules\[1\]\.id: "a" is used by another rule/],
+        ['{ "rules": [{ "id": "a", "match": "x", "outcome": "allow" }] }', /"allow" rules are not supported/],
+        ['{ "rules": [{ "id": "a", "match": "x", "outcome": "deny" }] }', /outcome: expected one of review, ask, block/],
+        ['{ "rules": [{ "id": "a", "match": [], "outcome": "review" }] }', /match: expected a pattern or a list of patterns/],
+        ['{ "rules": [{ "id": "a", "match": " ", "outcome": "review" }] }', /empty pattern/],
+        ['{ "rules": [{ "id": "a", "match": "/(/", "outcome": "review" }] }', /Invalid regular expression/],
+        ['{ "rules": [{ "id": "a", "match": "x [ab", "outcome": "review" }] }', /unclosed "\["/],
+        ['{ "rules": [{ "id": "a", "match": "x", "outcome": "review", "when": "always" }] }', /unknown key "when"/],
+        ['{ "rules": [{ "id": "a", "match": "x", "outcome": "review", "why": 1 }] }', /why: expected text/],
+        ['{ "rules": {} }', /rules: expected a list of rules/],
+        ['{ "disable": ["kube-secrets"] }', /disable: no built-in rule "kube-secrets"/],
+      ];
+      for (const [text, problem] of broken) {
+        writeFileSync(join(dir, "rules.jsonc"), text);
+        const rules = loadCommandRules(join(dir, "rules.jsonc"));
+        assert.match(rules.problem ?? "", problem, text);
+        assert.deepEqual(rules.rules, [], text);
+      }
+      // Ids are unique across files too.
+      writeFileSync(join(dir, "more.jsonc"), '{ "rules": [{ "id": "a", "match": "y", "outcome": "ask" }] }');
+      writeFileSync(join(dir, "rules.jsonc"), `{ "include": ["${join(dir, "more.jsonc")}"], "rules": [{ "id": "a", "match": "x", "outcome": "review" }] }`);
+      assert.match(loadCommandRules(join(dir, "rules.jsonc")).problem ?? "", /"a" is used by another rule/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test("block, ask and review rules take precedence over every fast path", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-rule-routes-"));
+    writeFileSync(join(workspace, "notes.txt"), "x\n");
+    const file = join(workspace, "rules.jsonc");
+    try {
+      writeFileSync(file, `{
+        "rules": [
+          { "id": "log-review", "match": "git log", "outcome": "review", "why": "Logs may name customers." },
+          { "id": "push-review", "match": "git push", "outcome": "review" },
+          { "id": "ask-tag", "match": "git tag -d", "outcome": "ask", "why": "Tags are releases." },
+          { "id": "no-reset", "match": "git reset --hard", "outcome": "block", "why": "Work would be lost." }
+        ]
+      }`);
+      const rules = loadCommandRules(file);
+      assert.equal(rules.problem, null);
+      const contexts: string[] = [];
+      let classifierCalls = 0;
+      const classifier = {
+        classifierClient: async (_model: unknown, context: unknown) => {
+          classifierCalls += 1;
+          contexts.push(JSON.stringify(context));
+          return { content: [{ type: "text", text: '{"outcome":"deny","rationale":"needs review"}' }] };
+        },
+      };
+      const run = async (command: string, overrides: Partial<AutoReviewConfig> = {}, extra: Partial<ExtensionContextLike> = {}, store = new SessionApprovalStore(), with_ = rules) => {
+        const event = { toolName: "bash", input: { command } as Record<string, unknown> };
+        return evaluateToolCall(event, ctx({ cwd: workspace, ...extra }), config({ mode: "auto", ...overrides }), store, { ...classifier, rules: with_ });
+      };
+      const blocked = (decision: unknown) => typeof decision === "object" && decision !== null && "block" in decision;
+      const reason = (decision: unknown) => String((decision as { reason?: string }).reason);
+
+      // Review beats a table entry, an allowlist entry, and reviewExemptTools.
+      assert.deepEqual(await run("git status"), {});
+      assert.equal(blocked(await run("git log -1")), true);
+      assert.match(contexts.at(-1) ?? "", /command rules send this action to review \(rule \\"log-review\\".*The user's reason: Logs may name customers\./);
+      // (Only the allowlist lets these through; git is on the real PATH.)
+      assert.deepEqual(await run("git fetch --dry-run", { safeCommandAllowlist: ["git fetch --dry-run", "git push --dry-run"] }), {});
+      assert.equal(blocked(await run("git push --dry-run", { safeCommandAllowlist: ["git fetch --dry-run", "git push --dry-run"] })), true);
+      assert.equal(blocked(await run("git log", { reviewExemptTools: ["bash"] })), true);
+      assert.deepEqual(await run("git status", { reviewExemptTools: ["bash"] }), {});
+
+      // Block: never reviewed, the reason carries the rule.
+      let before = classifierCalls;
+      const reset = await run("git stash && git reset --hard HEAD~1", { mode: "fallback" }, { hasUI: true, ui: { select: async () => { throw new Error("must not ask"); } } });
+      assert.match(reason(reset), /command rule "no-reset" \(block\).*Why: Work would be lost\./);
+      assert.equal(classifierCalls, before);
+
+      // Ask: denied in auto mode and without a UI, never the classifier.
+      before = classifierCalls;
+      assert.match(reason(await run("git tag -d v1")), /command rule "ask-tag", which asks the user to approve it, and the user cannot be asked in auto mode\. Why: Tags are releases\./);
+      assert.match(reason(await run("git tag -d v1", { mode: "fallback" })), /cannot be asked without an interactive UI/);
+      assert.equal(classifierCalls, before);
+      // In fallback mode with a UI, it asks, with the rule shown.
+      let prompt = "";
+      const store = new SessionApprovalStore();
+      const ui = { select: async (title: string) => { prompt = title; return "Allow Always This Exact Action"; } };
+      assert.deepEqual(await run("git tag -d v1", { mode: "fallback" }, { hasUI: true, ui }, store), {});
+      assert.match(prompt, /A command rule asks you to approve this action\.[\s\S]*Rule: ask-tag \(ask, .*rules\.jsonc\)\nWhy: Tags are releases\.[\s\S]*Allow it\?/);
+      // An exact approval from the user stands for that exact command.
+      prompt = "";
+      assert.deepEqual(await run("git tag -d v1", { mode: "fallback" }, { hasUI: true, ui }, store), {});
+      assert.equal(prompt, "");
+      assert.equal(classifierCalls, before);
+
+      // Rules that cannot be read: bash in reviewExemptTools is reviewed too.
+      writeFileSync(file, "{ broken");
+      const broken = loadCommandRules(file);
+      assert.notEqual(broken.problem, null);
+      assert.equal(blocked(await run("git status", { reviewExemptTools: ["bash"] }, {}, new SessionApprovalStore(), broken)), true);
+      assert.deepEqual(await run("git status", { reviewExemptTools: ["bash"] }), {});
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  await test("audit entries name the rules that decided", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-rule-audit-"));
+    const previousLogsDir = process.env.PI_AUTO_APPROVAL_LOGS_DIR;
+    process.env.PI_AUTO_APPROVAL_LOGS_DIR = join(dir, "logs");
+    try {
+      writeFileSync(join(dir, "rules.jsonc"), '{ "rules": [{ "id": "no-reset", "match": "git reset --hard", "outcome": "block" }, { "id": "log-review", "match": "git log", "outcome": "review" }] }');
+      const rules = loadCommandRules(join(dir, "rules.jsonc"));
+      for (const command of ["git status | head -1", "git reset --hard", "git log"]) {
+        await evaluateToolCall({ toolName: "bash", input: { command } }, ctx({ cwd: dir }), config({ mode: "auto", audit: true }), new SessionApprovalStore(), { ...classifierDenyOptions(), rules });
+      }
+      const entries = readFileSync(logPath(), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+      assert.deepEqual(entries.map(({ route, outcome, ruleIds, ruleId, ruleSource }) => ({ route, outcome, ruleIds, ruleId, ruleSource })), [
+        { route: "safe_command", outcome: "allow", ruleIds: ["program:git status", "program:head"], ruleId: undefined, ruleSource: undefined },
+        { route: "blocked_command", outcome: "deny", ruleIds: undefined, ruleId: "no-reset", ruleSource: join(dir, "rules.jsonc").replace(homedir(), "~") },
+        { route: "classifier", outcome: "deny", ruleIds: undefined, ruleId: "log-review", ruleSource: join(dir, "rules.jsonc").replace(homedir(), "~") },
+      ]);
+    } finally {
+      if (previousLogsDir === undefined) {
+        delete process.env.PI_AUTO_APPROVAL_LOGS_DIR;
+      } else {
+        process.env.PI_AUTO_APPROVAL_LOGS_DIR = previousLogsDir;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test("/auto-approval rules describes the rules in use", () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-rules-report-"));
+    try {
+      writeFileSync(join(dir, "rules.jsonc"), KUBE_RULES.replace('"programs": {', '"programs": { "git": { "extends": "default", "subcommands": { "reflog": { "options": "any", "operands": "git-operands" } } },'));
+      const rules = loadCommandRules(join(dir, "rules.jsonc"));
+      assert.equal(rules.problem, null);
+      const overview = rulesOverview(rules, ["git push --force"]);
+      assert.match(overview, /programs that skip review[\s\S]*  default: cat, head,[\s\S]*: kubectl/);
+      assert.match(overview, /  default, .*rules\.jsonc: git\n/);
+      assert.match(overview, /  kube-secrets: review \(.*rules\.jsonc\)\n    match: kubectl get\|describe secret\|secrets\|secret\/\*\n    why: Secret values/);
+      assert.match(overview, /  blockCommands: block \(config\.jsonc\)\n    match: git push --force/);
+      const head = describeRule(rules, "head") ?? "";
+      assert.match(head, /^program:head \(default\)\n  options:\n/);
+      assert.match(head, /    -n --lines: number\n/);
+      assert.match(head, /    -q --quiet: flag\n/);
+      assert.match(head, /    -NUM: number\n  operands: read-files$/);
+      const git = describeRule(rules, "program:git") ?? "";
+      assert.match(git, /options before the subcommand \(whole words\):\n    -C: workspace-directory\n    -P --no-pager: flag/);
+      assert.match(git, /never after a subcommand: --output --ext-diff --no-index --open-files-in-pager/);
+      assert.match(git, /    grep \(default\)\n      options: any, except -O\n      operands: git-operands/);
+      assert.match(git, /    reflog \(\/.*rules\.jsonc\)\n/);
+      assert.match(git, /    status \(default\)\n/);
+      assert.match(describeRule(rules, "kube-delete-all") ?? "", /^kube-delete-all: block \(.*\)\n  match: kubectl delete --all$/);
+      assert.equal(describeRule(rules, "nothing"), null);
+      assert.match(describeRule(rules, "sleep") ?? "", /operands: literals \(min 1, pattern .*\)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   await test("an entry with subcommands reads its own options as whole words before the subcommand", () => {
     const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-subcommands-"));
     mkdirSync(join(workspace, "sub"));
@@ -916,6 +1195,7 @@ async function run(): Promise<void> {
       const rules = {
         problem: null,
         files: [],
+        rules: [],
         programs: compileRules({
           programs: {
             npm: {
@@ -1865,7 +2145,7 @@ async function run(): Promise<void> {
       },
     });
     const completions = await getArgumentCompletions?.("");
-    assert.equal(description, "args: status | off | fallback | auto | model | explain");
+    assert.equal(description, "args: status | off | fallback | auto | model | rules | explain");
     assert.deepEqual((completions ?? []).map((item) => (item as { value: string }).value), [
       "status",
       "off",
@@ -1873,6 +2153,7 @@ async function run(): Promise<void> {
       "auto",
       "model",
       "model current",
+      "rules",
       "explain",
     ]);
     rmSync(configPath, { force: true });
@@ -1907,16 +2188,16 @@ async function run(): Promise<void> {
       assert.match(await routeFor("read src/a.ts"), /tool: read \(builtin\)[\s\S]*route: allowed without review: read-only builtin tool/);
       assert.match(await routeFor("read ~/.ssh/id_ed25519"), /route: classifier review; blocked if it denies or fails/);
       assert.match(await routeFor('read {"path":".env"}'), /arguments: \{"path":".env"\}[\s\S]*route: classifier review/);
-      assert.match(await routeFor("bash git status --short"), /arguments: \{"command":"git status --short"\}[\s\S]*route: allowed without review: built-in or allowlisted read-only command/);
+      assert.match(await routeFor("bash git status --short"), /arguments: \{"command":"git status --short"\}[\s\S]*route: allowed without review: every command is read-only by the command rules or safeCommandAllowlist\nruns as: .*\nallowed by: program:git status \(default\)/);
       assert.match(await routeFor("bash git push"), /route: classifier review/);
       assert.match(await routeFor("deploy {}"), /tool: deploy \(extension\)[\s\S]*route: classifier review/);
       assert.match(await routeFor("ls -la"), /note: no tool named "ls" in this session; explained as a bash command[\s\S]*tool: bash\n[\s\S]*arguments: \{"command":"ls -la"\}/);
-      assert.match(await routeFor("git status"), /arguments: \{"command":"git status"\}[\s\S]*route: allowed without review: built-in or allowlisted read-only command/);
+      assert.match(await routeFor("git status"), /arguments: \{"command":"git status"\}[\s\S]*route: allowed without review: every command is read-only by the command rules or safeCommandAllowlist\nruns as: .*\nallowed by: program:git status \(default\)/);
       assert.match(await routeFor("git status 2>&1 && git log -1"), /route: allowed without review[\s\S]*runs as: \/\S+\/git status 2>&1 && \/\S+\/git log -1/);
       assert.match(await routeFor(`bash cd ${tmpdir()} && git status`), /route: classifier review/);
       assert.match(await routeFor("read {bad"), /not valid JSON/);
       writeFileSync(configFile, JSON.stringify({ enabled: true, mode: "auto", blockCommands: ["git push --force"] }));
-      assert.match(await routeFor("bash git push origin --force"), /route: blocked: matches a blockCommands rule/);
+      assert.match(await routeFor("bash git push origin --force"), /route: blocked: matches a block command rule or blockCommands entry, never auto-approved or asked\nrule: blockCommands "git push --force" \(block, config.jsonc\)/);
       assert.match(await routeFor(""), /Usage: \/auto-approval explain/);
     } finally {
       rmSync(configFile, { force: true });

@@ -1,7 +1,8 @@
 import type { AutoReviewConfig, ExtensionContextLike, ToolCallEventLike } from "./src/types.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, saveConfig } from "./src/extension-config.js";
 import { defaultRulesPath, loadCommandRules, userRulesPath, type CommandRules } from "./src/command-rules.js";
-import { evaluateToolCall, planBashCommand, selectFastPath, sessionKey, type FastPathRoute } from "./src/decision.js";
+import { bashEscalation, evaluateToolCall, planBashCommand, selectFastPath, sessionKey, type FastPathRoute } from "./src/decision.js";
+import { describeRule, rulesOverview } from "./src/rules-report.js";
 import { toRecord } from "./src/common.js";
 import { findToolDefinition } from "./src/tool-routing.js";
 import { assistantText } from "./src/context-projection.js";
@@ -33,13 +34,14 @@ export const SYSTEM_PROMPT_NOTE = [
 ].join(" ");
 
 const ROUTE_EXPLANATIONS: Record<FastPathRoute, string> = {
-  blocked_command: "blocked: matches a blockCommands rule, never auto-approved or asked",
+  blocked_command: "blocked: matches a block command rule or blockCommands entry, never auto-approved or asked",
+  ask_rule: "asks you directly, without the classifier: matches an ask command rule (denied in auto mode or without a UI)",
   local_state: "allowed without review: local session state (todo, wait)",
   ui_only: "allowed without review: interactive ask with no remote content",
   tool_allowlist: "allowed without review: tool is listed in reviewExemptTools",
   readonly: "allowed without review: read-only builtin tool, every target is a non-sensitive path in the workspace or readRoots",
   workspace_write: "allowed without review: write inside the workspace, outside protected entries",
-  safe_command: "allowed without review: built-in or allowlisted read-only command",
+  safe_command: "allowed without review: every command is read-only by the command rules or safeCommandAllowlist",
   manual_only: "needs manual approval: this tool cannot be auto-approved",
 };
 
@@ -112,6 +114,7 @@ const COMMAND_ARGUMENTS = [
   { value: "auto", label: "auto", description: "AI review only; fail closed on failure or denial" },
   { value: "model", label: "model", description: "Select approval classifier model" },
   { value: "model current", label: "model current", description: "Use the active OMP session model for approval" },
+  { value: "rules", label: "rules", description: "Show the command rules in use: rules [program | rule id]" },
   { value: "explain", label: "explain", description: "Show how a tool call would be routed: explain <tool> <path | JSON | command>" },
 ];
 
@@ -171,7 +174,9 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
       return;
     }
     const source = toRecord(toRecord(findToolDefinition(toolName, tools)).sourceInfo).source;
+    const escalation = bashEscalation(toolName, parsed.input, config, rules);
     const route = selectFastPath(toolName, parsed.input, {
+      escalation,
       cwd: ctx.cwd || process.cwd(),
       config,
       tools,
@@ -196,6 +201,10 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
       `route: ${outcome}`,
       ...(plan && plan.command !== toRecord(parsed.input).command ? [`runs as: ${plan.command}`] : []),
       ...(plan?.cwd ? [`runs in: ${plan.cwd}`] : []),
+      ...(plan ? [`allowed by: ${plan.rules.map((used) => `${used.id} (${used.source})`).join(", ")}`] : []),
+      ...(escalation?.rule ? [`rule: ${escalation.rule.id} (${escalation.rule.outcome}, ${escalation.rule.source})`, ...(escalation.rule.why ? [`why: ${escalation.rule.why}`] : [])] : []),
+      ...(escalation?.blockPattern ? [`rule: blockCommands "${escalation.blockPattern}" (block, config.jsonc)`] : []),
+      ...(toolName === "bash" && rules.problem ? [rulesProblemText(rules)] : []),
       ...(toolName === "bash" && approvals.shellLatch(sessionKey(ctx)) ? [`note: the bash fast path is off for this session: an approved command used ${approvals.shellLatch(sessionKey(ctx))}`] : []),
     ].join("\n"));
   }
@@ -249,6 +258,13 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
       case "explain":
         explain(rest, ctx);
         break;
+      case "rules":
+        if (rest) {
+          notify(ctx, describeRule(rules, rest) ?? `No program or rule named "${rest}". /auto-approval rules lists them.`, rules.programs.size ? "info" : "warning");
+        } else {
+          notify(ctx, rulesOverview(rules, config.blockCommands));
+        }
+        break;
       case "status":
       default:
         notify(
@@ -268,7 +284,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
   }
 
   omp.registerCommand?.("auto-approval", {
-    description: "args: status | off | fallback | auto | model | explain",
+    description: "args: status | off | fallback | auto | model | rules | explain",
     getArgumentCompletions: getAutoReviewArgumentCompletions,
     handler: async (args, ctx) => {
       await runCommand(parseCommand(args), parseCommandRest(args), ctx);

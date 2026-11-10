@@ -1,13 +1,27 @@
+import { commandLines } from "./shell-hooks.js";
+import { recognizeShell } from "./shell-syntax.js";
+
 // Shell syntax that starts a new command: separators, pipes, background jobs,
 // subshells, and command substitution.
 const COMMAND_BOUNDARY = /\$\(|[\n\r;&|()`{}]/;
 
-function commandSegments(command: string): string[][] {
-  // Quotes and backslashes are dropped rather than parsed, so a command hidden
-  // in a quoted string (`bash -lc "git push --force"`) still splits into words.
-  return command
-    .split(COMMAND_BOUNDARY)
-    .map((segment) => segment.replace(/[\\"']/g, "").split(/\s+/).filter(Boolean));
+/**
+ * The words of every command in `command`, read three ways, so that matching
+ * errs toward finding a command:
+ * - split at every operator character with quotes and backslashes dropped,
+ *   so a command hidden in a quoted string (`bash -lc "git push --force"`)
+ *   still splits into words;
+ * - split as the shell would, quotes kept together (`git -c 'x=a;b' push`);
+ * - the recognizer's simple commands, when it reads the command exactly.
+ * A backslash-newline is removed first, as bash does.
+ */
+export function commandSegments(command: string): string[][] {
+  const text = command.replace(/\\\r?\n/g, "");
+  const unquote = (word: string) => word.replace(/[\\"']/g, "");
+  const naive = text.split(COMMAND_BOUNDARY).map((segment) => unquote(segment).split(/\s+/).filter(Boolean));
+  const quoted = commandLines(text).map((words) => words.map(unquote).filter(Boolean));
+  const recognized = recognizeShell(text)?.pipelines.flat().map((simple) => simple.words.map((word) => word.text)) ?? [];
+  return [...naive, ...quoted, ...recognized].filter((segment) => segment.length > 0);
 }
 
 function programName(word: string): string {
@@ -17,38 +31,91 @@ function programName(word: string): string {
 const SHORT_FLAG = /^-[A-Za-z0-9]$/;
 const SHORT_FLAG_GROUP = /^-[A-Za-z0-9]+$/;
 
+type WordTest = (word: string) => boolean;
+
 /** `-f` also matches a group of short flags that contains it, such as `-uf`. */
-function wordMatches(word: string, wanted: string): boolean {
-  return word === wanted || (SHORT_FLAG.test(wanted) && SHORT_FLAG_GROUP.test(word) && word.includes(wanted[1]));
+function literalWord(wanted: string, extended: boolean): WordTest {
+  return (word) => word === wanted
+    || (SHORT_FLAG.test(wanted) && SHORT_FLAG_GROUP.test(word) && word.includes(wanted[1]))
+    // `--as` also matches `--as=admin`.
+    || (extended && wanted.startsWith("--") && word.startsWith(`${wanted}=`));
 }
 
-function matchesWords(segment: string[], words: string[]): boolean {
-  const [program, ...rest] = words;
-  return segment.some((word, start) => {
-    if (programName(word) !== program) {
+function globWord(glob: string): WordTest {
+  let source = "";
+  for (let index = 0; index < glob.length; index += 1) {
+    const char = glob[index];
+    if (char === "*") {
+      source += ".*";
+    } else if (char === "?") {
+      source += ".";
+    } else if (char === "[") {
+      const end = glob.indexOf("]", index + 2);
+      if (end < 0) {
+        throw new Error(`unclosed "[" in ${JSON.stringify(glob)}`);
+      }
+      const set = glob.slice(index + 1, end).replace(/\\/g, "\\\\");
+      source += set.startsWith("!") ? `[^${set.slice(1)}]` : `[${set}]`;
+      index = end;
+    } else {
+      source += char.replace(/[.+^${}()|\\]/g, "\\$&");
+    }
+  }
+  const regex = new RegExp(`^${source}$`, "s");
+  return (word) => regex.test(word);
+}
+
+/**
+ * One word of a pattern. Plain (blockCommands): the word itself. Extended
+ * (command rules): `a|b` alternatives, each a literal or a glob with `*`, `?`
+ * and `[…]`, and `--name` also matching `--name=value`.
+ */
+function wordTest(wanted: string, extended: boolean): WordTest {
+  if (!extended) {
+    return literalWord(wanted, false);
+  }
+  const alternatives = wanted.split("|").filter(Boolean).map((alternative) => (
+    /[*?[]/.test(alternative) ? globWord(alternative) : literalWord(alternative, true)
+  ));
+  if (!alternatives.length) {
+    throw new Error(`empty word in a pattern: ${JSON.stringify(wanted)}`);
+  }
+  return (word) => alternatives.some((test) => test(word));
+}
+
+/** A compiled pattern: true when a command matches it. */
+export type CommandPattern = (command: string, segments: string[][]) => boolean;
+
+/**
+ * Compile a pattern: `/regex/flags`, tested against the whole command, or
+ * words: the first names a program (by its last path component) and the
+ * rest must follow it, in order, within the same command. Throws on an
+ * invalid pattern.
+ */
+export function compileCommandPattern(raw: string, options: { extended: boolean }): CommandPattern {
+  const pattern = raw.trim();
+  if (!pattern) {
+    throw new Error("empty pattern");
+  }
+  const regex = /^\/(.+)\/([a-z]*)$/.exec(pattern);
+  if (regex) {
+    const compiled = new RegExp(regex[1], regex[2].replace(/g/g, ""));
+    return (command) => compiled.test(command);
+  }
+  const [program, ...rest] = pattern.split(/\s+/).map((word) => wordTest(word, options.extended));
+  return (_command, segments) => segments.some((segment) => segment.some((word, start) => {
+    if (!program(programName(word))) {
       return false;
     }
     let next = start + 1;
     return rest.every((wanted) => {
-      while (next < segment.length && !wordMatches(segment[next], wanted)) {
+      while (next < segment.length && !wanted(segment[next])) {
         next += 1;
       }
       next += 1;
       return next <= segment.length;
     });
-  });
-}
-
-function parseRegexPattern(pattern: string): RegExp | null {
-  const match = pattern.match(/^\/(.+)\/([a-z]*)$/);
-  if (!match) {
-    return null;
-  }
-  try {
-    return new RegExp(match[1], match[2]);
-  } catch {
-    return null;
-  }
+  }));
 }
 
 /**
@@ -60,25 +127,23 @@ function parseRegexPattern(pattern: string): RegExp | null {
  * `git push origin main --force` and `/usr/bin/git push --force`, but not
  * `git push --force-with-lease`. A single-letter flag such as `-f` also matches
  * grouped short flags (`-uf`). Matching errs toward blocking: the words also
- * match when they appear as another command's arguments.
+ * match when they appear as another command's arguments. An invalid regex
+ * never matches.
  */
 export function matchBlockedCommand(command: string, patterns: readonly string[]): string | null {
   const segments = commandSegments(command);
   for (const raw of patterns) {
-    const pattern = raw.trim();
-    if (!pattern) {
+    if (!raw.trim()) {
       continue;
     }
-    const regex = parseRegexPattern(pattern);
-    if (regex) {
-      if (regex.test(command)) {
-        return pattern;
-      }
+    let pattern: CommandPattern;
+    try {
+      pattern = compileCommandPattern(raw, { extended: false });
+    } catch {
       continue;
     }
-    const words = pattern.split(/\s+/);
-    if (segments.some((segment) => matchesWords(segment, words))) {
-      return pattern;
+    if (pattern(command, segments)) {
+      return raw.trim();
     }
   }
   return null;

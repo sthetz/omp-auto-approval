@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import { commandSegments, compileCommandPattern, matchBlockedCommand, type CommandPattern } from "./block-commands.js";
 import { configPath, extensionRoot } from "./extension-config.js";
 import { parseJsonc } from "./jsonc.js";
 
@@ -123,8 +124,26 @@ export interface ProgramEntry {
   subcommands: Map<string, ProgramEntry> | null;
 }
 
+/** What a command rule does to the commands it matches, least to most restrictive. */
+export const RULE_OUTCOMES = ["review", "ask", "block"] as const;
+export type RuleOutcome = (typeof RULE_OUTCOMES)[number];
+
+/** A rule that sends matching bash commands to review, to the user, or to a block. */
+export interface CommandRule {
+  id: string;
+  // The patterns as written; any one matching is enough.
+  match: string[];
+  patterns: CommandPattern[];
+  outcome: RuleOutcome;
+  why: string | null;
+  // "default", or the user rules file it came from.
+  source: string;
+}
+
 export interface CommandRules {
   programs: Map<string, ProgramEntry>;
+  // In file order: the built-in rules, then the user's.
+  rules: CommandRule[];
   // The user rules files, the main one first, as their paths are written;
   // empty when there is none.
   files: string[];
@@ -134,6 +153,50 @@ export interface CommandRules {
 }
 
 class RulesError extends Error {}
+
+const RULE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** Compile a `rules` list; `seen` holds the ids already taken. */
+function compileRuleList(value: unknown, source: string, where: string, seen: Set<string>): CommandRule[] {
+  if (!Array.isArray(value)) {
+    throw new RulesError(`${where}: expected a list of rules`);
+  }
+  return value.map((raw, index) => {
+    const ruleWhere = `${where}[${index}]`;
+    const object = record(raw, ruleWhere);
+    onlyKeys(object, ["id", "match", "outcome", "why"], ruleWhere);
+    const id = object.id;
+    if (typeof id !== "string" || !RULE_NAME.test(id)) {
+      throw new RulesError(`${ruleWhere}.id: expected a name of letters, digits, ".", "_" and "-", got ${JSON.stringify(id)}`);
+    }
+    if (seen.has(id)) {
+      throw new RulesError(`${ruleWhere}.id: "${id}" is used by another rule`);
+    }
+    seen.add(id);
+    const at = `${where}[${JSON.stringify(id)}]`;
+    if (object.outcome === "allow") {
+      throw new RulesError(`${at}.outcome: "allow" rules are not supported; list the program in "programs"`);
+    }
+    if (typeof object.outcome !== "string" || !(RULE_OUTCOMES as readonly string[]).includes(object.outcome)) {
+      throw new RulesError(`${at}.outcome: expected one of ${RULE_OUTCOMES.join(", ")}`);
+    }
+    const match = typeof object.match === "string" ? [object.match] : object.match;
+    if (!Array.isArray(match) || !match.length || !match.every((pattern) => typeof pattern === "string")) {
+      throw new RulesError(`${at}.match: expected a pattern or a list of patterns`);
+    }
+    const patterns = (match as string[]).map((pattern) => {
+      try {
+        return compileCommandPattern(pattern, { extended: true });
+      } catch (error) {
+        throw new RulesError(`${at}.match: ${JSON.stringify(pattern)}: ${(error as Error).message}`);
+      }
+    });
+    if (object.why !== undefined && typeof object.why !== "string") {
+      throw new RulesError(`${at}.why: expected text`);
+    }
+    return { id, match: match as string[], patterns, outcome: object.outcome as RuleOutcome, why: (object.why as string | undefined) ?? null, source };
+  });
+}
 
 const PROGRAM_NAME = /^[A-Za-z0-9_][A-Za-z0-9._+-]*$/;
 const SUBCOMMAND_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
@@ -381,7 +444,7 @@ function compileOptions(options: Record<string, unknown>, entry: ProgramEntry, w
 /** Compile the contents of a rules file; throws with the place of the first problem. */
 export function compileRules(raw: unknown, sources: ReadonlyMap<string, string> = new Map()): Map<string, ProgramEntry> {
   const top = record(raw, "");
-  onlyKeys(top, ["$schema", "programs"], "");
+  onlyKeys(top, ["$schema", "programs", "rules"], "");
   const programs = new Map<string, ProgramEntry>();
   for (const [key, entry] of Object.entries(record(top.programs ?? {}, "programs"))) {
     const where = `programs[${JSON.stringify(key)}]`;
@@ -397,9 +460,10 @@ export function compileRules(raw: unknown, sources: ReadonlyMap<string, string> 
 /** Read and compile a rules file; never throws. */
 export function loadRulesFile(path: string, label = path): CommandRules {
   try {
-    return { programs: compileRules(parseJsonc(readFileSync(path, "utf8"))), files: [], problem: null };
+    const document = record(parseJsonc(readFileSync(path, "utf8")), "");
+    return { programs: compileRules(document), rules: compileRuleList(document.rules ?? [], "default", "rules", new Set()), files: [], problem: null };
   } catch (error) {
-    return { programs: new Map(), files: [], problem: `${label}: ${(error as Error).message}` };
+    return { programs: new Map(), rules: [], files: [], problem: `${label}: ${(error as Error).message}` };
   }
 }
 
@@ -418,9 +482,10 @@ function loadDefaults(): { rules: CommandRules; document: Record<string, unknown
   if (!defaults) {
     try {
       const document = record(parseJsonc(readFileSync(defaultRulesPath(), "utf8")), "");
-      defaults = { rules: { programs: compileRules(document), files: [], problem: null }, document };
+      const rules = compileRuleList(document.rules ?? [], "default", "rules", new Set());
+      defaults = { rules: { programs: compileRules(document), rules, files: [], problem: null }, document };
     } catch (error) {
-      defaults = { rules: { programs: new Map(), files: [], problem: `config/default-rules.jsonc: ${(error as Error).message}` }, document: null };
+      defaults = { rules: { programs: new Map(), rules: [], files: [], problem: `config/default-rules.jsonc: ${(error as Error).message}` }, document: null };
     }
   }
   return defaults;
@@ -433,12 +498,14 @@ export function defaultRules(): CommandRules {
 
 // User rules files hold at most this many levels of `include`.
 const MAX_INCLUDE_DEPTH = 8;
-const RULE_ID = /^program:([A-Za-z0-9_][A-Za-z0-9._+-]*)(?: ([A-Za-z0-9][A-Za-z0-9._:-]*))?$/;
+const PROGRAM_ID = /^program:([A-Za-z0-9_][A-Za-z0-9._+-]*)(?: ([A-Za-z0-9][A-Za-z0-9._:-]*))?$/;
 
 interface UserLayer {
   // Program entries as written, with the file each came from.
   programs: Map<string, { entry: Record<string, unknown>; file: string }>;
   disable: { id: string; file: string }[];
+  // Each file's `rules` list, as written.
+  rules: { list: unknown; file: string }[];
   files: string[];
 }
 
@@ -473,7 +540,7 @@ function readUserFile(path: string, layer: UserLayer, chain: string[]): void {
     throw new RulesError(`${label}: ${message}`);
   };
   try {
-    onlyKeys(document, ["$schema", "include", "programs", "disable"], "");
+    onlyKeys(document, ["$schema", "include", "programs", "rules", "disable"], "");
   } catch (error) {
     fail((error as Error).message);
   }
@@ -493,12 +560,15 @@ function readUserFile(path: string, layer: UserLayer, chain: string[]): void {
     fail("disable: expected a list of rule ids");
   }
   for (const id of disable as unknown[]) {
-    if (typeof id !== "string" || !RULE_ID.test(id)) {
-      fail(`disable: expected ids like "program:sed" or "program:git blame", got ${JSON.stringify(id)}`);
+    if (typeof id !== "string" || !(PROGRAM_ID.test(id) || RULE_NAME.test(id))) {
+      fail(`disable: expected ids like "program:sed", "program:git blame" or a rule's id, got ${JSON.stringify(id)}`);
     }
     if (!layer.disable.some((earlier) => earlier.id === id)) {
       layer.disable.push({ id: id as string, file: label });
     }
+  }
+  if (document.rules !== undefined) {
+    layer.rules.push({ list: document.rules, file: label });
   }
   let programs: Record<string, unknown> = {};
   try {
@@ -558,6 +628,12 @@ function mergeOptions(base: Record<string, unknown>, user: Record<string, unknow
  */
 function mergeEntry(base: Record<string, unknown>, user: Record<string, unknown>, where: string, id: string, file: string, sources: Map<string, string>): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...base };
+  // Built-in subcommands stay built-in unless the user's entry touches them.
+  if (base.subcommands !== undefined) {
+    for (const name of subcommandsByName(base.subcommands, `${where}.subcommands`).keys()) {
+      sources.set(`${id} ${name}`, "default");
+    }
+  }
   for (const [key, value] of Object.entries(user)) {
     if (key === "extends") {
       continue;
@@ -639,13 +715,23 @@ export function loadCommandRules(path = userRulesPath()): CommandRules {
       return base;
     }
   }
-  const layer: UserLayer = { programs: new Map(), disable: [], files: [] };
+  const layer: UserLayer = { programs: new Map(), disable: [], rules: [], files: [] };
   try {
     readUserFile(path, layer, []);
     // Without a prototype, so that a program named `__proto__` is just a name.
     const programs: Record<string, unknown> = Object.assign(Object.create(null), record(document.programs ?? {}, "programs"));
+    const rules = [...base.rules];
     for (const { id, file } of layer.disable) {
-      const [, name, subcommand] = RULE_ID.exec(id)!;
+      if (!id.startsWith("program:")) {
+        const index = rules.findIndex((rule) => rule.id === id);
+        if (index < 0) {
+          const program = Object.hasOwn(programs, id) ? `; for the program, write "program:${id}"` : "";
+          throw new RulesError(`${file}: disable: no built-in rule "${id}"${program}`);
+        }
+        rules.splice(index, 1);
+        continue;
+      }
+      const [, name, subcommand] = PROGRAM_ID.exec(id)!;
       const entry = Object.hasOwn(programs, name) ? record(programs[name], name) : undefined;
       if (!entry) {
         throw new RulesError(`${file}: disable: no built-in rule "${id}"`);
@@ -675,13 +761,49 @@ export function loadCommandRules(path = userRulesPath()): CommandRules {
         programs[name] = mergeEntry(record(programs[name], where), entry, where, id, file, sources);
       }
     }
+    const seen = new Set(rules.map((rule) => rule.id));
+    for (const { list, file } of layer.rules) {
+      rules.push(...compileRuleList(list, file, `${file}: rules`, seen));
+    }
     // Errors from here on are in the merged entries; name the user file.
     try {
-      return { programs: compileRules({ programs }, sources), files: layer.files, problem: null };
+      return { programs: compileRules({ programs }, sources), rules, files: layer.files, problem: null };
     } catch (error) {
       throw new RulesError(`${displayPath(path)}${layer.files.length > 1 ? " (or a file it includes)" : ""}: ${(error as Error).message}`);
     }
   } catch (error) {
-    return { programs: new Map(), files: layer.files, problem: (error as Error).message };
+    return { programs: new Map(), rules: [], files: layer.files, problem: (error as Error).message };
   }
+}
+
+const RESTRICTION: Record<RuleOutcome, number> = { review: 1, ask: 2, block: 3 };
+
+/** What a bash command's text calls for beyond the fast path's own checks. */
+export interface Escalation {
+  outcome: RuleOutcome;
+  // The deciding rule: the most restrictive that matched, the first of those.
+  rule: CommandRule | null;
+  // Or the blockCommands entry that matched.
+  blockPattern: string | null;
+}
+
+/**
+ * The most restrictive rule a bash command matches, with `blockCommands`
+ * entries as block rules, or null. Rules match the command's text, so they
+ * apply to commands the fast path never reads (loops, functions,
+ * substitutions); a command a variable names (`$cmd`) cannot be matched.
+ */
+export function escalateCommand(command: string, rules: CommandRules, blockCommands: readonly string[]): Escalation | null {
+  const blocked = matchBlockedCommand(command, blockCommands);
+  if (blocked) {
+    return { outcome: "block", rule: null, blockPattern: blocked };
+  }
+  const segments = commandSegments(command);
+  let deciding: CommandRule | null = null;
+  for (const rule of rules.rules) {
+    if ((!deciding || RESTRICTION[rule.outcome] > RESTRICTION[deciding.outcome]) && rule.patterns.some((pattern) => pattern(command, segments))) {
+      deciding = rule;
+    }
+  }
+  return deciding && { outcome: deciding.outcome, rule: deciding, blockPattern: null };
 }

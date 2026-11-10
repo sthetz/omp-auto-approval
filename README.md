@@ -222,6 +222,29 @@ A `rules.jsonc` next to `config.jsonc` (or at `PI_AUTO_APPROVAL_RULES_PATH`) add
 
 There are no per-project rules files: a cloned repository could ship one.
 
+#### Review, ask and block rules
+
+Program entries only say what may skip review. A `rules` list says what must not:
+
+```jsonc
+"rules": [
+  { "id": "kube-secrets", "match": "kubectl get|describe *[Ss][Ee][Cc][Rr][Ee][Tt]*", "outcome": "review",
+    "why": "Secret values must not reach the model unreviewed." },
+  { "id": "kube-interactive", "match": "kubectl exec|port-forward|cp|edit|apply|rollout", "outcome": "ask" },
+  { "id": "kube-delete-all", "match": "kubectl delete --all", "outcome": "block" }
+]
+```
+
+- `review`: the classifier, then you, as for any reviewed command; never a fast path.
+- `ask`: you decide, without the classifier. In `auto` mode, or without an interactive UI, the command is denied. An "Allow Always This Exact Action" answer stands for that exact command for the rest of the session.
+- `block`: denied without asking anyone, like `blockCommands`.
+
+Among the rules a command matches, and `blockCommands`, the most restrictive decides: block, then ask, then review. Any of them overrides program entries, `safeCommandAllowlist` and `reviewExemptTools`, so a broad allow can never hide an exception. `why` is shown in the denial, in the approval prompt, and to the classifier as your reason.
+
+`match` is a pattern or a list of them, written like `blockCommands` patterns (see [Blocked Commands](#blocked-commands)), with more for words: `a|b` alternatives, `*`, `?` and `[…]` globs, and `--name` also matching `--name=value`. Rules read the command's text, so they also apply inside loops, `$(…)` and `sh -c '…'`, which the fast path never reads; a program named by a variable (`$k delete`) gets past them, and is then reviewed as usual. `id`s are unique; `disable` removes a built-in rule by its id (there are none yet).
+
+`/auto-approval rules` lists the programs and rules in use and the file each comes from; `/auto-approval rules <program | rule id>` shows one. `explain` names the rule that decided, and the audit log records it as `ruleId` and `ruleSource` (and, for a fast-pathed command, the program entries that let it through as `ruleIds`).
+
 ### Allowlisted commands
 
 A `safeCommandAllowlist` entry is a prefix (`"rg *"`, `"find"`, `"npm test"`), so on its own it would trust every option of the program. Even when an entry matches, a command is still reviewed if:
@@ -254,7 +277,7 @@ Entries must be absolute or start with `~/`. Credential-like files below a read 
 }
 ```
 
-A pattern is either `/regex/flags`, tested against the whole command, or a list of words: the first names a program and the rest must follow it, in order, within the same command. `git push --force` matches `git push origin main --force`, `/usr/bin/git push --force`, `cd repo && git push --force` and `bash -lc "git push --force"`, but not `git push --force-with-lease`. Long flags are compared as written, so list `-f` separately. A single-letter flag also matches grouped short flags: `git push -f` matches `git push -uf origin main`. Git also forces a push when a branch is prefixed with `+` (`git push origin +main`), which no word list can express; the regex above catches it. Matching errs toward blocking: the words also match when they are arguments to another command, such as `echo git push --force`.
+A pattern is either `/regex/flags`, tested against the whole command, or a list of words: the first names a program and the rest must follow it, in order, within the same command. `git push --force` matches `git push origin main --force`, `/usr/bin/git push --force`, `cd repo && git push --force` and `bash -lc "git push --force"`, but not `git push --force-with-lease`. Long flags are compared as written, so list `-f` separately. A single-letter flag also matches grouped short flags: `git push -f` matches `git push -uf origin main`. Git also forces a push when a branch is prefixed with `+` (`git push origin +main`), which no word list can express; the regex above catches it. Matching errs toward blocking: the words also match when they are arguments to another command, such as `echo git push --force`, and quotes around `;` or `|` (`git -c 'x=a;b' push --force`) or a backslash-newline do not hide a command.
 
 This is a best-effort tripwire for commands you never want run unattended, not a sandbox: a sufficiently creative command (variables, aliases, scripts) can still get past it, and is then reviewed by the classifier as usual.
 

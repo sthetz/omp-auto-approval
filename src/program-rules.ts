@@ -591,7 +591,7 @@ function globalOptionKind(entry: ProgramEntry, text: string): OptionKind | null 
  * and no word may expand. `-C dir` style options move the rest of the
  * command to that directory.
  */
-function isSafeWithSubcommand(entry: ProgramEntry, words: ShellWord[], context: RuleContext): boolean {
+function isSafeWithSubcommand(entry: ProgramEntry, words: ShellWord[], context: RuleContext, used: { entry?: ProgramEntry }): boolean {
   if (words.some((word) => word.expands)) {
     return false;
   }
@@ -617,12 +617,13 @@ function isSafeWithSubcommand(entry: ProgramEntry, words: ShellWord[], context: 
     index += 1;
   }
   const subcommand = entry.subcommands!.get(words[index]?.text ?? "");
-  return subcommand !== undefined && isSafeByEntry(subcommand, words.slice(index), place);
+  return subcommand !== undefined && isSafeByEntry(subcommand, words.slice(index), place, used);
 }
 
-function isSafeByEntry(entry: ProgramEntry, words: ShellWord[], context: RuleContext): boolean {
+// `used` is given the entry that decided: the subcommand's, for a program with subcommands.
+function isSafeByEntry(entry: ProgramEntry, words: ShellWord[], context: RuleContext, used: { entry?: ProgramEntry }): boolean {
   if (entry.subcommands) {
-    return isSafeWithSubcommand(entry, words, context);
+    return isSafeWithSubcommand(entry, words, context, used);
   }
   const args = words.slice(1);
   const command = entry.anyOptions ? parseAnyOptions(entry, args)
@@ -651,17 +652,22 @@ function isSafeByEntry(entry: ProgramEntry, words: ShellWord[], context: RuleCon
   // Whatever the entry says each word is, none may name an unreadable file:
   // with `"options": "any"` (git), an option's glued value is never checked
   // otherwise (`git diff -O/path` reads an order file).
-  return entry.opensNoFiles || args.every((word) => word.expands || context.namesNoUnreadableFile(word.text));
+  if (!entry.opensNoFiles && !args.every((word) => word.expands || context.namesNoUnreadableFile(word.text))) {
+    return false;
+  }
+  used.entry = entry;
+  return true;
 }
 
 /**
- * Whether a command run by the bare program name `words[0]` is read-only by
- * that program's entry in the rules. Option values that name files are
+ * The entry by which a command run by the bare program name `words[0]` is
+ * read-only (its subcommand's, for git), or null. Option values that name files are
  * checked with the context, operands by the entry's operand check.
  */
-export function isSafeByProgramRule(words: ShellWord[], context: RuleContext, rules: CommandRules): boolean {
+export function safeByProgramRule(words: ShellWord[], context: RuleContext, rules: CommandRules): ProgramEntry | null {
   const entry = rules.programs.get(words[0].text);
-  return entry !== undefined && isSafeByEntry(entry, words, context);
+  const used: { entry?: ProgramEntry } = {};
+  return entry !== undefined && isSafeByEntry(entry, words, context, used) ? used.entry ?? null : null;
 }
 
 /**

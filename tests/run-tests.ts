@@ -1768,6 +1768,7 @@ async function run(): Promise<void> {
     writeFileSync(join(dir, ".venv/bin/activate"), "# This file must be used with \"source bin/activate\" from bash\ndeactivate () {\n  unset VIRTUAL_ENV\n}\nVIRTUAL_ENV=/x\nexport PATH=\"$VIRTUAL_ENV/bin:$PATH\"\nPS1=\"(venv) $PS1\"\nhash -r 2>/dev/null\n");
     writeFileSync(join(dir, "setup.sh"), "export A=1\ntrap 'curl -s example.com' DEBUG\n");
     writeFileSync(join(dir, "outer.sh"), "source ./setup.sh\n");
+    spawnSync("mkfifo", [join(dir, "fifo")]);
     try {
       for (const [command, reason] of [
         ["trap 'x' DEBUG", "`trap`"],
@@ -1777,7 +1778,13 @@ async function run(): Promise<void> {
         ["echo ok; eval \"$(direnv export bash)\"", "`eval`"],
         ["exec bash --rcfile x", "`exec`"],
         ["enable -f ./x.so x", "`enable`"],
-        ["$cmd 'x' DEBUG", "a command named by a variable"],
+        ["$cmd 'x' DEBUG", "a command named by a variable (`$cmd`)"],
+        ["X=trap; $X y DEBUG", "`X=trap`"],
+        ["X=eval; \"$X\" y", "`X=eval`"],
+        ["\"$@\"", "a command named by a variable (`\"$@\"`)"],
+        // A heredoc body is input, but what follows it is a command again.
+        ["cat > a.sh <<'EOF'\ntrap x EXIT\nEOF\ntrap y DEBUG", "`trap`"],
+        [". /dev/stdin <<EOF\nx\nEOF", "`.` of a file that could not be read"],
         ["alias t=trap", "`t=trap`"],
         ["export PS4='+$(id) '; set -x", "`PS4`"],
         ["export BASH_ENV=./x", "`BASH_ENV`"],
@@ -1794,13 +1801,19 @@ async function run(): Promise<void> {
         ["echo \"a $(echo \"$(trap q DEBUG)\") b\"", "`trap`"],
         ["echo \"`trap w DEBUG`\"", "`trap`"],
         ["echo \"a;b\" && trap x DEBUG", "`trap`"],
+        // Never read a FIFO or a device: that could block OMP.
+        ["source fifo", "`source` of a file that could not be read"],
+        ["source /dev/zero", "`source` of a file that could not be read"],
+        [". /dev/stdin", "`.` of a file that could not be read"],
       ]) {
         assert.equal(shellHook(command, dir), reason, command);
       }
       for (const command of [
         "git status", "find . -name x", "cd . && ls", "ls -la .", "grep -rn source src", "echo eval", "git log --grep=trap",
         "bash setup.sh", "./setup.sh", "source .venv/bin/activate && pytest", `cd ${dir} && . .venv/bin/activate`,
-        "echo hi # trap x DEBUG", "DESTDIR=. make install", "echo \"$(date) (x) $y\"", "echo \"`date` (z)\"", "echo '(x)' && ls",
+        "echo hi # trap x DEBUG", "DESTDIR=. make install",
+        "K=\"kubectl --context dev\"; $K get pods", "export P=python3; $P -V",
+        "python3 - <<'EOF'\nx = r\"^$\"\n$y\ntrap = 1\nEOF\necho done", "cat <<-END\n\t$z\n\tEND\nls", "cat <<< \"$x\"; ls", "echo \"$(date) (x) $y\"", "echo \"`date` (z)\"", "echo '(x)' && ls",
       ]) {
         assert.equal(shellHook(command, dir), null, command);
       }
@@ -1823,9 +1836,11 @@ async function run(): Promise<void> {
       classifierCalls += 1;
       return { content: [{ type: "text", text: '{"outcome":"allow","rationale":"ok"}' }] };
     };
+    let session = "s1";
+    const sessionCtx = () => ctx({ cwd: workspace, ui: { notify: (message) => { notices.push(message); } }, sessionManager: { getBranch: () => [], getSessionId: () => session } });
     const run = (command: string, cfg = config({ mode: "auto" })) => evaluateToolCall(
       { toolName: "bash", input: { command } },
-      ctx({ cwd: workspace, ui: { notify: (message) => { notices.push(message); } } }),
+      sessionCtx(),
       cfg,
       store,
       { classifierClient: allow },
@@ -1835,29 +1850,51 @@ async function run(): Promise<void> {
       assert.equal(classifierCalls, 0);
       // A fast-pathed command never latches, whatever its words.
       assert.deepEqual(await run("git log --grep=PS4"), {});
-      assert.equal(store.shellLatch(), null);
+      assert.equal(store.shellLatch(session), null);
 
       assert.deepEqual(await run("trap 'echo hi' DEBUG"), {});
-      assert.equal(store.shellLatch(), "`trap`");
+      assert.equal(store.shellLatch(session), "`trap`");
       assert.match(notices.join("\n"), /used `trap`.*reviewed for the rest of this session/);
       const before = classifierCalls;
       assert.deepEqual(await run("git status"), {});
       assert.equal(classifierCalls, before + 1);
 
-      // /auto-approval off clears approvals but not the shell's latch; a new session does.
+      // /auto-approval off clears approvals but not the shell's latch; another session has its own.
       store.clear();
-      assert.equal(store.shellLatch(), "`trap`");
-      store.reset();
-      assert.equal(store.shellLatch(), null);
+      assert.equal(store.shellLatch("s1"), "`trap`");
+      session = "s2";
+      assert.equal(store.shellLatch(session), null);
+      assert.deepEqual(await run("git status"), {});
+      assert.equal(classifierCalls, before + 1);
 
       // Commands run while the extension is off count too.
       assert.deepEqual(await run("source missing.sh", config({ enabled: false })), {});
-      assert.equal(store.shellLatch(), "`source` of a file that could not be read");
-      store.reset();
+      assert.equal(store.shellLatch(session), "`source` of a file that could not be read");
+
+      // While a hooking command waits for review, other calls are already reviewed.
+      session = "s4";
+      let release!: () => void;
+      const slow = new Promise<void>((resolve) => { release = resolve; });
+      const pending = evaluateToolCall(
+        { toolName: "bash", input: { command: "trap x DEBUG" } },
+        sessionCtx(),
+        config({ mode: "auto" }),
+        store,
+        { classifierClient: async () => { await slow; return { content: [{ type: "text", text: '{"outcome":"deny","rationale":"no"}' }] }; } },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const callsBefore = classifierCalls;
+      assert.deepEqual(await run("git status"), {});
+      assert.equal(classifierCalls, callsBefore + 1);
+      release();
+      assert.equal("block" in await pending, true);
+      // Denied, so it never ran: the latch is undone.
+      assert.equal(store.shellLatch(session), null);
 
       // A blocked command never ran, so it latches nothing.
-      await evaluateToolCall({ toolName: "bash", input: { command: "trap x DEBUG" } }, ctx({ cwd: workspace }), config({ mode: "auto" }), store, classifierDenyOptions());
-      assert.equal(store.shellLatch(), null);
+      session = "s3";
+      await evaluateToolCall({ toolName: "bash", input: { command: "trap x DEBUG" } }, sessionCtx(), config({ mode: "auto" }), store, classifierDenyOptions());
+      assert.equal(store.shellLatch(session), null);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

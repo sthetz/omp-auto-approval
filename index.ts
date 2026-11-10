@@ -1,6 +1,6 @@
 import type { AutoReviewConfig, ExtensionContextLike, ToolCallEventLike } from "./src/types.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, saveConfig } from "./src/extension-config.js";
-import { evaluateToolCall, planBashCommand, selectFastPath, type FastPathRoute } from "./src/decision.js";
+import { evaluateToolCall, planBashCommand, selectFastPath, sessionKey, type FastPathRoute } from "./src/decision.js";
 import { toRecord } from "./src/common.js";
 import { findToolDefinition } from "./src/tool-routing.js";
 import { assistantText } from "./src/context-projection.js";
@@ -153,7 +153,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
       config,
       tools,
       hasUI: ctx.hasUI === true,
-      shellLatched: approvals.shellLatch() !== null,
+      shellLatched: approvals.shellLatch(sessionKey(ctx)) !== null,
     });
     const plan = route === "safe_command" ? planBashCommand(toolName, parsed.input, ctx.cwd || process.cwd(), config) : null;
     const review = config.mode === "fallback"
@@ -172,7 +172,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
       `route: ${outcome}`,
       ...(plan && plan.command !== toRecord(parsed.input).command ? [`runs as: ${plan.command}`] : []),
       ...(plan?.cwd ? [`runs in: ${plan.cwd}`] : []),
-      ...(toolName === "bash" && approvals.shellLatch() ? [`note: the bash fast path is off for this session: an approved command used ${approvals.shellLatch()}`] : []),
+      ...(toolName === "bash" && approvals.shellLatch(sessionKey(ctx)) ? [`note: the bash fast path is off for this session: an approved command used ${approvals.shellLatch(sessionKey(ctx))}`] : []),
     ].join("\n"));
   }
 
@@ -234,7 +234,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
             `approval classifier model: ${classifierModelText(config)}`,
             `config: ${configPath()}`,
             `audit log: ${logPath()}`,
-            ...(approvals.shellLatch() ? [`bash fast path: off for this session (an approved command used ${approvals.shellLatch()})`] : []),
+            ...(approvals.shellLatch(sessionKey(ctx)) ? [`bash fast path: off for this session (an approved command used ${approvals.shellLatch(sessionKey(ctx))})`] : []),
             ...(loadResult.notice ? [loadResult.notice] : []),
           ].join("\n"),
         );
@@ -251,7 +251,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
   });
 
   omp.on("session_start", async (_event: unknown, ctx: ExtensionContextLike) => {
-    approvals.reset();
+    approvals.clear();
     agentMessage = undefined;
     refresh(ctx, { announce: true });
   });
@@ -277,7 +277,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
   });
 
   omp.on("session_shutdown", async () => {
-    approvals.reset();
+    approvals.clear();
     lastContext?.ui?.setStatus?.(STATUS_KEY, undefined);
     lastContext = null;
   });

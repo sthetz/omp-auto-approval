@@ -82,6 +82,7 @@ export interface ExtensionContextLike {
     getBranch?: () => unknown[];
     // OMP: the session header; a subagent's names its parent session file.
     getHeader?: () => unknown;
+    getSessionId?: () => string;
   };
 }
 

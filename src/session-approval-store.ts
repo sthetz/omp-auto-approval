@@ -4,8 +4,9 @@ export class SessionApprovalStore {
   private readonly approvedExactActions = new Set<string>();
   private readonly classifierDecisions = new Map<string, ReviewDecision>();
   private consecutiveDenials = 0;
-  // Why the session's shell may now run code on its own (see shellHook).
-  private shellHookReason: string | null = null;
+  // Why a session's shell may now run code on its own (see shellHook), by
+  // session id: OMP keeps one shell per session.
+  private readonly shellHooks = new Map<string, string>();
 
   approveExact(actionHash: string): void {
     this.approvedExactActions.add(actionHash);
@@ -37,24 +38,30 @@ export class SessionApprovalStore {
    * Turn the bash fast path off for the rest of the session: an approved
    * command may have left the shell running code before later commands.
    */
-  latchShell(reason: string): void {
-    this.shellHookReason ??= reason;
+  /** Latch, and say whether this call set it (an earlier latch stays as it was). */
+  latchShell(session: string, reason: string): boolean {
+    if (this.shellHooks.has(session)) {
+      return false;
+    }
+    this.shellHooks.set(session, reason);
+    return true;
   }
 
-  shellLatch(): string | null {
-    return this.shellHookReason;
+  unlatchShell(session: string): void {
+    this.shellHooks.delete(session);
   }
 
-  /** Forget approvals and cached decisions. The shell, and so its latch, outlives them. */
+  shellLatch(session: string): string | null {
+    return this.shellHooks.get(session) ?? null;
+  }
+
+  /**
+   * Forget approvals and cached decisions. Latches stay: a shell outlives
+   * them, and a new session has its own id, so its own latch.
+   */
   clear(): void {
     this.approvedExactActions.clear();
     this.classifierDecisions.clear();
     this.consecutiveDenials = 0;
-  }
-
-  /** A new session, with a new shell. */
-  reset(): void {
-    this.clear();
-    this.shellHookReason = null;
   }
 }

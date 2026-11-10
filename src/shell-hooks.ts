@@ -40,7 +40,9 @@ function unquote(word: string): string {
  * the start of command substitutions, and each split into words, roughly as
  * bash would: quotes and `${…}` keep their contents together, a backslash
  * escapes the next character, and a `#` starting a word comments out the
- * rest of the line.
+ * rest of the line. Heredoc bodies are skipped: they are a command's input,
+ * and run in this shell only through `source /dev/stdin` or `eval`, which
+ * count on their own.
  */
 function commandLines(text: string): string[][] {
   const lines: string[][] = [];
@@ -51,6 +53,8 @@ function commandLines(text: string): string[][] {
   // Open command substitutions: the quoting to return to when each closes,
   // and how many plain parentheses are open inside it.
   const substitutions: { quote: "\"" | null; backtick: boolean; depth: number }[] = [];
+  // Heredocs opened on the current line, whose bodies start after it.
+  const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
   const endWord = () => {
     if (started) {
       words.push(word);
@@ -108,6 +112,32 @@ function commandLines(text: string): string[][] {
       started = true;
       continue;
     }
+    if (char === "<" && next === "<" && text[index + 2] !== "<") {
+      const heredoc = /^<<(-?)[ \t]*(['"]?)([^\s'";&|<>()]+)\2/.exec(text.slice(index));
+      if (heredoc) {
+        heredocs.push({ delimiter: heredoc[3], stripTabs: heredoc[1] === "-" });
+        endWord();
+        index += heredoc[0].length - 1;
+        continue;
+      }
+    }
+    if (char === "\n" && heredocs.length) {
+      endLine();
+      // Skip each body, up to the line that is its delimiter.
+      let position = index + 1;
+      for (const { delimiter, stripTabs } of heredocs.splice(0)) {
+        while (position <= text.length) {
+          const end = text.indexOf("\n", position);
+          const line = text.slice(position, end < 0 ? text.length : end);
+          position = end < 0 ? text.length + 1 : end + 1;
+          if ((stripTabs ? line.replace(/^\t+/, "") : line) === delimiter) {
+            break;
+          }
+        }
+      }
+      index = position - 2;
+      continue;
+    }
     if (char === "#" && !started) {
       while (index + 1 < text.length && text[index + 1] !== "\n") {
         index += 1;
@@ -153,6 +183,9 @@ function sourcedFile(word: string, directory: string): string | null {
 export function shellHook(command: string, directory: string, depth = 0): string | null {
   const text = command.replace(/\\\n/g, "");
   let place = directory;
+  // Variables this command sets to literal text, so `X="git log"; $X` can be
+  // read; a variable from anywhere else could name any command.
+  const literals = new Map<string, string>();
   for (const [index, words] of commandLines(text).entries()) {
     const variable = words.map((word) => HOOK_TEXT.exec(word)).find(Boolean);
     if (variable) {
@@ -168,11 +201,34 @@ export function shellHook(command: string, directory: string, depth = 0): string
       position += 1;
     }
     const name = plain[position];
+    // A line of only assignments, or `export`/`declare`/… of them, sets shell
+    // variables; assignments before a command only set its environment.
+    const setters = name === undefined ? words : ["export", "declare", "typeset", "local", "readonly"].includes(name) ? words.slice(position + 1) : [];
+    for (const word of setters) {
+      const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(word);
+      if (assignment) {
+        if (/[$`]/.test(assignment[2])) {
+          literals.delete(assignment[1]);
+        } else {
+          literals.set(assignment[1], unquote(assignment[2]));
+        }
+      }
+    }
     if (!name) {
       continue;
     }
     if (/[$`]/.test(words[position])) {
-      return "a command named by a variable";
+      const variable = /^"?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?$/.exec(words[position]);
+      const value = variable ? literals.get(variable[1]) : undefined;
+      // Unquoted, the value splits into words and the first is the program.
+      const program = value === undefined ? undefined : words[position].startsWith("\"") ? value : value.trim().split(/\s+/)[0];
+      if (program === undefined) {
+        return `a command named by a variable (\`${words[position].slice(0, 40)}\`)`;
+      }
+      if (HOOK_COMMANDS.has(program)) {
+        return `\`${program}\` (through \`${words[position].slice(0, 40)}\`)`;
+      }
+      continue;
     }
     if (name === "cd") {
       // Only a leading `cd <dir>` is followed; after any other, where a
@@ -194,7 +250,13 @@ export function shellHook(command: string, directory: string, depth = 0): string
     }
     let body: string;
     try {
-      if (statSync(path).size > MAX_SOURCED_FILE_BYTES) {
+      // Only regular files: reading a FIFO or a device (`/dev/stdin`,
+      // `/dev/zero`) could block OMP itself.
+      const stats = statSync(path);
+      if (!stats.isFile()) {
+        return `\`${name}\` of a file that could not be read`;
+      }
+      if (stats.size > MAX_SOURCED_FILE_BYTES) {
         return `\`${name}\` of a file too large to read`;
       }
       body = readFileSync(path, "utf8");

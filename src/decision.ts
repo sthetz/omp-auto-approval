@@ -222,6 +222,15 @@ function automaticDeny(
   return deny(`${reason} Auto-approval rejected ${denials} actions in a row; stop and ask the user for guidance.`);
 }
 
+/** The session a tool call belongs to, which owns one persistent shell. */
+export function sessionKey(ctx: ExtensionContextLike): string {
+  try {
+    return ctx.sessionManager?.getSessionId?.() ?? "";
+  } catch {
+    return "";
+  }
+}
+
 type EvaluateOptions = {
   tools?: unknown[];
   classifierClient?: ClassifierClient;
@@ -247,25 +256,29 @@ export async function evaluateToolCall(
   const requested = getString(toRecord(input).cwd);
   const cwd = ctx.cwd || process.cwd();
   const directory = requested ? resolvePathForCwd(requested, cwd) : cwd;
+  const session = sessionKey(ctx);
+  const latchedBefore = store.shellLatch(session) !== null;
+  // Latch before deciding, so that a call decided while this one waits for
+  // review is not fast-pathed; undo it if this one does not run.
+  const reason = command && !latchedBefore ? shellHook(command, directory) : null;
+  const latched = reason !== null && store.latchShell(session, reason);
   const outcome = { fastPathed: false };
-  const decision = await decideToolCall(event, ctx, config, store, options, outcome);
+  const decision = await decideToolCall(event, ctx, config, store, options, outcome, latchedBefore);
   // A fast-pathed command runs only pinned programs, which cannot change the shell.
-  if (command && !("block" in decision) && !outcome.fastPathed && store.shellLatch() === null) {
-    const reason = shellHook(command, directory);
-    if (reason) {
-      store.latchShell(reason);
-      const subject = createReviewSubject(toolName!, input, cwd);
-      await writeAudit(config, {
-        event: "shell_latch",
-        mode: config.mode,
-        toolName: toolName!,
-        actionSummary: subject.actionSummary,
-        actionHash: subject.actionHash,
-        reason,
-      });
-      if (config.enabled) {
-        ctx.ui?.notify?.(`omp-auto-approval: an approved bash command used ${reason}, which can make the shell run code before later commands. Bash commands are reviewed for the rest of this session.`, "warning");
-      }
+  if (latched && ("block" in decision || outcome.fastPathed)) {
+    store.unlatchShell(session);
+  } else if (latched && reason) {
+    const subject = createReviewSubject(toolName!, input, cwd);
+    await writeAudit(config, {
+      event: "shell_latch",
+      mode: config.mode,
+      toolName: toolName!,
+      actionSummary: subject.actionSummary,
+      actionHash: subject.actionHash,
+      reason,
+    });
+    if (config.enabled) {
+      ctx.ui?.notify?.(`omp-auto-approval: an approved bash command used ${reason}, which can make the shell run code before later commands. Bash commands are reviewed for the rest of this session.`, "warning");
     }
   }
   return decision;
@@ -278,6 +291,7 @@ async function decideToolCall(
   store: SessionApprovalStore,
   options: EvaluateOptions,
   outcome: { fastPathed: boolean },
+  shellLatched: boolean,
 ): Promise<ToolCallDecision> {
   const started = Date.now();
   const toolName = getToolName(event);
@@ -296,7 +310,7 @@ async function decideToolCall(
     config,
     tools: options.tools ?? [],
     hasUI: ctx.hasUI === true,
-    shellLatched: store.shellLatch() !== null,
+    shellLatched,
   });
   const audit = (entry: Omit<AuditEntry, "event" | "mode" | "toolName" | "actionSummary" | "actionHash" | "durationMs">) => writeAudit(config, {
     event: "decision",

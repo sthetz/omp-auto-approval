@@ -62,14 +62,15 @@ export async function requestHumanApproval(
   ].filter((line) => line !== null).join("\n");
 
   const choices = [ALLOW_ONCE, ALLOW_EXACT, REJECT, REJECT_WITH_REASON, ...(ctx.abort ? [REJECT_AND_STOP] : [])];
-  // When OMP's selector times out, it chooses the highlighted option, which
-  // is Allow Once unless the user moved. It calls onTimeout first, so an
-  // answer after that is the timeout's, not the user's, and rejects.
+  // The cursor starts on Reject, so Enter without reading rejects. When
+  // OMP's selector times out it chooses the highlighted option, whichever the
+  // user moved to; it calls onTimeout first, so an answer after that is the
+  // timeout's, not the user's, and rejects.
   let timedOut = false;
   const selected = await ctx.ui.select(
     `${options.title ?? "omp-clearance"}\n${details}`,
     choices,
-    { timeout: options.timeoutSeconds * 1000, onTimeout: () => { timedOut = true; } },
+    { timeout: options.timeoutSeconds * 1000, onTimeout: () => { timedOut = true; }, initialIndex: choices.indexOf(REJECT) },
   );
 
   if (timedOut || !selected) {

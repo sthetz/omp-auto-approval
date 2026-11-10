@@ -49,7 +49,7 @@ When you are asked, the prompt shows the action, the classifier's reason or the 
 - **Reject**, or **Reject With Reason**, which is shown to the agent;
 - **Reject and Stop the Turn**.
 
-No answer within `approvalTimeoutSeconds` (default 30) rejects.
+The cursor starts on **Reject**, and no answer within `approvalTimeoutSeconds` (default 30) rejects.
 
 While the extension is on, a short note in the system prompt asks the agent to report a blocked call to you instead of retrying it in another form. If it keeps trying anyway, an automatic denial that makes `maxConsecutiveDenials` denials in a row (default 3, counting your rejections) also ends the agent's turn.
 

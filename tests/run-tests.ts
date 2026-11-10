@@ -1272,21 +1272,25 @@ async function run(): Promise<void> {
       assert.deepEqual(await run("git tag -d v1", { mode: "fallback" }, { hasUI: true, ui }, store), {});
       assert.equal(prompt, "");
       assert.equal(classifierCalls, before);
-      // A prompt nobody answers rejects. OMP's selector, on its timeout, calls
-      // onTimeout and then chooses the highlighted option, Allow Once.
+      // A prompt nobody answers rejects. The cursor starts on Reject; OMP's
+      // selector, on its timeout, calls onTimeout and then chooses the
+      // highlighted option, here one the user moved to.
       const timeouts: number[] = [];
+      const highlighted: string[] = [];
       const unanswered = {
         select: async (_title: string, options: string[], opts?: unknown) => {
-          const { timeout, onTimeout } = opts as { timeout: number; onTimeout?: () => void };
+          const { timeout, onTimeout, initialIndex } = opts as { timeout: number; onTimeout?: () => void; initialIndex?: number };
           timeouts.push(timeout);
+          highlighted.push(options[initialIndex ?? 0]);
           onTimeout?.();
-          return options[0];
+          return "Allow Once";
         },
       };
       const timedOut = await run("git tag -d v1", { mode: "fallback", approvalTimeoutSeconds: 7 }, { hasUI: true, ui: unanswered }, new SessionApprovalStore());
       assert.equal(blocked(timedOut), true);
       assert.match(reason(timedOut), /timed out/i);
       assert.deepEqual(timeouts, [7000]);
+      assert.deepEqual(highlighted, ["Reject"]);
 
       // Rules that cannot be read: bash in reviewExemptTools is reviewed too.
       writeFileSync(file, "{ broken");

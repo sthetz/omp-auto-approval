@@ -15,6 +15,9 @@ config.jsonc
 logs/
 *.log
 
+# --- Local design notes ---
+design/
+
 # --- External references (symlinks & submodules) ---
 references/
 pi/

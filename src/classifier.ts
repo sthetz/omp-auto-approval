@@ -2,7 +2,6 @@ import type { AutoReviewConfig, ExtensionContextLike, ReviewDecision, ReviewSubj
 import { buildProjectedContext } from "./context-projection.js";
 import type { CommandRule } from "./command-rules.js";
 import { buildSystemPrompt } from "./prompt.js";
-import { getProviderAttributionHeaders, isProviderAttributionEnabled } from "./provider-attribution.js";
 import { toRecord } from "./common.js";
 
 export type ClassifierClient = (
@@ -11,34 +10,15 @@ export type ClassifierClient = (
   options: Record<string, unknown>,
 ) => Promise<unknown>;
 
-interface LoadedClassifierClient {
-  client: ClassifierClient;
-  codingAgentPackage: string;
-}
-
-// Specifiers must stay string literals: OMP serves its bundled host packages
-// only for imports it can see statically. A computed `import(name)` bypasses
-// that and needs a separately installed copy.
-const CLASSIFIER_CLIENT_CANDIDATES = [
-  { codingAgentPackage: "@oh-my-pi/pi-coding-agent", load: () => import("@oh-my-pi/pi-ai") },
-  { codingAgentPackage: "@earendil-works/pi-coding-agent", load: () => import("@earendil-works/pi-ai") },
-];
-
-async function loadCompleteSimple(): Promise<LoadedClassifierClient> {
-  for (const candidate of CLASSIFIER_CLIENT_CANDIDATES) {
-    try {
-      const mod = await candidate.load();
-      if (typeof mod.completeSimple === "function") {
-        return {
-          client: mod.completeSimple as ClassifierClient,
-          codingAgentPackage: candidate.codingAgentPackage,
-        };
-      }
-    } catch {
-      // try next scope
-    }
+async function loadCompleteSimple(): Promise<ClassifierClient> {
+  // The specifier must stay a string literal: OMP serves its bundled host
+  // packages only for imports it can see statically. A computed
+  // `import(name)` bypasses that and needs a separately installed copy.
+  const mod = await import("@oh-my-pi/pi-ai");
+  if (typeof mod.completeSimple !== "function") {
+    throw new Error("Could not load completeSimple from @oh-my-pi/pi-ai.");
   }
-  throw new Error("Could not load completeSimple from @oh-my-pi/pi-ai or @earendil-works/pi-ai.");
+  return mod.completeSimple as ClassifierClient;
 }
 
 function extractAssistantText(message: unknown): string | undefined {
@@ -216,13 +196,7 @@ export async function classifyAction(
   client?: ClassifierClient,
   context: { agentMessage?: string; rule?: CommandRule; ruleTextOnly?: boolean } = {},
 ): Promise<ReviewDecision> {
-  let completeSimple = client;
-  let codingAgentPackage: string | undefined;
-  if (!completeSimple) {
-    const loaded = await loadCompleteSimple();
-    completeSimple = loaded.client;
-    codingAgentPackage = loaded.codingAgentPackage;
-  }
+  const completeSimple = client ?? await loadCompleteSimple();
 
   const model = resolveClassifierModel(ctx, config);
   if (!model) {
@@ -230,14 +204,6 @@ export async function classifyAction(
   }
 
   const auth = await resolveRequestAuth(ctx, model);
-
-  const attributionHeaders = await isProviderAttributionEnabled(ctx.cwd, codingAgentPackage)
-    ? getProviderAttributionHeaders(model)
-    : undefined;
-  const headers = { ...attributionHeaders, ...auth.headers };
-  if (Object.keys(headers).length > 0) {
-    auth.headers = headers;
-  }
 
   const controller = new AbortController();
   const response = await withTimeout(

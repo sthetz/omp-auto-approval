@@ -110,11 +110,6 @@ type ModelItem = {
   model?: unknown;
 };
 
-// Literal specifiers so OMP can map them to its bundled host package.
-const TUI_PACKAGE_CANDIDATES = [
-  () => import("@oh-my-pi/pi-tui"),
-  () => import("@earendil-works/pi-tui"),
-];
 
 function normalizeRenderWidth(width: number): number {
   return Number.isFinite(width) ? Math.max(1, Math.trunc(width)) : 1;
@@ -154,34 +149,22 @@ const safeFallbackTextUtils: TuiTextUtils = {
 };
 
 /**
- * Use Pi's exact width engine when it is unambiguous. Otherwise preserve the
- * custom selector with an ASCII-only fallback that cannot underestimate
- * terminal width: non-ASCII/control content is converted to printable ASCII
- * before truncation instead of guessing Unicode cell widths.
+ * Use OMP's exact width engine when it loads. Otherwise keep the custom
+ * selector with an ASCII-only fallback that cannot underestimate terminal
+ * width: non-ASCII/control content is converted to printable ASCII before
+ * truncation instead of guessing Unicode cell widths.
  */
-function selectTuiTextUtils(moduleValues: unknown[]): TuiTextUtils {
-  const loaded: TuiTextUtils[] = [];
-  for (const moduleValue of moduleValues) {
-    const textUtils = toTuiTextUtils(moduleValue);
-    // OMP maps both scopes to the same host module; count it once.
-    if (textUtils && !loaded.some((existing) => existing.visibleWidth === textUtils.visibleWidth)) {
-      loaded.push(textUtils);
-    }
-  }
-  return loaded.length === 1 ? loaded[0] : safeFallbackTextUtils;
+function selectTuiTextUtils(moduleValue: unknown): TuiTextUtils {
+  return toTuiTextUtils(moduleValue) ?? safeFallbackTextUtils;
 }
 
 async function loadTuiTextUtils(): Promise<TuiTextUtils> {
-  const moduleValues: unknown[] = [];
-  for (const load of TUI_PACKAGE_CANDIDATES) {
-    try {
-      moduleValues.push(await load());
-    } catch {
-      // The extension supports both Pi package scopes; normally only the
-      // active runtime's TUI package is resolvable.
-    }
+  try {
+    // A literal specifier, so OMP can map it to its bundled host package.
+    return selectTuiTextUtils(await import("@oh-my-pi/pi-tui"));
+  } catch {
+    return safeFallbackTextUtils;
   }
-  return selectTuiTextUtils(moduleValues);
 }
 
 function fitLineToWidth(line: string, width: number, textUtils: TuiTextUtils): string {

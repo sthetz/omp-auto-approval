@@ -75,19 +75,9 @@ async function run(): Promise<void> {
   }
 
   const hostModule = { visibleWidth: piLikeTextUtils.visibleWidth, truncateToWidth: piLikeTextUtils.truncateToWidth };
-  const otherModule = { visibleWidth: (text: string) => text.length, truncateToWidth: (text: string) => text };
-  assert.equal(
-    modelSelectorInternals.selectTuiTextUtils([hostModule, hostModule]).visibleWidth,
-    piLikeTextUtils.visibleWidth,
-    "the same host module under both package scopes should be used",
-  );
-  assert.equal(
-    modelSelectorInternals.selectTuiTextUtils([hostModule]).visibleWidth,
-    piLikeTextUtils.visibleWidth,
-  );
-  assert.equal(modelSelectorInternals.selectTuiTextUtils([hostModule, otherModule]), modelSelectorInternals.safeFallbackTextUtils);
-  assert.equal(modelSelectorInternals.selectTuiTextUtils([]), modelSelectorInternals.safeFallbackTextUtils);
-  assert.equal(modelSelectorInternals.selectTuiTextUtils([{}]), modelSelectorInternals.safeFallbackTextUtils);
+  assert.equal(modelSelectorInternals.selectTuiTextUtils(hostModule).visibleWidth, piLikeTextUtils.visibleWidth);
+  assert.equal(modelSelectorInternals.selectTuiTextUtils(undefined), modelSelectorInternals.safeFallbackTextUtils);
+  assert.equal(modelSelectorInternals.selectTuiTextUtils({}), modelSelectorInternals.safeFallbackTextUtils);
 
   const config = {
     classifierModel: null,
@@ -131,10 +121,10 @@ async function run(): Promise<void> {
   assert.equal(piLikeTextUtils.visibleWidth(rendered[0]), 20);
   assert.equal(piLikeTextUtils.visibleWidth(rendered.at(-1) ?? ""), 20);
 
-  console.log("[PASS] model selector uses Pi-compatible width helpers for emoji, combining marks, ZWJ emoji, CJK, and ANSI text");
+  console.log("[PASS] model selector uses the host TUI width helpers for emoji, combining marks, ZWJ emoji, CJK, and ANSI text");
   console.log("[PASS] safe fallback never guesses Unicode width and keeps visible text within printable ASCII bounds");
   console.log("[PASS] narrow selector render keeps every row within terminal width");
-  console.log("[PASS] TUI width engine is used when both scopes resolve to the same host module");
+  console.log("[PASS] the host TUI width engine is used when it loads");
 }
 
 run().catch((error) => {

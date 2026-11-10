@@ -31,7 +31,7 @@ function stringifyMessageContent(content: unknown): string | null {
  * OMP marks every message it puts in the user role on someone else's behalf
  * with `attribution: "agent"`: a subagent's assignment, compaction and branch
  * summaries, messages from other agents, MCP notices. Only the user's own
- * messages can authorize anything. Pi has no attribution field.
+ * messages can authorize anything.
  */
 function isAgentAuthored(record: Record<string, unknown>): boolean {
   return (toRecord(record.message).attribution ?? record.attribution) === "agent";

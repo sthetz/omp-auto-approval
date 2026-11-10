@@ -10,17 +10,13 @@ Install dependencies:
 npm install
 ```
 
-Run checks:
+Run every check (type check, tests, and a smoke test that loads the extension through a stub of OMP's extension API):
 
 ```bash
 npm run check
 ```
 
-Run the OMP smoke regression:
-
-```bash
-npm run smoke:omp
-```
+There is no build step: OMP loads the TypeScript sources directly.
 
 ### Shell parser oracle
 
@@ -51,10 +47,10 @@ When adding an option, also check it against the program's `--help` and, where i
 Before opening a PR:
 
 - keep changes focused;
-- update README or example config when behavior changes;
+- update the README, `docs/` or the example config when behavior changes;
 - add or update tests for approval-routing behavior;
 - run `npm run check`;
-- avoid committing local runtime files such as `config.jsonc`, `logs/`, `references/`, `pi/`, and `.DS_Store`.
+- avoid committing local runtime files such as `config.jsonc` and `logs/`.
 
 ## Security
 

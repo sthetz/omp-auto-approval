@@ -1,268 +1,116 @@
 # omp-clearance
 
-English | [中文](./README.zh-CN.md)
+An [OMP](https://github.com/can1357/oh-my-pi) extension that decides, for every tool call the agent makes, whether it runs without asking, goes to an AI classifier, needs your approval, or is blocked.
 
-omp-clearance decides, for each tool call an OMP agent makes, whether it runs without asking, goes to an AI classifier, needs your approval, or is blocked. Command rules and per-program option tables let common read-only commands through at once and stop dangerous ones outright; the classifier, inspired by Claude Code auto mode and Codex Auto-review, judges the rest. Risky, denied, failed, or uncertain actions fall back to human approval or are blocked, depending on the mode.
-
-> **Origins**
->
-> omp-clearance began as a fork of [pi-auto-approval](https://github.com/Europa2061/pi-auto-approval), by way of HayabusaC's OMP adaptation, published on npm as [`omp-auto-approval@0.1.0`](https://www.npmjs.com/package/omp-auto-approval/v/0.1.0) (its source repository is no longer public). It was restored from that package, rewritten for the most part, and renamed in 0.4.0. It is not affiliated with either project. Both are Apache-2.0, and that license is kept in [`LICENSE`](./LICENSE); the git history records each author's commits.
+- **Fast paths** let routine work through at once: reads and writes inside the workspace, and read-only shell commands such as `git status`, `grep -rn TODO src` or `ls | wc -l`, checked option by option.
+- **Command rules** stop what should never happen without you: a forced `git push` is blocked, `sudo` asks you, `terraform apply` goes to review. You can add your own.
+- **The classifier**, inspired by Claude Code auto mode and Codex Auto-review, judges everything else against what you asked for in the conversation. In `fallback` mode you decide when it says no; in `auto` mode its no is final.
 
 ## Installation
 
-Install the latest version directly from GitHub:
-
 ```bash
 omp plugin install https://github.com/sthetz/omp-clearance
-```
-
-Install the pinned `0.3.1` release:
-
-```bash
+# or a pinned release:
 omp plugin install github:sthetz/omp-clearance#v0.3.1
 ```
 
-omp-clearance is distributed through GitHub. The `omp-auto-approval` package on npm is HayabusaC's original 0.1.0, not this project.
-
-Remove the plugin:
-
-```bash
-omp plugin uninstall omp-clearance
-```
-
-Restart the OMP RPC process and enable the recommended mode:
+Restart OMP, then turn it on in the recommended mode:
 
 ```text
 /clearance fallback
 ```
 
-OMP has its own approval setting, `tools.approvalMode`, which runs after this extension has allowed a call. Its default, `yolo`, adds no prompts. With `always-ask`, `always-ask-cached` or `write`, OMP still asks you about calls this extension already approved.
+To remove it: `omp plugin uninstall omp-clearance`.
+
+OMP's own `tools.approvalMode` setting runs after this extension has allowed a call. Its default, `yolo`, adds no prompts; with `always-ask`, `always-ask-cached` or `write`, OMP still asks you about calls this extension already allowed.
 
 Don't run omp-clearance alongside pi-auto-approval or omp-auto-approval: each reviews every tool call on its own.
 
-Before 0.4.0 this project was called omp-auto-approval. To upgrade, uninstall it (`omp plugin uninstall omp-auto-approval`), rename the environment variables `PI_AUTO_APPROVAL_CONFIG_PATH`, `PI_AUTO_APPROVAL_RULES_PATH` and `PI_AUTO_APPROVAL_LOGS_DIR` to `CLEARANCE_CONFIG_PATH`, `CLEARANCE_RULES_PATH` and `CLEARANCE_LOGS_DIR`, and move `config.jsonc` along if it lived in the old extension directory. The command is now `/clearance`.
+**Upgrading from omp-auto-approval.** Before 0.4.0 this project was called omp-auto-approval. Uninstall it (`omp plugin uninstall omp-auto-approval`), rename the environment variables `PI_AUTO_APPROVAL_CONFIG_PATH`, `PI_AUTO_APPROVAL_RULES_PATH` and `PI_AUTO_APPROVAL_LOGS_DIR` to `CLEARANCE_CONFIG_PATH`, `CLEARANCE_RULES_PATH` and `CLEARANCE_LOGS_DIR`, and move `config.jsonc` and `rules.jsonc` along if they lived in the old extension directory. The command is now `/clearance`, and the audit log is written to `omp-clearance.jsonl`. The old `safeCommandAllowlist` and `blockCommands` settings are no longer read: write them as [allow and block rules](docs/command-rules.md#allow-review-ask-and-block-rules).
+
+## Modes
+
+| Mode | Fast paths and rules | When the classifier says no, fails or times out |
+| --- | --- | --- |
+| `off` | not used | OMP behaves as if the extension weren't installed. |
+| `fallback` | used | You are asked. Recommended for interactive use. |
+| `auto` | used | The call is denied. Ask rules deny too. For trusted, unattended runs only. |
+
+When you are asked, the prompt shows the action, the classifier's reason or the rule's, and offers:
+
+- **Allow Once**;
+- **Allow Always This Exact Action**, for the rest of the session;
+- **Reject**, or **Reject With Reason**, which is shown to the agent;
+- **Reject and Stop the Turn**.
+
+No answer within `approvalTimeoutSeconds` (default 30) rejects.
+
+While the extension is on, a short note in the system prompt asks the agent to report a blocked call to you instead of retrying it in another form. If it keeps trying anyway, an automatic denial that makes `maxConsecutiveDenials` denials in a row (default 3, counting your rejections) also ends the agent's turn.
 
 ## Commands
 
-`/clearance` is the only slash command. Type `/clearance ` with a trailing space to see available arguments.
+`/clearance` is the only slash command; type `/clearance ` with a trailing space to see its arguments.
 
 | Command | Effect |
 | --- | --- |
-| `/clearance status` | Show current state, approval classifier model, config path, audit log path, and any config problems. |
-| `/clearance off` | Disable automatic approval. Tool approvals return to OMP's normal behavior. |
-| `/clearance fallback` | Enable AI review with human approval fallback when the classifier denies or fails. |
-| `/clearance auto` | Enable AI review only. Classifier denial or failure blocks the tool call. |
-| `/clearance model` | Open the model selector for the approval classifier model. |
-| `/clearance model current` | Use the active OMP session model for approval classification. |
-| `/clearance rules [program \| rule id]` | List the command rules in use and the file each comes from, or show one program's entry or one rule. See [Your own command rules](#your-own-command-rules). |
-| `/clearance explain <tool> [args]` | Show how a tool call would be routed, without running it. `args` is a path, a JSON object, or (for `bash`) a command, e.g. `/clearance explain read ~/.ssh/id_ed25519`. If the first word isn't a tool in the session, the whole input is explained as a bash command: `/clearance explain ls -la`. |
+| `/clearance off`, `fallback`, `auto` | Switch mode. |
+| `/clearance status` | Mode, classifier model, config, rules and audit log paths, and any problems with them. |
+| `/clearance model` | Choose the classifier model. `/clearance model current` uses the session's model. |
+| `/clearance rules [program \| rule id]` | List the command rules in use and the file each comes from, or show one. |
+| `/clearance explain <tool> [args]` | Show what would happen to a tool call, without running it. `args` is a path, a JSON object, or a bash command: `/clearance explain read ~/.ssh/id_ed25519`, `/clearance explain ls -la`. |
 
-## Architecture
+## How a tool call is decided
 
-omp-clearance sits between OMP tool calls and the normal approval path:
+The first row that applies decides. `/clearance explain` shows which one a given call would hit, and the audit log records it as `route`; when you are asked, the log records your answer with route `human`.
 
-- command layer registers `/clearance` and persists local config;
-- prompt layer adds a short note to the system prompt while omp-clearance is on, asking the agent to report a blocked call instead of retrying it in another form;
-- routing layer fast-paths disabled, workspace read-only, workspace-safe, and session-approved actions;
-- classifier layer projects recent session context and asks the selected model for a structured allow or deny decision;
-- fallback layer asks the user when classifier review cannot safely approve;
-- audit layer writes JSONL records when auditing is enabled.
+| | When | What happens | `route` |
+| --- | --- | --- | --- |
+| 1 | The extension is off | OMP decides as usual | |
+| 2 | A bash command matches a **block** rule | Denied, without asking anyone | `blocked_command` |
+| 3 | A bash command matches an **ask** rule, or any bash command while the rules files have an error | You are asked, without the classifier, unless you already chose "Allow Always This Exact Action" for it; denied in `auto` mode or without a UI | `ask_rule` |
+| 4 | OMP's own `todo` or `wait`, or an `ask` form with no links | Allowed | `local_state`, `ui_only` |
+| 5 | The tool is listed in `reviewExemptTools` | Allowed | `tool_allowlist` |
+| 6 | A read inside the workspace or `readRoots`, or a write inside the workspace, that touches no sensitive path | Allowed | `readonly`, `workspace_write` |
+| 7 | A tool that needs a human: computer use, browser clicks and typing, plugin installs, MCP or permission settings | You are asked; denied in `auto` mode | `manual_only` |
+| 8 | A bash command made only of read-only programs, or ones your allow rules name | Allowed, with every program run by its absolute path | `safe_command` |
+| 9 | You chose "Allow Always This Exact Action" for this exact call earlier | Allowed | `session_approval` |
+| 10 | The classifier already judged this exact call in this session | Its earlier answer is reused; a no still goes to you in `fallback` mode | `classifier_cache` |
+| 11 | Anything else | The classifier decides; see [Modes](#modes) for a no | `classifier` |
 
-## Approval Flow
+A bash command that matches a **review** rule skips rows 5 and 8. Row 8 is also skipped for the rest of a session once a bash command may have changed how the shell runs later commands, as a `trap` or an `eval` can ([details](docs/fast-paths.md#when-the-bash-fast-path-turns-off)).
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant OMP as OMP Agent
-    participant Ext as omp-clearance
-    participant Store as Session Cache
-    participant Classifier as Approval Classifier Model
-    participant Human as Human Approval UI
-    participant Tool
+What each fast path accepts, in full: [docs/fast-paths.md](docs/fast-paths.md).
 
-    User->>OMP: Ask agent to perform a task
-    OMP->>Ext: tool_call event
-    Ext->>Ext: Load config and build review subject
+## Command rules
 
-    alt state is off
-        Ext-->>OMP: No decision, use normal OMP behavior
-    else bash command matches a block rule
-        Ext-->>OMP: Block, without review or prompt
-    else bash command matches an ask rule
-        Ext->>Human: Ask directly, without the classifier (denied in auto mode)
-        Human-->>Ext: Approve or reject
-        Ext-->>OMP: Allow or block
-    else workspace read, workspace-internal write, or safe read-only bash command (no review rule matches)
-        Ext-->>OMP: Allow
-        OMP->>Tool: Execute tool call
-    else exact action already approved in this session
-        Store-->>Ext: Existing exact approval
-        Ext-->>OMP: Allow
-        OMP->>Tool: Execute tool call
-    else cached classifier allow
-        Store-->>Ext: Cached allow for same action hash
-        Ext-->>OMP: Allow
-        OMP->>Tool: Execute tool call
-    else needs review
-        Ext->>Ext: Project compact context with latest user request
-        Ext->>Classifier: Review action risk and authorization
-        Classifier-->>Ext: Structured decision
-
-        alt classifier allows
-            Ext->>Store: Cache allow
-            Ext-->>OMP: Allow
-            OMP->>Tool: Execute tool call
-        else fallback mode and UI is available
-            Ext->>Human: Ask for manual approval
-            alt human approves
-                Human-->>Ext: Approve, optionally remember exact action
-                Ext->>Store: Record approval
-                Ext-->>OMP: Allow
-                OMP->>Tool: Execute tool call
-            else human denies or times out
-                Human-->>Ext: Deny
-                Ext-->>OMP: Block with reason
-            end
-        else auto mode, no UI, or classifier failure
-            Ext-->>OMP: Block with reason
-        end
-    end
-
-    Ext->>Ext: Write audit log when auditing is enabled
-```
-
-## States
-
-`off` means the extension does not make automatic approval decisions.
-
-`fallback` means local fast paths handle actions that are already known to be low risk, such as non-sensitive workspace reads, workspace-internal writes, commands the command rules allow, or exact actions already approved in the session. Other tool calls go to the classifier first. If it allows, the tool runs. If it denies, fails, times out, or the tool is manual-only, OMP asks the human through the approval UI when UI is available.
-
-`auto` means non-fast-path tool calls use the classifier as the approval gate. Local fast paths can still allow actions that are statically known to be low risk or already approved in the current session. For reviewed actions, a classifier allow runs the tool; a classifier deny, failure, timeout, or manual-only tool blocks the tool call.
-
-### Stopping the turn
-
-After `maxConsecutiveDenials` automatic denials in a row (default 3: classifier denials or failures, and ask and block rule denials), the extension ends the agent's turn instead of trusting the agent to stop on its own. The human approval prompt in `fallback` mode also offers **Reject and Stop the Turn**.
-
-While omp-clearance is on, a short note is added to the system prompt asking the agent to report a blocked call to you instead of retrying it in another form.
-
-## Safety
-
-`fallback` is the recommended mode for normal interactive use. It lets local fast paths and the classifier reduce repeated prompts, but keeps human approval available when the classifier denies, fails, or times out.
-
-`auto` is fail-closed for reviewed actions and should be used only in trusted unattended contexts. Classifier failures and denials block the tool call. Any local fast path must be narrowly defined and statically low risk; otherwise the action is reviewed or blocked.
-
-## Fast Paths
-
-Fast paths approve without classifier review, so they are deliberately narrow:
-
-- **Workspace reads**: the host's own read-only tools (`read`, `grep`, `find`, `glob`, `ast_grep`, `ls`, …) when every path they name is inside the working directory or a `readRoots` directory (after resolving symlinks) and is not credential-like. These always go to classifier review:
-  - paths outside the working directory and `readRoots`;
-  - URLs (`http(s)://`, `www.`) and remote or sensitive internal URLs (`ssh://`, `mcp://`, `pr://`, `issue://`, `mr://`, `vault://`, `cfg://`, `proc://`, …). Only session-local URLs (`skill://`, `rule://`, `agent://`, `artifact://`, `memory://`, `local://`, `omp://`) skip review;
-  - credential-like files and directories anywhere in the tree: `.env` and `.env.*` (except `.example`, `.sample`, `.template`, `.dist`, `.defaults`), `.envrc`, `.npmrc`, `.pypirc`, `.netrc`, `.pgpass`, `.git-credentials`, `.htpasswd`, `kubeconfig`, `id_rsa`/`id_ed25519`-style keys, `credentials.*`, `secret(s).*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.kdbx`, `*.tfstate`, `*.tfvars`, and anything under `.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, `.password-store`, `secrets`, `.secrets` or `credentials`;
-  - path forms that OMP rewrites before use (a leading `@`, `:` or `"`, `~user`, `file://`, `?query`, `#fragment`);
-  - searches with `gitignore: false`. OMP's `grep` searches hidden files but honours `.gitignore`, which normally keeps `.env` out of a workspace-wide search. A secret file that is *not* gitignored can still appear in grep results.
-
-  `web_search` is always classifier-reviewed, because its query is sent to a third party and could carry data out of the session.
-
-  Tools are matched by name only when the host reports them as its own (`sourceInfo.source` is `builtin`). An extension, SDK or MCP tool that reuses a read-only name is reviewed. Self-declared metadata (`isReadOnly`, `readOnlyHint`, MCP `annotations.readOnlyHint`) is ignored, as the MCP specification says these hints are untrusted.
-- **Workspace writes**: calls to OMP's own `write` and `edit` tools whose every destination, including `edit` renames, is a plain path inside the working directory. These always go to classifier review instead:
-  - paths that OMP rewrites before use (`[path]`, `~/…`, `scheme://…`);
-  - protected entries at any depth, after resolving symlinks: `.git`, `.omp`, `.pi`, `.claude`, `.mcp.json`, `.cursor`, `.envrc`, `.vscode`, `.idea`, `.husky`, `.devcontainer`. Their contents are executed or trusted later without review: `core.fsmonitor` in `.git/config` runs on `git status`, and Claude Code hooks in `.claude/settings.json` run shell commands;
-  - the credential-like files listed above for reads, such as `.env` or `*.pem`;
-  - writes that create or change a program: content starting with `#!` (OMP's `write` tool makes such a file executable) or a destination that is already executable. A program in the workspace can shadow a command on the shell's PATH.
-- **Safe bash commands**: read-only git commands, common read-only programs such as `grep`, `cat`, `head`, `ls`, `sed -n` and `jq` (see [Built-in read-only programs](#built-in-read-only-programs)), and commands your allow rules name. They can be joined with `&&`, `||`, `;`, newlines and pipes, and each command is checked on its own: `git log --oneline | grep -i fix | head -5` skips review. Only a small subset of bash takes this path, one this extension reads exactly as bash does (it is tested against bash itself, see `CONTRIBUTING.md`): plain and quoted words, those operators, comments, and these redirections:
-  - copies between stdin, stdout and stderr (`2>&1`);
-  - `/dev/null` (`2>/dev/null`, `&>/dev/null`, `</dev/null`);
-  - `< file` for a file the fast path could read anyway.
-
-  Everything else is reviewed, including `$` and backticks, subshells and `{ }` groups, background `&`, heredocs, `if`/`for`/`while`, `VAR=value command`, and redirections that write a file (`> out.txt`).
-
-  A leading `cd <dir> &&` (or `cd <dir>;`) is allowed when `<dir>` is an existing directory inside the working directory: `cd src && git status`. That `cd` does not run in the shell. The rest of the command runs with the bash call's `cwd` set to that directory, so a `cd` function or `CDPATH` left by an earlier call cannot send it elsewhere, and its relative paths are checked from there. A `cd` anywhere else, or to `-`, a glob, or an option, is reviewed.
-
-  The read-only git commands are `status`, `log`, `diff`, `show`, `rev-parse`, `grep`, `ls-files`, `ls-tree`, `rev-list`, `blame`, `shortlog`, `describe`, `merge-base`, `show-ref`, `cat-file`, `check-ignore`, `check-attr`, `name-rev`, `count-objects`, listing-only `branch` and `tag`, `remote [-v]`, `remote get-url` and `stash list`/`show`, optionally after `--no-pager` and `-C <dir>` (a directory inside the working directory). A git command is still reviewed if it:
-  - uses `--output`, `--ext-diff`, `--no-index`, or `grep -O`/`--open-files-in-pager`;
-  - names a path outside the working directory (git compares files outside the work tree even without `--no-index`, so `git diff /etc/passwd /dev/null` prints the file);
-  - names a credential-like path, including `rev:path` blobs such as `git show HEAD:.env`;
-  - has an option naming an existing file outside the working directory and `readRoots`, such as an order file glued to `-O` (`git diff -O/path/order`);
-  - contains an unquoted glob (`git diff -- secrets*`).
-
-  OMP runs every bash call in one persistent shell per session, so an earlier call can leave an alias, a function, or a workspace directory on PATH that turns `git status` into something else. A fast-pathed command is therefore rewritten to run every program by absolute path, looked up on the PATH OMP started with, skipping directories inside the workspace: `git status` runs as `/run/current-system/sw/bin/git status`. A leading `~` is written out as OMP's home directory too, since bash expands it from the shell's `HOME`, which an earlier call can change. If a program isn't found there, the command is reviewed. The rewritten command appears in the transcript and in the audit log as `pinnedCommand`, with `pinnedCwd` when a leading `cd` moved it. A command wrapped in `bash -lc` is reviewed, since the wrapper's own `bash` would be looked up on that PATH. A bash call whose `cwd` is outside the working directory is reviewed; one inside it has its paths checked from there. Variables exported by an earlier call (`GIT_EXTERNAL_DIFF`, `LD_PRELOAD`, …) still reach the pinned program, but setting them takes a reviewed call.
-
-  Some shell state runs code by itself, before or after every later command, and pinning cannot stop it: a `trap … DEBUG` runs before the pinned program, and before anything placed in front of it. So once a bash command that may set up such a hook has run, by whatever route or with the extension off, every bash command is reviewed for the rest of the session, and OMP shows a warning. That covers `trap`, `eval`, `exec`, `enable`, a command named by a variable (`$cmd`) unless the same command set it to plain text, aliases or variables set to those, `PS4`, `BASH_ENV`, `PROMPT_COMMAND`, `extdebug` and `functrace`, and `source`/`.` of a file that could not be read or that contains any of these. A sourced file with a literal path is read and checked the same way, so `source .venv/bin/activate` keeps the fast path. Heredoc bodies are a command's input and are not checked. Across about 15,000 recorded agent commands, 1.7% would turn the fast path off. `/clearance status` and `explain` say when the fast path is off; a new session turns it back on, and `/clearance off` does not. This check reads text, so a hook built in pieces (`$'\x74rap'`) can get past it; the command that sets one is still reviewed first.
-
-  A bash call is also reviewed when it carries fields that change how or where it runs: `pty: true` (a terminal on stdin), `async`, a service `name` with `ready`/`log`/`port`/`host`, an `env`, or any field the extension does not know. Only `command`, `cwd`, `timeout` and `description` are allowed.
-
-### Built-in read-only programs
-
-These programs skip review without any configuration: `cat`, `head`, `tail`, `wc`, `ls`, `grep`, `sed`, `cut`, `sort`, `uniq`, `tr`, `tac`, `paste`, `base64`, `diff`, `du`, `stat`, `file`, `readlink`, `realpath`, `jq`, `find`, `timeout`, `echo`, `printf`, `true`, `false`, `pwd`, `basename`, `dirname`, `date`, `sleep`, `seq`, `which`, `uname`, `whoami`, `id`, `hostname` and `nproc`. Each has a table of the options it may be given, and git a list of subcommands; all of them are in [`config/default-rules.jsonc`](config/default-rules.jsonc), with comments on options left out on purpose. The tables list options known to be read-only, not options known to be dangerous: any option outside the table, including a shortened long option such as `--incl`, sends the command to review. Options are read the way GNU getopt reads them (grouped short options, glued values, options after operands). Options were chosen to be read-only in GNU, BSD and busybox alike, and for `grep` in GNU grep and ugrep, since the PATH may resolve to any of them; the oracle in `CONTRIBUTING.md` checks them against the implementations installed locally. Left out, for example:
-- options that write files or run programs: `sort -o/-T/--compress-program`, `sed -i/-f`, `diff -l`, `file -z`, `jq -f/-L`, `find -exec/-delete/-fprint`, `date -s`, an operand to `hostname`, a second operand to `uniq` (its output file);
-- options that never finish or follow links out of a tree: `tail -f`, `ls -L`, `du -L`, `grep -R`, `find -L`;
-- `egrep` and `fgrep`, which are scripts that run `grep` from whatever PATH the shell has.
-
-Files a program reads, as operands or option values (`grep -f`, `diff --from-file`), must be inside the working directory or `readRoots` and not credential-like, and so must every other word that names an existing file, whatever the program makes of it. Some programs take more care:
-- **Globs** in file operands (`wc -l src/*.ts`) are allowed: every file the glob could match is checked, whatever glob options (`dotglob`, `nocaseglob`, `globskipdots`) an earlier call set, so `cat *` is reviewed when `.env` is in the directory. A glob that matches nothing, could match a name starting with `-`, or uses braces or `**` is reviewed. A glob anywhere else is reviewed, except in a `--name=value` option that no file matches.
-- **Recursive reads**: `grep -r` (and any directory named to `grep` or `diff`) walks the tree first and is reviewed if it holds a credential-like file that the search would read, so `grep -rn TODO .` is reviewed in a directory with a `.env`. Quoted `--include` and `--exclude-dir` filters are honoured: `grep -rn TODO --include='*.ts' .` is not reviewed. Symbolic links met on the way are skipped, as `grep -r` does. Trees of more than 20,000 entries are reviewed.
-- **`sed`** scripts may only print, delete, quit and substitute: addresses, `!`, `p d q Q = l P n N g G h H x z D`, and `s` without the `e` and `w` flags. Commands that read or write files (`r R w W`), run programs (`e`), insert text, branch or group are reviewed.
-- **`jq`** can neither write files nor run programs, but a filter can read the environment (`env`, `$ENV`) or load modules (`import`, `include`), and those are reviewed.
-- **`timeout`** runs the command after its duration, which must be safe on its own; that program is pinned too.
-- **`find`** takes known tests only (`-name`, `-type`, `-path`, `-maxdepth`, `-newer`, `-printf`, …); a glob anywhere in its expression is reviewed, since a matching file name could become an action.
-
-### Your own command rules
-
-A `rules.jsonc` next to `config.jsonc` (or at `CLEARANCE_RULES_PATH`) adds to the built-in rules, in the same format as [`config/default-rules.jsonc`](config/default-rules.jsonc). [`config/rules.example.jsonc`](config/rules.example.jsonc) is a commented example that fast-paths `kubectl get`, `describe` and `logs`, but not `kubectl get secrets`, and changes some built-in entries.
-
-- A program entry of your own **replaces** the built-in one. With `"extends": "default"` it is **merged** into it instead: option and subcommand keys one by one, where `null` deletes a built-in key (written exactly as the built-in file writes it, such as `"-n --lines"`); `except` lists are joined; other keys replace the built-in ones.
-- `"disable": ["program:sed", "program:git blame"]` removes built-in entries.
-- A key with several names, such as `"get describe"`, lists subcommands that share one entry. Subcommands of subcommands are not entries of their own, so `"worktree list"` means `worktree` and `list`; to allow only `git worktree list`, give `worktree` the operand check `{ "literals": { "min": 1, "max": 1, "pattern": "^list$" } }`, as the example does.
-- `"include": ["~/…/kubectl.jsonc"]` reads more files, by absolute path or `~/`. Each program may be defined in one file only.
-- Options and subcommands an entry does not list are reviewed, as with the built-in rules, and every check in code still applies: programs run from OMP's startup PATH, files are read only inside the read roots, and so on.
-- If any of these files has an error (an unknown key, kind or check, an option listed twice, a broken include), no rules are used: since the file might have held block or ask rules, every bash command asks you first until it is fixed (and is denied in `auto` mode or without a UI). OMP shows an error at session start, and `/clearance status` shows the files in use or the error; after fixing the file, any `/clearance` command reloads it.
-- The files are read at session start and on any `/clearance` command. The write fast path never writes them, nor `config.jsonc`, even when they are inside the working directory.
-
-There are no per-project rules files: a cloned repository could ship one.
-
-#### Allow, review, ask and block rules
-
-Program entries say what may skip review by reading options and operands. A `rules` list adds rules by the command's text:
+Bash commands are checked against rules before anything else. The built-in ones are in [`config/default-rules.jsonc`](config/default-rules.jsonc): tables of read-only programs and their options, and the rules below. Your own go in `rules.jsonc` next to `config.jsonc`, or at `CLEARANCE_RULES_PATH`:
 
 ```jsonc
-"rules": [
-  { "id": "npm-test", "prefix": "npm test", "outcome": "allow" },
-  { "id": "kube-secrets", "match": "kubectl get|describe *[Ss][Ee][Cc][Rr][Ee][Tt]*", "outcome": "review",
-    "why": "Secret values must not reach the model unreviewed." },
-  { "id": "kube-interactive", "match": "kubectl exec|port-forward|cp|edit|apply|rollout", "outcome": "ask" },
-  { "id": "no-force-push", "match": ["git push --force", "git push -f", "/\\bgit\\b.*\\bpush\\b.*\\s\\+\\S/"], "outcome": "block" }
-]
+{
+  "rules": [
+    { "id": "npm-test", "prefix": "npm test", "outcome": "allow" },
+    { "id": "kube-interactive", "match": "kubectl exec|port-forward|edit|apply", "outcome": "ask",
+      "why": "Changes the cluster." },
+    { "id": "no-prod-db", "match": "psql *prod*", "outcome": "block" }
+  ],
+  "disable": ["infrastructure"]
+}
 ```
 
-- `allow`: a command that starts with `prefix` skips review, with the checks in [Allow rules](#allow-rules).
-- `review`: the classifier, then you, as for any reviewed command; never a fast path.
-- `ask`: you decide, without the classifier. In `auto` mode, or without an interactive UI, the command is denied. An "Allow Always This Exact Action" answer stands for that exact command for the rest of the session.
-- `block`: denied in every mode without asking the classifier or you. Unlike `deny`, which is only guidance for the classifier, a block cannot be argued with.
+- `allow` lets a command that starts with `prefix` through without review, unless it uses an option that runs programs or writes files, or names a path outside the workspace.
+- `review` always sends it to the classifier.
+- `ask` asks you directly, without the classifier.
+- `block` denies it outright.
 
-Among the rules a command matches, the most restrictive decides: block, then ask, then review. Any of them overrides program entries, allow rules and `reviewExemptTools`, so a broad allow can never hide an exception. Ask and block denials count toward `maxConsecutiveDenials`. `why` is shown in the denial, in the approval prompt, and to the classifier as your reason. `id`s are unique; `disable` removes a built-in rule by its id (see [Built-in rules](#built-in-rules)).
+The most restrictive matching rule wins, and `why` is shown in the denial, in the prompt, and to the classifier. Patterns match commands as bash reads them, so `git push --force` matches `cd repo && git push origin main --force` and `bash -c "git push --force"`, while a commit message that mentions it is only sent to review. Rules are a tripwire, not a sandbox: a script or an alias can get past them, and is then reviewed as usual.
 
-`/clearance rules` lists the programs and rules in use and the file each comes from; `/clearance rules <program | rule id>` shows one. `explain` names the rule that decided, and the audit log records it as `ruleId` and `ruleSource` (and, for a fast-pathed command, the entries that let it through as `ruleIds`).
+[`config/rules.example.jsonc`](config/rules.example.jsonc) is a commented example. It adds a table for `kubectl get`, `describe` and `logs` that leaves out secrets, and changes some built-in entries. [docs/command-rules.md](docs/command-rules.md) is the full format, including pattern syntax and program tables.
 
-#### Patterns
+If a rules file has an error, no rules are used. Since it might have held block or ask rules, every bash command then asks you first until the file is fixed (and is denied in `auto` mode), and OMP shows the error at session start. There are no per-project rules files, since a cloned repository could ship one.
 
-`match` is a pattern or a list of them. A pattern is either `/regex/flags`, tested against the whole command, or words: the first names a program and the rest must follow it, in order, within the same command. `git push --force` matches `git push origin main --force`, `/usr/bin/git push --force`, `cd repo && git push --force` and `bash -lc "git push --force"`, but not `git push --force-with-lease`. In a word:
+### Built-in rules
 
-- `a|b` lists alternatives, and `*`, `?` and `[…]` are globs; `[|]`, `[*]` and so on match the character itself;
-- `--name` also matches `--name=value`, but not a shortened `--na`, so list both spellings if a program accepts them;
-- a single-letter flag also matches grouped short flags: `git push -f` matches `git push -uf origin main`.
-
-Git also forces a push when a branch is prefixed with `+` (`git push origin +main`), which no word list can express; the regex above catches it. The program is matched by name, so write `git`, not `/usr/bin/git`.
-
-Words are read as bash reads them: quotes keep a word together, so `;` or `|` inside quotes (`git -c 'x=a;b' push --force`) or a backslash-newline does not hide a command, and a commit message that mentions `git push --force` is one word, not a push. Commands inside loops, `$(…)`, and scripts handed to a shell (`bash -lc '…'`, `eval '…'`, a heredoc fed to `bash`) are read too. The program of a pattern with more words may appear anywhere in a command (after `sudo`, `docker exec c`, `ssh host`); a one-word pattern such as `sudo` or `mkfs*` matches only where a program runs, so `which sudo` does not match it.
-
-A pattern that matches only when quotes are ignored (`ssh host "git reset --hard"`, but also `echo "git reset --hard"`) cannot tell a command from words, so the command is reviewed instead of blocked or asked about. Regexes read the whole text as written and keep their outcome, so built-in block rules avoid them.
-
-A program named by a variable or a substitution (`$k delete --all`, `$(command -v kubectl) delete --all`) may be any program: where a program runs, it matches a pattern of more than one word whose other words follow. Variables the same command sets to plain text are read as that text, so `X=helm; $X delete --all` does not match `kubectl delete --all`. Rules are a best-effort tripwire, not a sandbox: an alias, a function or a script still gets past them, and is then reviewed by the classifier as usual.
-
-#### Built-in rules
-
-[`config/default-rules.jsonc`](config/default-rules.jsonc) ships rules for commands that are rarely right for an agent to run on its own, in any kind of terminal work:
+These cover commands that are rarely right for an agent to run on its own, in any kind of terminal work:
 
 | id | outcome | matches |
 | --- | --- | --- |
@@ -278,97 +126,79 @@ A program named by a variable or a substitution (`$k delete --all`, `$(command -
 | `database-drop` | ask | `DROP` or `TRUNCATE` of a database, schema or table through `psql`, `mysql`, `sqlite3`, … |
 | `infrastructure` | review | `terraform`/`tofu apply`/`destroy`, `pulumi up`/`destroy`, `kubectl delete`/`drain`, `helm uninstall` |
 
-`infrastructure` is reviewed rather than asked about: infrastructure work runs these often, and the classifier can judge them from the conversation, now with the rule's reason. To change a built-in rule, disable it and add your own: `"disable": ["infrastructure"], "rules": [{ "id": "infrastructure-ask", "match": "kubectl delete|drain", "outcome": "ask" }]`.
+`infrastructure` is reviewed rather than asked about, since infrastructure work runs these often and the classifier can judge them from the conversation. To change a built-in rule, disable it and add your own: `"disable": ["infrastructure"], "rules": [{ "id": "infrastructure-ask", "match": "kubectl delete|drain", "outcome": "ask" }]`.
 
-### Allow rules
+## Other tools
 
-An allow rule's `prefix` is the start of a command as written, quotes included and redirections left out: the command must equal it or continue with a space, or, with a trailing `*`, start with the rest (`"rg *"` matches `rg x` but not a bare `rg`). Each command of a chain or pipeline needs its own rule or program entry. Since a prefix would trust every option of the program, a command is still reviewed if:
+- `web_search` is always reviewed: its query goes to a third party and could carry data out of the session.
+- `eval` and `task` are always reviewed: `eval` runs code, and `task` hands work to subagents with every tool.
+- An `ask` form skips review only in an interactive session and when it contains no links, since OMP fetches images in it.
+- Tools are trusted by name only when OMP reports them as its own. An extension or MCP tool named `read` is reviewed, and self-declared read-only hints are ignored.
+- `reviewExemptTools` in `config.jsonc` lets more tools through without any review, including tools that would otherwise need a human. Names are case-insensitive; list only tools you are happy to run unchecked. Review, ask and block rules still apply to `bash` when it is listed.
 
-- it uses an option that runs another program or writes files: `find -exec/-execdir/-ok/-okdir/-delete/-fprint*/-fls`, `fd -x/-X/--exec*` (also inside a group such as `-Hx`), `rg --pre`, `sort -o/--output/--compress-program`, `tar -I/-F/--to-command/--checkpoint-action/--use-compress-program/...`, and `tar` extracting or writing archives (`x`, `c`, `r`, `u`, `A`, `--extract`, `--delete`, …). GNU tools accept shortened long options, so `sort --outp=x` counts as `--output`;
-- an argument names an existing path outside the working directory and `readRoots`, or a credential-like path. This covers values glued to an option and `name=value` arguments: `cat ~/.ssh/id_ed25519`, `cat .env`, `rg TOKEN --file=../x`, `grep -f/etc/x`, `dd if=../x`;
-- an argument is expanded by the shell, since its final form is unknown: an unquoted glob or brace, `~user`, or `~` after `=` or `:` in a `name=value` word, which bash expands (`dd if=~/key`). `cat secrets*` is reviewed, `find . -name '*.ts'` is not.
+## The classifier
 
-A command a program entry rejects can still be allowed by a rule, under these checks. A prefix for a program whose arguments are a script or command line (`sed`, `awk`, `xargs`, `parallel`; read-only `sed` scripts are covered by its entry), or a bare shell, interpreter or wrapper (`bash`, `python`, `node`, `env`, `sudo`, `timeout`, …), which would allow any code, is an error. Name a specific invocation instead, such as `"python -m pytest"` or `"npm test"`. A `*` glued to a word leaves it unfinished, so `pyth*` or `e*` never lets a shell, interpreter or wrapper through, and `python -*` is a bare `python`. Beyond those checks, a rule still trusts the program: `npm test` runs whatever the `test` script says.
+By default the classifier uses the session's model; `/clearance model` picks another, saved as `classifierModel`. Requests go through OMP's own model client, with the provider auth OMP has for that model, and carry no headers of their own.
 
-### Extra read roots
+The classifier sees:
 
-Reads outside the working directory are reviewed, which adds a classifier call for things like dependency sources. List directories you are happy for the agent to read freely in `readRoots`:
+- the latest user request and up to six earlier user messages;
+- the agent's latest message, marked as untrusted;
+- the pending action, and the rule that sent it to review, if any.
 
-```json
-{
-  "readRoots": ["/nix/store", "~/.cargo/registry", "~/go/pkg/mod"]
-}
-```
+It does not see tool output (file contents, command output, fetched pages), since that is where prompt injections come from. Only your own messages can authorize anything. Messages that OMP puts in the user role on someone else's behalf are not yours: a subagent's assignment, compaction and branch summaries, messages from other agents, MCP notices. The classifier sees the latest of them separately, marked as untrusted; otherwise an agent could write "the user approved this" into a `task` assignment. A subagent's classifier reads your messages from the parent session's file; with `--no-session` there is none, so only low-risk actions pass.
 
-Entries must be absolute or start with `~/`. Credential-like files below a read root are still reviewed. Read roots also cover the paths a fast-pathed bash command names (arguments of commands an allow rule lets through, and `<` redirections), but they never add a command to the fast path.
+An answer that allows a `high`-risk action without `high` user authorization, or a `critical` one without it at all, counts as a denial. `allow`, `deny` and `environment` in `config.jsonc` add your own guidance to its prompt; they are advice to the classifier, not rules.
 
-## Tool Review Exemptions
-
-`todo` and `wait` only perform local orchestration, so the host's builtin `todo` and `wait` always bypass classifier review. Their decisions are still written to the audit log with route `local_state`.
-
-`ask` is UI-only. In interactive sessions, forms from the host's builtin `ask` that contain no URLs bypass classifier review with audit route `ui_only`; OMP still renders the form and waits for submit or cancel. Rendering fetches HTTP(S) image sources, so any form whose payload contains `http:`, `https:`, or `//` anywhere, after HTML entity decoding, remains classifier-reviewed. Noninteractive `ask` calls are also classifier-reviewed.
-
-`eval` and `task` remain classifier-reviewed: `eval` executes arbitrary code, and `task` can delegate work to fully capable subagents.
-
-Set `reviewExemptTools` in `config.jsonc` to bypass all extension review for additional tool names:
-
-```json
-{
-  "reviewExemptTools": ["custom_state"]
-}
-```
-
-Tool names are case-insensitive. This is a deterministic bypass, including for tools that would otherwise require manual approval, so only list tools whose execution you are willing to allow without AI review. In contrast, `allow` only adds guidance to the classifier prompt and does not guarantee approval. Review, ask and block rules still apply to `bash` when it is exempt.
-
-## Classifier Model
-
-By default, the approval classifier uses the current OMP session model. Use `/clearance model` to choose another available model from OMP's model selector.
-
-The selected value is stored as `classifierModel` in `config.jsonc`. `null` means "use the current session model".
-
-Classifier requests go through the host's own `pi-ai` package with the same provider auth as normal OMP model calls, so no extra packages need to be installed.
-
-The classifier sees the latest user request, up to six earlier user messages, the agent's latest message, and the pending action. Authorization can only come from your messages. The agent's message is included to explain intent but marked as untrusted. Tool output (file contents, command output, fetched pages) is left out entirely, because that is where prompt injections come from.
-
-Messages that OMP places in the user role on someone else's behalf (`attribution: "agent"`) don't count as yours: a subagent's assignment, compaction and branch summaries, messages from other agents, and MCP notices. The classifier sees the latest of them separately, marked as untrusted. Otherwise an agent could write "the user approved this" into a `task` assignment and the subagent's classifier would read it as your request. For a subagent, your messages come from the parent session's file, found through the `parentSession` header. With `--no-session` there is no such file, so subagents get no user request and only low-risk actions pass.
-
-If the classifier allows an action it rated `high` risk without `high` user authorization, or `critical` risk at all without it, the extension treats the answer as a denial.
-
-### Classifier timeout
-
-OMP blocks a tool call when an extension's `tool_call` handler runs longer than `extensionHandlers.toolCallTimeoutMs` (30 s by default), before the classifier answers and without asking you, even in `fallback` mode. According to the setting's description, time spent in OMP's own dialogs, such as the approval prompt, doesn't count. `classifierTimeoutSeconds` therefore defaults to 25 s. A slow classifier then times out first, so `fallback` asks you and `auto` blocks with a clear reason.
-
-If you use a slower classifier model, raise both: OMP's `extensionHandlers.toolCallTimeoutMs`, and `classifierTimeoutSeconds` below it. `/clearance status` warns when `classifierTimeoutSeconds` is 30 s or more. Before 0.3.0 the default was 90 s and was written into every config file; a stored 90 is now read as 25.
+**Timeout.** OMP blocks a tool call outright when an extension takes longer than `extensionHandlers.toolCallTimeoutMs` (30 s by default) to decide, even in `fallback` mode. `classifierTimeoutSeconds` (default 25) stops the classifier first, so that `fallback` can still ask you. For a slower classifier model, raise both, keeping `classifierTimeoutSeconds` below OMP's limit; `/clearance status` warns when it is 30 or more. According to OMP's description of the setting, time spent in its own dialogs, such as the approval prompt, doesn't count.
 
 ## Configuration
 
-`config.jsonc` lives in the extension directory, or at `CLEARANCE_CONFIG_PATH`. Only values that differ from the defaults are saved, so later default changes take effect. `/clearance status` reports unknown keys, such as typos. The full schema is in [`schemas/config.schema.json`](schemas/config.schema.json) and an annotated example in [`config/config.example.jsonc`](config/config.example.jsonc).
+`config.jsonc` lives in the extension's directory, or at `CLEARANCE_CONFIG_PATH`. Only values that differ from the defaults are saved, so later changes to defaults take effect. `/clearance status` reports unknown keys. See the [schema](schemas/config.schema.json) and an [annotated example](config/config.example.jsonc).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled`, `mode` | `false`, `"fallback"` | Set by `/clearance off / fallback / auto`. |
-| `classifierModel` | `null` | `provider/model`, or `null` for the session model. |
-| `classifierTimeoutSeconds` | `25` | See [Classifier timeout](#classifier-timeout). |
-| `approvalTimeoutSeconds` | `30` | How long the human prompt waits before rejecting. |
+| `enabled`, `mode` | `false`, `"fallback"` | Set by `/clearance off`, `fallback`, `auto`. |
+| `classifierModel` | `null` | `provider/model`, or `null` for the session's model. |
+| `classifierTimeoutSeconds` | `25` | See [the classifier](#the-classifier). |
+| `approvalTimeoutSeconds` | `30` | How long the approval prompt waits before rejecting. |
 | `maxConsecutiveDenials` | `3` | Automatic denials in a row before the turn is stopped. |
-| `readRoots` | `[]` | See [Extra read roots](#extra-read-roots). |
-| `reviewExemptTools` | `[]` | Tool names that skip review entirely. |
-| `allow`, `deny` | `[]` | Extra guidance lines for the classifier prompt. |
-| `environment` | `""` | Free-form description of your environment for the classifier. |
-| `audit` | `true` | Write JSONL decisions to the audit log. |
+| `readRoots` | `[]` | Directories outside the workspace that may be read without review. |
+| `reviewExemptTools` | `[]` | Tools that skip review entirely. |
+| `allow`, `deny` | `[]` | Guidance lines for the classifier. |
+| `environment` | `""` | A description of your environment for the classifier. |
+| `audit` | `true` | Write the audit log. |
 
-The model selector refreshes OMP's runtime model registry before reading available models, so it includes runtime-added and custom provider models.
+`readRoots` saves a classifier call for reads of things like dependency sources:
 
-## References
-
-This extension is an independent OMP package. Its approval workflow and terminal interaction design were informed by OpenAI Codex CLI and Claude Code-style coding-agent permission flows.
-
-## OMP Smoke Regression
-
-Run the local OMP-side smoke regression with:
-
-```bash
-npm run smoke:omp
+```json
+{ "readRoots": ["/nix/store", "~/.cargo/registry", "~/go/pkg/mod"] }
 ```
 
-The smoke script runs in temporary config and log directories. It verifies `/clearance fallback`, `/clearance auto`, safe bash command allow, suspicious bash command human fallback or denial, and JSONL audit log contents.
+Entries are absolute or start with `~/`. Credential-like files below a read root are still reviewed. Read roots also cover the files a fast-pathed bash command reads, but never add a program to the fast path.
+
+## Audit log
+
+Every decision is appended as a line of JSON to `logs/omp-clearance.jsonl` in the extension's directory, or in `CLEARANCE_LOGS_DIR`. Each line has:
+
+- `route` and `outcome`;
+- the tool, a summary of the action and its hash;
+- the classifier's decision, your answer, or the reason for a denial;
+- the rule that decided (`ruleId`, `ruleSource`), or for a fast-pathed command the entries that let it through (`ruleIds`);
+- the command as actually run, if pinning rewrote it (`pinnedCommand`, `pinnedCwd`).
+
+A `shell_latch` event records when the bash fast path turned off for a session. The log holds the commands and paths your agent used, so treat it as private.
+
+## Limits
+
+- **It is not a sandbox.** An allowed command runs with your permissions. Fast paths and rules read commands as text, conservatively: what they cannot read exactly goes to review, but a determined agent can still hide a command from a rule, for example in a script it writes first.
+- **The classifier is a model.** It can be wrong, and despite the measures above it reads text the agent wrote. `fallback` keeps you in the loop for every no; `auto` trusts every yes.
+- **Only OMP is supported.** The extension loads OMP's own packages, and its fast paths know OMP's tools.
+
+## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md): `npm run check` runs the type check, the tests, and a smoke test against OMP's extension API.
+
+## Origins and license
+
+omp-clearance began as a fork of [pi-auto-approval](https://github.com/Europa2061/pi-auto-approval), by way of HayabusaC's OMP adaptation, published on npm as [`omp-auto-approval@0.1.0`](https://www.npmjs.com/package/omp-auto-approval/v/0.1.0) (its source repository is no longer public). It was restored from that package, rewritten for the most part, and renamed in 0.4.0. It is not affiliated with either project; the `omp-auto-approval` package on npm is HayabusaC's original. Licensed under [Apache-2.0](LICENSE), like both; the git history records each author's commits.

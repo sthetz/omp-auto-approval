@@ -18,10 +18,6 @@ logs/
 # --- Local design notes ---
 design/
 
-# --- External references (symlinks & submodules) ---
-references/
-pi/
-
 # --- OS files ---
 .DS_Store
 Thumbs.db

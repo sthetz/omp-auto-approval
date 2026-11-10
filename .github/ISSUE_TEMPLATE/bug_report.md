@@ -6,31 +6,33 @@ labels: bug
 assignees: ""
 ---
 
+For security problems, such as a tool call that skips review when it shouldn't, see SECURITY.md and report privately instead.
+
 ## Summary
 
 Describe the problem.
 
-## Steps to Reproduce
+## Steps to reproduce
 
 1. 
 2. 
 3. 
 
-## Expected Behavior
+## Expected behavior
 
 What should happen?
 
-## Actual Behavior
+## Actual behavior
 
-What happened instead?
+What happened instead? `/clearance explain <tool> <args>` output helps for routing problems.
 
 ## Environment
 
-- Pi version:
-- Node.js version:
+- OMP version (`omp --version`):
+- omp-clearance version or commit:
+- Mode (`fallback` or `auto`):
 - OS:
-- `omp-clearance` version or commit:
 
 ## Logs
 
-Paste relevant logs with secrets, private paths, and model credentials removed.
+Relevant audit log lines, with secrets and private paths removed.

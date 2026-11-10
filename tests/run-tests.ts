@@ -1272,6 +1272,21 @@ async function run(): Promise<void> {
       assert.deepEqual(await run("git tag -d v1", { mode: "fallback" }, { hasUI: true, ui }, store), {});
       assert.equal(prompt, "");
       assert.equal(classifierCalls, before);
+      // A prompt nobody answers rejects. OMP's selector, on its timeout, calls
+      // onTimeout and then chooses the highlighted option, Allow Once.
+      const timeouts: number[] = [];
+      const unanswered = {
+        select: async (_title: string, options: string[], opts?: unknown) => {
+          const { timeout, onTimeout } = opts as { timeout: number; onTimeout?: () => void };
+          timeouts.push(timeout);
+          onTimeout?.();
+          return options[0];
+        },
+      };
+      const timedOut = await run("git tag -d v1", { mode: "fallback", approvalTimeoutSeconds: 7 }, { hasUI: true, ui: unanswered }, new SessionApprovalStore());
+      assert.equal(blocked(timedOut), true);
+      assert.match(reason(timedOut), /timed out/i);
+      assert.deepEqual(timeouts, [7000]);
 
       // Rules that cannot be read: bash in reviewExemptTools is reviewed too.
       writeFileSync(file, "{ broken");

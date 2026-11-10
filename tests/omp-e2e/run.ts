@@ -53,6 +53,8 @@ interface Scenario {
   steps: ToolCall[];
   /** Contents of the user's rules.jsonc, if any. */
   rules?: string;
+  /** The extension ends the turn: in print mode OMP then reports an interruption and exits with 1. */
+  interrupts?: boolean;
   /** Problems found, or an empty list. */
   check(result: RunResult): string[];
 }
@@ -187,6 +189,26 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
+    name: "three denials in a row stop the turn",
+    mode: "auto",
+    verdict: "allow",
+    interrupts: true,
+    steps: [
+      bash("git push --force origin main"),
+      bash("git push -f origin main"),
+      bash("git push origin +main"),
+      bash("touch after-stop.txt"),
+    ],
+    check(result) {
+      const problems: string[] = [];
+      const blocked = decisions(result).filter((line) => line.route === "blocked_command");
+      expect(problems, blocked.length === 3, `${blocked.length} blocked calls, wanted 3`);
+      expect(problems, decisions(result).length === 3, `${decisions(result).length} decisions, wanted 3: the turn went on after the third denial`);
+      expect(problems, !existsSync(join(result.workspace, "after-stop.txt")), "a command after the stop ran");
+      return problems;
+    },
+  },
+  {
     name: "a workspace write skips review, a write into .git does not",
     mode: "auto",
     verdict: "deny",
@@ -289,7 +311,10 @@ async function runScenario(omp: string, scenario: Scenario, keep: boolean): Prom
     const audit = existsSync(logFile)
       ? readFileSync(logFile, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as AuditLine)
       : [];
-    const problems = code === 0 ? [] : [`omp exited with ${code}: ${output.trim().split("\n").slice(-3).join(" | ")}`];
+    const interrupted = code === 1 && /Interrupted/.test(output);
+    const problems = scenario.interrupts
+      ? interrupted ? [] : [`omp exited with ${code}, wanted an interrupted turn: ${output.trim().split("\n").slice(-3).join(" | ")}`]
+      : code === 0 ? [] : [`omp exited with ${code}: ${output.trim().split("\n").slice(-3).join(" | ")}`];
     if (!audit.length) {
       problems.push(`${NO_AUDIT}: did OMP load the extension?`);
     }

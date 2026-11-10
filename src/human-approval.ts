@@ -62,12 +62,19 @@ export async function requestHumanApproval(
   ].filter((line) => line !== null).join("\n");
 
   const choices = [ALLOW_ONCE, ALLOW_EXACT, REJECT, REJECT_WITH_REASON, ...(ctx.abort ? [REJECT_AND_STOP] : [])];
+  // When OMP's selector times out, it chooses the highlighted option, which
+  // is Allow Once unless the user moved. It calls onTimeout first, so an
+  // answer after that is the timeout's, not the user's, and rejects.
+  let timedOut = false;
   const selected = await ctx.ui.select(
     `${options.title ?? "omp-clearance"}\n${details}`,
     choices,
-    { timeout: options.timeoutSeconds * 1000 },
+    { timeout: options.timeoutSeconds * 1000, onTimeout: () => { timedOut = true; } },
   );
 
+  if (timedOut || !selected) {
+    return { approved: false, state: "timeout", reason: "Manual approval timed out." };
+  }
   if (selected === ALLOW_ONCE) {
     return { approved: true, persistence: "once" };
   }
@@ -80,9 +87,6 @@ export async function requestHumanApproval(
   if (selected === REJECT_WITH_REASON && ctx.ui.input) {
     const reason = await ctx.ui.input("Reject With Reason", "Reason shown back to the agent");
     return { approved: false, state: "reject", reason: reason?.trim() || undefined };
-  }
-  if (!selected) {
-    return { approved: false, state: "timeout", reason: "Manual approval timed out." };
   }
   return { approved: false, state: "reject" };
 }

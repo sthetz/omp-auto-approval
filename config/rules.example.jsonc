@@ -15,34 +15,35 @@
 {
   "$schema": "../schemas/rules.schema.json",
 
-  // More rules files, by absolute path or ~/.
+  // More rules files, by absolute path or ~/. config/examples/ has
+  // ready-made ones, such as a kubectl policy: copy it next to this file and
+  // include it.
   // "include": ["~/.omp/agent/omp-clearance/kubectl.jsonc"],
 
   "programs": {
     // A program the built-in rules don't know. Its own options come before
     // the subcommand, each a whole word; a subcommand not listed here, such
-    // as `kubectl delete`, is reviewed. A key with several names ("get
-    // describe") lists subcommands that share one entry.
-    "kubectl": {
+    // as `docker run`, is reviewed. A key with several names ("ps images")
+    // lists subcommands that share one entry.
+    "docker": {
       "options": { "--context": "string" },
       "subcommands": {
-        "get describe": {
+        "ps images": {
           "options": {
-            "-n --namespace": "string",
-            // `-o go-template-file=PATH` reads a file; like every word that
-            // names a file, it must be inside the read roots.
-            "-o --output": "string",
-            "-l --selector": "string",
-            // Not -w/--watch, which never finishes.
-            "-A --all-namespaces": "flag"
+            "-a --all": "flag",
+            "-q --quiet": "flag",
+            "--no-trunc": "flag",
+            "-f --filter": "string",
+            "--format": "string"
           },
-          // Resource names, but never secrets, in any case: their values
-          // would reach the model without review.
-          "operands": { "literals": { "pattern": "^(?!.*[Ss][Ee][Cc][Rr][Ee][Tt])[A-Za-z0-9.,/_-]+$" } }
+          // At most one word the shell does not expand, never opened as a
+          // file: `docker images nginx`.
+          "operands": { "literals": { "max": 1 } }
         },
         "logs": {
-          "options": { "-n --namespace": "string", "-c --container": "string", "--tail": "number", "--since": "string" },
-          "operands": { "literals": { "min": 1, "max": 2 } }
+          // Not -f/--follow, which never finishes.
+          "options": { "-n --tail": "string", "--since": "string", "-t --timestamps": "flag" },
+          "operands": { "literals": { "min": 1, "max": 1 } }
         }
       }
     },
@@ -80,15 +81,17 @@
     // files, no files outside the read roots), but npm runs whatever the
     // project's test script says.
     { "id": "npm-test", "prefix": "npm test", "outcome": "allow" },
-    // `secret|secrets|secret/*` would miss `Secrets` and `pods,secrets`;
-    // a glob with letter classes catches both.
-    { "id": "kube-secrets", "match": "kubectl get|describe *[Ss][Ee][Cc][Rr][Ee][Tt]*", "outcome": "review",
-      "why": "Secret values must not reach the model unreviewed." },
-    // `--as` also matches `--as=admin`.
-    { "id": "kube-impersonate", "match": "kubectl --as|--as-group|--token|--raw", "outcome": "review" },
-    { "id": "kube-interactive", "match": "kubectl exec|port-forward|cp|edit|apply|rollout", "outcome": "ask" },
-    { "id": "kube-delete-all", "match": "kubectl delete --all", "outcome": "block",
-      "why": "Deleting everything is never what an agent should do on its own." }
+    // Words: the program, then words that follow it in order. `a|b` lists
+    // alternatives; `--privileged` also matches `--privileged=true`, so a
+    // value needs both spellings: `--network=host` and `--network host`.
+    { "id": "docker-privileged", "match": ["docker run|create --privileged|--pid", "docker run|create --network=host", "docker run|create --network host"],
+      "outcome": "ask", "why": "The container could reach the host." },
+    // A glob with letter classes matches any case: `prod`, `PROD`, `db-prod-1`.
+    { "id": "no-prod-db", "match": "psql *[Pp][Rr][Oo][Dd]*", "outcome": "review",
+      "why": "Production data." },
+    // A regex, tested against the whole command as written.
+    { "id": "docker-prune", "match": "/\\bdocker\\b.*\\bprune\\b/", "outcome": "block",
+      "why": "Prune deletes images and volumes nobody can get back." }
   ],
 
   // Built-in entries to remove, by id: "program:<name>",

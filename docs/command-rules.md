@@ -4,7 +4,7 @@ Command rules decide what happens to bash commands before the classifier sees th
 
 ## Your rules file
 
-A `rules.jsonc` next to `config.jsonc` (or at `CLEARANCE_RULES_PATH`) adds to the built-in rules, in the same format as [`config/default-rules.jsonc`](../config/default-rules.jsonc). [`config/rules.example.jsonc`](../config/rules.example.jsonc) is a commented example that fast-paths `kubectl get`, `describe` and `logs`, but not `kubectl get secrets`, and changes some built-in entries.
+A `rules.jsonc` next to `config.jsonc` (or at `CLEARANCE_RULES_PATH`) adds to the built-in rules, in the same format as [`config/default-rules.jsonc`](../config/default-rules.jsonc). [`config/rules.example.jsonc`](../config/rules.example.jsonc) is a commented example of the format, and [`config/examples/`](../config/examples) holds ready-made policies to include, such as a [kubectl policy](../config/examples/kubectl.jsonc).
 
 - A program entry of your own **replaces** the built-in one. With `"extends": "default"` it is **merged** into it instead: option and subcommand keys one by one, where `null` deletes a built-in key (written exactly as the built-in file writes it, such as `"-n --lines"`); `except` lists are joined; other keys replace the built-in ones.
 - `"disable": ["program:sed", "program:git blame"]` removes built-in entries.

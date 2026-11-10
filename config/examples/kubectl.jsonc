@@ -1,0 +1,213 @@
+// A moderately permissive kubectl policy: for an agent that works with
+// clusters all day and that you trust to read them freely, while changes go
+// to the classifier, and the commands you would want to see first ask you.
+//
+//   Fast path    get, describe, logs, top, events, wait, rollout status and
+//                history, read-only config, api-resources, explain, version
+//   Classifier   exec, apply, create, annotate, label, patch, scale, run, set,
+//                anything else not listed; get of secrets; --as, --token, --raw
+//   Ask          delete, drain, cordon, taint, replace; changing the current
+//                context or credentials; edit, attach, cp, debug, proxy,
+//                port-forward
+//   Block        deleting namespaces, or everything of a kind
+//
+// To use it, copy it next to your rules.jsonc (for example to
+// ~/.omp/agent/omp-clearance/kubectl.jsonc) and include it from there:
+//
+//   { "include": ["~/.omp/agent/omp-clearance/kubectl.jsonc"] }
+//
+// A program can be defined in one file only, so remove any kubectl entry
+// from rules.jsonc first. To change something here, edit your copy:
+// `/clearance explain kubectl …` shows what a command would do, and
+// `npm run decisions:diff -- --rules <your rules.jsonc>` in a checkout what
+// a change does to the commands you run.
+//
+// What the fast path still checks for every command: kubectl runs from
+// OMP's startup PATH, a file named anywhere (`-o go-template-file=…`) must
+// be inside the read roots, and words the shell would expand (`$NS`,
+// `$(…)`, an unquoted `jsonpath={.items[*]}`) send the command to review.
+// Options before the subcommand are read as whole words, `--context prod`;
+// `--context=prod` there goes to review. `kubectl get pods -o yaml` shows pod
+// specs, including environment variables set in plain text: if your
+// workloads put credentials there, take "-o --output" out of "get".
+{
+  "$schema": "../../schemas/rules.schema.json",
+
+  "programs": {
+    "kubectl": {
+      // Options before the subcommand, each a whole word: `kubectl --context
+      // prod -n web get pods`. Not --kubeconfig (a credential file, which the
+      // fast path never reads), nor --as, --token, --server or --user.
+      "options": {
+        "--context": "string",
+        "--cluster": "string",
+        "-n --namespace": "string",
+        "--request-timeout": "string"
+      },
+      "subcommands": {
+        "get": {
+          "options": {
+            "-n --namespace": "string",
+            "-A --all-namespaces": "flag",
+            "-o --output": "string",
+            "-l --selector": "string",
+            "--field-selector": "string",
+            "-L --label-columns": "string",
+            "--no-headers": "flag",
+            "--show-labels": "flag",
+            "--show-kind": "flag",
+            "--show-managed-fields": "flag",
+            "--sort-by": "string",
+            "--ignore-not-found": "flag",
+            "--chunk-size": "number",
+            "--request-timeout": "string"
+            // Not -w/--watch or --watch-only, which never finish, nor --raw,
+            // which reads any API path.
+          },
+          // Resource kinds and names, but never secrets, in any case or
+          // list: `secret`, `Secrets`, `pods,secrets`, `secret/db`.
+          "operands": { "literals": { "pattern": "^(?!.*[Ss][Ee][Cc][Rr][Ee][Tt])[A-Za-z0-9.,/_:-]+$" } }
+        },
+        // describe shows a secret's keys and sizes, never its values.
+        "describe": {
+          "options": {
+            "-n --namespace": "string",
+            "-A --all-namespaces": "flag",
+            "-l --selector": "string",
+            "--show-events": "optional",
+            "--chunk-size": "number",
+            "--request-timeout": "string"
+          },
+          "operands": { "literals": {} }
+        },
+        "logs": {
+          "options": {
+            "-n --namespace": "string",
+            "-c --container": "string",
+            "-l --selector": "string",
+            "--tail": "number",
+            "--since": "string",
+            "--since-time": "string",
+            "-p --previous": "flag",
+            "--all-containers": "optional",
+            "--timestamps": "optional",
+            "--prefix": "optional",
+            "--ignore-errors": "flag",
+            "--limit-bytes": "number",
+            "--max-log-requests": "number",
+            "--pod-running-timeout": "string",
+            "--request-timeout": "string"
+            // Not -f/--follow, which never finishes.
+          },
+          // A pod (or type/name) and a container.
+          "operands": { "literals": { "max": 2 } }
+        },
+        "top": {
+          "options": {
+            "-n --namespace": "string",
+            "-A --all-namespaces": "flag",
+            "-l --selector": "string",
+            "--containers": "flag",
+            "--no-headers": "flag",
+            "--sort-by": "string",
+            "--sum": "flag"
+          },
+          // `pods` or `nodes`, and a name.
+          "operands": { "literals": { "min": 1, "max": 2 } }
+        },
+        "events": {
+          "options": {
+            "-n --namespace": "string",
+            "-A --all-namespaces": "flag",
+            "-o --output": "string",
+            "--for": "string",
+            "--types": "string",
+            "--no-headers": "flag"
+            // Not -w/--watch.
+          },
+          "operands": "none"
+        },
+        "wait": {
+          "options": {
+            "-n --namespace": "string",
+            "-A --all-namespaces": "flag",
+            "-l --selector": "string",
+            "--for": "string",
+            "--timeout": "string",
+            "--all": "flag"
+          },
+          "operands": { "literals": {} }
+        },
+        // `rollout status` and `rollout history`. restart, undo, pause and
+        // resume would match too, so the "kube-rollout-change" rule below
+        // sends them to the classifier.
+        "rollout": {
+          "options": {
+            "-n --namespace": "string",
+            "--timeout": "string",
+            "--revision": "number",
+            "-w --watch": "optional"
+          },
+          "operands": { "literals": { "min": 2, "max": 2 } }
+        },
+        // config view (redacted), get-contexts, current-context, get-clusters,
+        // get-users. The "kube-kubeconfig" rule below asks about the
+        // subcommands that change the file; --raw and --flatten, which print
+        // credentials, are not listed.
+        "config": {
+          "options": {
+            "--minify": "flag",
+            "-o --output": "string"
+          },
+          "operands": { "literals": { "min": 1, "max": 2 } }
+        },
+        "api-resources": {
+          "options": {
+            "-o --output": "string",
+            "--namespaced": "optional",
+            "--api-group": "string",
+            "--verbs": "string",
+            "--sort-by": "string",
+            "--no-headers": "flag"
+          },
+          "operands": "none"
+        },
+        "api-versions": { "options": {}, "operands": "none" },
+        "explain": {
+          "options": { "--api-version": "string", "--recursive": "flag", "-o --output": "string" },
+          "operands": { "literals": { "min": 1, "max": 1 } }
+        },
+        "version": {
+          "options": { "--client": "flag", "-o --output": "string" },
+          "operands": "none"
+        },
+        // Not `cluster-info dump`, which can write files: no operands.
+        "cluster-info": { "options": {}, "operands": "none" }
+      }
+    }
+  },
+
+  // The rules match the command's text, so they also catch kubectl inside
+  // loops, `sh -c '…'` and `ssh host '…'`. Among those that match, the most
+  // restrictive decides, and any of them overrides the table above.
+  "rules": [
+    // Review: the classifier, then you in fallback mode.
+    { "id": "kube-secrets", "match": "kubectl get *[Ss][Ee][Cc][Rr][Ee][Tt]*", "outcome": "review",
+      "why": "Secret values would reach the model." },
+    { "id": "kube-identity", "match": "kubectl --as|--as-group|--as-uid|--token|--raw|--flatten", "outcome": "review",
+      "why": "Acts as someone else, or reads credentials or raw API paths." },
+    { "id": "kube-rollout-change", "match": "kubectl rollout restart|undo|pause|resume", "outcome": "review" },
+
+    // Ask: you decide, without the classifier; denied in auto mode.
+    { "id": "kube-kubeconfig", "match": "kubectl config use-context|use|set|unset|set-context|set-cluster|set-credentials|delete-context|delete-cluster|delete-user|rename-context",
+      "outcome": "ask", "why": "Changes which cluster or identity later commands use." },
+    { "id": "kube-destructive", "match": "kubectl delete|drain|cordon|uncordon|taint|replace", "outcome": "ask",
+      "why": "Removes or disrupts workloads." },
+    { "id": "kube-interactive", "match": "kubectl edit|attach|cp|debug|proxy|port-forward", "outcome": "ask",
+      "why": "Interactive, long-running, copies files, or opens access to the cluster." },
+
+    // Block: never, whatever anyone says; run it yourself.
+    { "id": "kube-delete-everything", "match": ["kubectl delete --all|-A|--all-namespaces", "kubectl delete ns|namespace|namespaces"],
+      "outcome": "block", "why": "Deletes a namespace, or everything of a kind." }
+  ]
+}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import ompClearanceExtension, { SYSTEM_PROMPT_NOTE } from "../index.js";
@@ -26,7 +26,7 @@ import type { AutoReviewConfig, ExtensionContextLike } from "../src/types.js";
 // Stub programs make the tests independent of what this machine has
 // installed; the real PATH stays behind them.
 const STUB_PROGRAMS = [
-  "basename", "cat", "cut", "date", "dd", "diff", "du", "echo", "fd", "find", "git", "grep", "head", "jq", "kubectl", "ls", "npm",
+  "basename", "cat", "cut", "date", "dd", "diff", "docker", "du", "echo", "fd", "find", "git", "grep", "head", "jq", "kubectl", "ls", "npm",
   "printf", "pwd", "python", "rg", "sed", "sleep", "sort", "stat", "tail", "tar", "timeout", "tr", "uname", "uniq", "wc", "which",
 ];
 const STUB_BIN = mkdtempSync(join(tmpdir(), "omp-clearance-bin-"));
@@ -774,16 +774,14 @@ async function run(): Promise<void> {
       assert.equal(rules.problem, null);
       const safe = (command: string) => planSafeCommand(command, config(), { workspace, searchPath: TEST_PATH, rules }) !== null;
       for (const command of [
-        "kubectl get pods", "kubectl --context dev get pods -n web -o wide", "kubectl describe deploy/api", "kubectl logs api-1 -c app --tail 50",
-        "git reflog", "git log", "cat -n notes.txt", "kubectl get pods -o yaml", "git worktree list", "git worktree list --porcelain",
+        "docker ps", "docker --context dev ps -a --format '{{.Names}}'", "docker images nginx", "docker logs api --tail 50",
+        "git reflog", "git log", "cat -n notes.txt", "git worktree list", "git worktree list --porcelain", "npm test",
       ]) {
         assert.equal(safe(command), true, command);
       }
       for (const command of [
-        "kubectl get secrets", "kubectl get Secrets", "kubectl get secret/db -o yaml", "kubectl get pods,secrets", "kubectl delete pod x", "kubectl get pods -w",
-        "kubectl get pods --as admin", "kubectl --kubeconfig x get pods", "kubectl logs", "git stash list", "git blame notes.txt",
+        "docker run nginx", "docker logs -f api", "docker ps x y", "docker images $X", "git stash list", "git blame notes.txt",
         "sed -n 1p notes.txt", "cat -A notes.txt", "git worktree add x", "git worktree prune", "git worktree list x", "git worktree",
-        "kubectl get pods -o go-template-file=/etc/passwd", "kubectl get pods --output=jsonpath-file=/etc/passwd", "kubectl get pods -ogo-template-file=/etc/passwd",
       ]) {
         assert.equal(safe(command), false, command);
       }
@@ -791,12 +789,72 @@ async function run(): Promise<void> {
         const escalation = escalateCommand(command, rules);
         return escalation && `${escalation.outcome} ${escalation.rule?.id}`;
       };
-      assert.equal(decided("kubectl get pods"), null);
-      assert.equal(decided("kubectl get pods,Secrets"), "review kube-secrets");
-      assert.equal(decided("kubectl describe secret/db"), "review kube-secrets");
-      assert.equal(decided("kubectl get pods --as=admin"), "review kube-impersonate");
-      assert.equal(decided("kubectl exec -it api -- sh"), "ask kube-interactive");
-      assert.equal(decided("for n in a b; do kubectl delete pods --all -n $n; done"), "block kube-delete-all");
+      assert.equal(decided("docker ps"), null);
+      assert.equal(decided("docker run --privileged x"), "ask docker-privileged");
+      assert.equal(decided("docker run --network host x"), "ask docker-privileged");
+      assert.equal(decided("docker run --network=host x"), "ask docker-privileged");
+      assert.equal(decided("docker run --network bridge x"), null);
+      assert.equal(decided("psql -h DB-PROD-1"), "review no-prod-db");
+      assert.equal(decided("docker system prune -af"), "block docker-prune");
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  await test("every file in config/examples/ loads", () => {
+    const directory = new URL("../config/examples/", import.meta.url).pathname;
+    const files = readdirSync(directory).filter((name) => name.endsWith(".jsonc"));
+    assert.ok(files.length > 0);
+    for (const name of files) {
+      assert.equal(loadCommandRules(join(directory, name)).problem, null, name);
+    }
+  });
+
+  await test("config/examples/kubectl.jsonc reads freely, reviews changes, asks before disruption", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-kubectl-"));
+    try {
+      const rules = loadCommandRules(new URL("../config/examples/kubectl.jsonc", import.meta.url).pathname);
+      assert.equal(rules.problem, null);
+      const decide = (command: string) => {
+        const escalation = escalateCommand(command, rules);
+        if (escalation) {
+          return `${escalation.outcome} ${escalation.rule?.id}`;
+        }
+        return planSafeCommand(command, config(), { workspace, searchPath: TEST_PATH, rules }) ? "fast" : "classifier";
+      };
+      for (const command of [
+        "kubectl get pods", "kubectl --context prod -n web get pods -o wide", "kubectl get deploy -A -o json --no-headers",
+        "kubectl get pods -o 'jsonpath={.items[*].metadata.name}'", "kubectl get pods -l app=api --sort-by .metadata.name",
+        "kubectl describe secret/db -n web", "kubectl logs api-1 -c app --tail 50 --since 1h", "kubectl logs -l app=api --all-containers --prefix",
+        "kubectl top pods -n web --containers", "kubectl events -n web --for pod/api-1", "kubectl wait --for=condition=Ready pod/api-1 --timeout 60s",
+        "kubectl rollout status deploy/api --timeout 120s", "kubectl rollout history deploy/api", "kubectl config get-contexts",
+        "kubectl config view --minify", "kubectl config current-context", "kubectl api-resources --namespaced=true",
+        "kubectl explain deploy.spec", "kubectl version --client", "kubectl cluster-info",
+        "kubectl get pods -o json | jq '.items | length'",
+      ]) {
+        assert.equal(decide(command), "fast", command);
+      }
+      for (const command of [
+        "kubectl get pods -w", "kubectl logs -f api-1", "kubectl cluster-info dump", "kubectl exec -it api -- sh",
+        "kubectl apply -f x.yaml --dry-run=server", "kubectl annotate pod x a=b --overwrite", "kubectl --kubeconfig x get pods",
+        "kubectl -n $NS get pods", "kubectl get pods -o jsonpath={.items[*]}", "kubectl --context=prod get pods",
+        "kubectl get pods -o go-template-file=/etc/passwd",
+      ]) {
+        assert.equal(decide(command), "classifier", command);
+      }
+      const expected: [string, string][] = [
+        ["kubectl get secrets", "review kube-secrets"], ["kubectl get pods,Secrets", "review kube-secrets"],
+        ["kubectl get --raw /api", "review kube-identity"], ["kubectl config view --raw", "review kube-identity"],
+        ["kubectl get pods --as admin", "review kube-identity"], ["kubectl rollout restart deploy/api", "review kube-rollout-change"],
+        ["kubectl config use-context prod", "ask kube-kubeconfig"], ["kubectl delete pod x", "ask kube-destructive"],
+        ["kubectl drain node-1", "ask kube-destructive"], ["kubectl port-forward svc/x 8080:80", "ask kube-interactive"],
+        ["kubectl edit deploy x", "ask kube-interactive"], ["kubectl delete pods --all -n web", "block kube-delete-everything"],
+        ["kubectl delete ns web", "block kube-delete-everything"],
+        ["for n in a b; do kubectl delete namespace $n; done", "block kube-delete-everything"],
+      ];
+      for (const [command, decision] of expected) {
+        assert.equal(decide(command), decision, command);
+      }
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

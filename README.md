@@ -110,7 +110,7 @@ Bash commands are checked against rules before anything else. The built-in ones 
 
 The most restrictive matching rule wins, and `why` is shown in the denial, in the prompt, and to the classifier. Patterns match commands as bash reads them, so `git push --force` matches `cd repo && git push origin main --force` and `bash -c "git push --force"`, while a commit message that mentions it is only sent to review. Rules are a tripwire, not a sandbox: a script or an alias can get past them, and is then reviewed as usual.
 
-[`config/rules.example.jsonc`](config/rules.example.jsonc) is a commented example. It adds a table for `kubectl get`, `describe` and `logs` that leaves out secrets, and changes some built-in entries. [docs/command-rules.md](docs/command-rules.md) is the full format, including pattern syntax and program tables.
+[`config/rules.example.jsonc`](config/rules.example.jsonc) is a commented example of the format: a table for `docker ps`, `images` and `logs`, rules by words, glob and regex, and changes to built-in entries. [`config/examples/`](config/examples) holds ready-made policies to include, such as [`kubectl.jsonc`](config/examples/kubectl.jsonc), which lets reads through, sends changes to the classifier, asks before deletes and drains, and blocks deleting namespaces. [docs/command-rules.md](docs/command-rules.md) is the full format, including pattern syntax and program tables.
 
 If a rules file has an error, no rules are used. Since it might have held block or ask rules, every bash command then asks you first until the file is fixed (and is denied in `auto` mode), and OMP shows the error at session start. There are no per-project rules files, since a cloned repository could ship one.
 

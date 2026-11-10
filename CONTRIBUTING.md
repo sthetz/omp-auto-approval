@@ -7,7 +7,7 @@ npm install
 npm run check
 ```
 
-`npm run check` runs the type check, the tests, and a smoke test that loads the extension through a stand-in for OMP's extension API. It needs Node 20.11 or later and `git` (and uses `python3` for one test when it is there). It uses no network, no model, and no files outside temporary directories. CI runs it on every push and pull request.
+`npm run check` runs the type check, the tests, and a smoke test that loads the extension through a stand-in for OMP's extension API. It needs Node 20.11 or later and `git` (and uses `python3` for one test when it is there). It uses no network, no model, and no files outside temporary directories. CI runs it on pull requests and on pushes to `master`.
 
 There is no build step: OMP loads the TypeScript sources directly. To try a change in OMP itself, link your checkout as the extension with `omp plugin link /path/to/checkout`, and restart OMP.
 
@@ -45,7 +45,7 @@ synthetic: 111974 commands, 59 changed; fast path 22437 → 22436
 
 Every line should be one you meant. It exits with 1 when anything changed, like `diff`.
 
-- `--base <revision>` compares with another revision (0.4.0 or later), checked out into a temporary git worktree.
+- `--base <revision>` compares with another revision (0.4.0 or later), checked out into a temporary git worktree. If a run is killed, `git worktree prune` clears the worktree it leaves registered.
 - `--rules <file>` applies a user rules file on both sides.
 - `--source synthetic` or `--source corpus` limits the commands; `--examples <n>` prints more of each.
 
@@ -104,13 +104,13 @@ The checks read the audit log, what the classifier was shown, and what the agent
 - whether a denial reaches the agent.
 
 ```bash
-npm run e2e:omp                   # every scenario, about 20 seconds
+npm run e2e:omp                   # every scenario, a few seconds
 npm run e2e:omp -- --only block   # scenarios whose name contains "block"
 npm run e2e:omp -- --keep         # keep the temporary directories to inspect
 OMP=/path/to/omp npm run e2e:omp  # a specific OMP build
 ```
 
-It needs no API key and makes no request beyond the local fake model. Point `OMP` at the real binary if your `omp` is a wrapper that needs a keyring or a login. Prompts can't be answered in print mode, so `fallback` asks are covered by the unit tests, and the model selector needs a manual look: run `/clearance model` in a real session.
+It needs no API key and makes no request beyond the local fake model. Point `OMP` at the real binary if your `omp` is a wrapper that needs a keyring or a login: the scenarios pass OMP only `PATH` and their own temporary paths, and stop at the first one where OMP never runs the extension. Prompts can't be answered in print mode, so `fallback` asks are covered by the unit tests, and the model selector needs a manual look: run `/clearance model` in a real session.
 
 To add a scenario, add an entry to `SCENARIOS` in `tests/omp-e2e/run.ts`: the mode, the classifier's verdict, the agent's tool calls, an optional rules file, and the checks. Make sure a check can fail: break the behaviour it covers once and watch it go red.
 

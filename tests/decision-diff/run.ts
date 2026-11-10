@@ -17,7 +17,8 @@
  *   only counts are printed for them unless you pass --show-corpus.
  *
  * The base revision is checked out into a temporary git worktree, so it must
- * have the command rules (0.4.0 or later). Both sides plan in the same
+ * have the command rules (0.4.0 or later). A run that is killed leaves the
+ * worktree registered; `git worktree prune` clears it. Both sides plan in the same
  * temporary workspace, with programs looked up on the current PATH and no
  * user rules unless --rules names a file.
  */
@@ -72,9 +73,16 @@ async function loadSide(root: string, workspace: string, rulesPath: string): Pro
   };
 }
 
-/** "fast", "classifier", or the outcome and rule: what a change is counted by. */
-function kind(decision: string): string {
-  return decision.startsWith("fast:") ? "fast path" : decision;
+/**
+ * "fast path", "classifier", or the outcome and rule: what a change is
+ * counted by. An error's message can quote the command, so for private
+ * commands it is left out.
+ */
+function kind(decision: string, hidden: boolean): string {
+  if (decision.startsWith("fast:")) {
+    return "fast path";
+  }
+  return hidden && decision.startsWith("error:") ? "error" : decision;
 }
 
 function workspaceFixture(root: string): string {
@@ -108,7 +116,9 @@ async function main(): Promise<void> {
 
     const sources: { name: string; private: boolean; commands: string[] }[] = [];
     if (source === "all" || source === "synthetic") {
-      sources.push({ name: "synthetic", private: false, commands: syntheticCommands(after.rules as never) });
+      // From both sides' tables, so that a removed option or program shows too.
+      const commands = new Set([...syntheticCommands(before.rules as never), ...syntheticCommands(after.rules as never)]);
+      sources.push({ name: "synthetic", private: false, commands: [...commands] });
     }
     if (source === "all" || source === "corpus") {
       const corpus = loadCorpusDirectory(DEFAULT_CORPUS).map((item: { command: string }) => item.command);
@@ -133,7 +143,8 @@ async function main(): Promise<void> {
         if (was === now) {
           continue;
         }
-        const key = kind(was) === kind(now) ? `${kind(now)} (pinned command changed)` : `${kind(was)} → ${kind(now)}`;
+        const [from, to] = [kind(was, hidden), kind(now, hidden)];
+        const key = from === to ? `${to} (${to === "fast path" ? "pinned command" : "error"} changed)` : `${from} → ${to}`;
         const list = changes.get(key) ?? [];
         list.push(command);
         changes.set(key, list);

@@ -18,7 +18,7 @@
  * wrapper that needs a keyring or a login: nothing here reaches a real model.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { startFakeModel, type FakeModelLog, type ToolCall } from "./fake-model.js";
@@ -206,6 +206,20 @@ const SCENARIOS: Scenario[] = [
   },
 ];
 
+const NO_AUDIT = "no audit log";
+
+function isScript(path: string): boolean {
+  try {
+    const file = openSync(realpathSync(path), "r");
+    const start = Buffer.alloc(2);
+    readSync(file, start, 0, 2, 0);
+    closeSync(file);
+    return start.toString() === "#!";
+  } catch {
+    return false;
+  }
+}
+
 function findOmp(): string | null {
   if (process.env.OMP) {
     return process.env.OMP;
@@ -244,6 +258,7 @@ async function runScenario(omp: string, scenario: Scenario, keep: boolean): Prom
     "",
   ].join("\n"));
   let output = "";
+  let failed = false;
   try {
     const code = await new Promise<number | null>((done) => {
       const child = spawn(omp, ["--no-session", "--model", "fake/fake-model", "-p", "go"], {
@@ -262,7 +277,7 @@ async function runScenario(omp: string, scenario: Scenario, keep: boolean): Prom
           CLEARANCE_LOGS_DIR: join(state, "logs"),
         },
       });
-      const timer = setTimeout(() => child.kill("SIGKILL"), 120_000);
+      const timer = setTimeout(() => child.kill("SIGKILL"), 60_000);
       child.stdout.on("data", (part: Buffer) => { output += part.toString("utf8"); });
       child.stderr.on("data", (part: Buffer) => { output += part.toString("utf8"); });
       child.on("close", (status) => {
@@ -276,16 +291,17 @@ async function runScenario(omp: string, scenario: Scenario, keep: boolean): Prom
       : [];
     const problems = code === 0 ? [] : [`omp exited with ${code}: ${output.trim().split("\n").slice(-3).join(" | ")}`];
     if (!audit.length) {
-      problems.push("no audit log: did OMP load the extension?");
+      problems.push(`${NO_AUDIT}: did OMP load the extension?`);
     }
     problems.push(...scenario.check({ audit, model: model.log, workspace, rulesPath, output }));
-    if (keep || problems.length) {
+    failed = problems.length > 0;
+    if (keep || failed) {
       console.log(`  kept ${root}`);
     }
     return problems;
   } finally {
     await model.close();
-    if (!keep) {
+    if (!keep && !failed) {
       rmSync(root, { recursive: true, force: true });
     }
   }
@@ -300,8 +316,11 @@ async function main(): Promise<void> {
     console.error("omp is not on PATH; set OMP=/path/to/omp");
     process.exit(2);
   }
-  const version = spawnSync(omp, ["--version"], { encoding: "utf8", env: { ...process.env, HOME: tmpdir() } });
-  console.log(`omp: ${omp} (${(version.stdout || version.stderr).trim().split("\n")[0]})`);
+  const version = spawnSync(omp, ["--version"], { encoding: "utf8", timeout: 30_000 });
+  console.log(`omp: ${omp} (${(version.stdout || version.stderr || "no version").trim().split("\n")[0]})`);
+  if (isScript(omp)) {
+    console.log("  warning: this is a script, not the OMP binary. A wrapper that needs a keyring, a login or its own environment may fail here; set OMP to the binary it runs.");
+  }
   let failed = 0;
   for (const scenario of SCENARIOS.filter((item) => !only || item.name.includes(only))) {
     const problems = await runScenario(omp, scenario, keep);
@@ -310,6 +329,10 @@ async function main(): Promise<void> {
       console.log(`  - ${problem}`);
     }
     failed += problems.length ? 1 : 0;
+    if (problems.some((problem) => problem.startsWith(NO_AUDIT))) {
+      console.log("stopping: OMP did not run the extension, so the other scenarios would fail the same way. Is OMP the real binary?");
+      break;
+    }
   }
   process.exit(failed ? 1 : 0);
 }

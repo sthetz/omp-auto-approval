@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DEFAULT_CONFIG } from "../../src/extension-config.js";
@@ -279,9 +279,24 @@ async function main(): Promise<void> {
   mkdirSync(join(root, "home"));
   if (argv.includes("--self-test")) {
     // Commands with known side effects, run without the planner: each must be caught.
-    const bin = "/run/current-system/sw/bin";
+    const program = (name: string): string => {
+      // The PATH entry itself, not its target: a multi-call binary such as
+      // coreutils picks the program by the name it was run as.
+      const path = (process.env.PATH ?? "").split(":").map((directory) => join(directory, name)).find((candidate) => {
+        try {
+          return statSync(candidate).isFile();
+        } catch {
+          return false;
+        }
+      });
+      if (!path) {
+        console.error(`program oracle cannot run: ${name} is not on PATH`);
+        process.exit(2);
+      }
+      return path;
+    };
     let missed = 0;
-    for (const command of [`${bin}/sort -o /tmp/out notes.txt`, `${bin}/find . -maxdepth 0 -exec ${bin}/true ';'`, `${bin}/sed -i s/a/b/ notes.txt`, `${bin}/touch /tmp/x`]) {
+    for (const command of [`${program("sort")} -o /tmp/out notes.txt`, `${program("find")} . -maxdepth 0 -exec ${program("true")} ';'`, `${program("sed")} -i s/a/b/ notes.txt`, `${program("touch")} /tmp/x`]) {
       const problems = traceProblems(await runTraced(env, strace, root, workspace, command), new Set([command.split(" ")[0]]), env.bash, root);
       console.log(`${problems.length ? "caught" : "MISSED"}: ${command}${problems.length ? ` (${problems[0]})` : ""}`);
       missed += problems.length ? 0 : 1;

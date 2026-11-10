@@ -36,8 +36,12 @@ for (const name of STUB_PROGRAMS) {
 }
 const TEST_PATH = `${STUB_BIN}:${process.env.PATH ?? ""}`;
 process.on("exit", () => rmSync(STUB_BIN, { recursive: true, force: true }));
-// No user rules file unless a test names one.
+// No user rules file unless a test names one, and the config and audit log
+// in a temporary directory unless a test names others: never the files of the
+// checkout or of a real install.
 process.env.CLEARANCE_RULES_PATH = join(STUB_BIN, "no-rules.jsonc");
+process.env.CLEARANCE_CONFIG_PATH = join(STUB_BIN, "config.jsonc");
+process.env.CLEARANCE_LOGS_DIR = join(STUB_BIN, "logs");
 
 function isSafeReadOnlyCommand(command: string, cfg: TestConfig, cwd: string): boolean {
   return planSafeCommand(command, cfg, { workspace: cwd, searchPath: TEST_PATH, rules: cfg.rules }) !== null;
@@ -3462,6 +3466,7 @@ async function run(): Promise<void> {
 
   await test("audit logging does not throw", async () => {
     const dir = mkdtempSync(join(tmpdir(), "omp-clearance-test-"));
+    const previousLogsDir = process.env.CLEARANCE_LOGS_DIR;
     process.env.CLEARANCE_LOGS_DIR = dir;
     await evaluateToolCall(
       { toolName: "bash", input: { command: "git status" } },
@@ -3470,7 +3475,7 @@ async function run(): Promise<void> {
       new SessionApprovalStore(),
     );
     rmSync(dir, { recursive: true, force: true });
-    delete process.env.CLEARANCE_LOGS_DIR;
+    process.env.CLEARANCE_LOGS_DIR = previousLogsDir;
   });
 }
 

@@ -10,7 +10,8 @@
 // also explains option kinds and operand checks).
 //
 // If this file, or one it includes, has any error, no rules are used and
-// every bash command is reviewed until it is fixed.
+// every bash command asks you first until it is fixed (denied in auto
+// mode); OMP shows an error at session start.
 {
   "$schema": "../schemas/rules.schema.json",
 
@@ -71,8 +72,8 @@
   // "ask" (you decide, without the classifier; denied in auto mode), then
   // "review" (the classifier, then you, as for any reviewed command). Any of
   // them overrides the programs above, allow rules and reviewExemptTools.
-  // They match the command's text, also inside loops and `sh -c '…'`; a
-  // program named by a variable (`$k delete`) gets past them.
+  // They match the command's text, also inside loops and `sh -c '…'`, and a
+  // program named by a variable (`$k delete --all`) counts as any program.
   "rules": [
     // An allow rule: a command that starts with "npm test" skips review.
     // The checks in code still apply (no options that run programs or write

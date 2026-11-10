@@ -73,8 +73,8 @@
 //     or words, a program and then words that follow it in order within one
 //     command; `a|b` alternatives, `*` `?` `[…]` globs, `--name` also
 //     matching `--name=value`, `-f` also matching `-uf`. Rules match the
-//     command's text, also inside loops and substitutions, but not a
-//     program named by a variable.
+//     command's text, also inside loops and substitutions; in a pattern
+//     of several words, a program named by a variable counts as any program.
 {
   "$schema": "../schemas/rules.schema.json",
   "programs": {

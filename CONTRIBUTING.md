@@ -44,7 +44,7 @@ npm run oracle:programs -- --count 4000 --seed 2
 
 When adding an option, also check it against the program's `--help` and, where it differs, against BSD and busybox: the tables must hold for whichever implementation is on `PATH`. `npm run oracle:help` compares every table with the local programs' `--help`: options the help does not mention, values the help shows differently, and short and long options paired in one entry that the help does not pair. A few reports are expected, where the help text is written loosely (`ls --sort`, `sort --check`, `du --time`, `jq --indent`).
 
-`config/default-rules.jsonc` is validated strictly when it loads: an unknown key, kind or check name, or an option listed twice, is an error, and then every bash command is reviewed and `/auto-approval status` says why. `npm test` loads it, and checks `schemas/rules.schema.json` against the code.
+`config/default-rules.jsonc` is validated strictly when it loads: an unknown key, kind or check name, or an option listed twice, is an error, and then every bash command asks the user first (denied in auto mode) and `/auto-approval status` says why. `npm test` loads it, and checks `schemas/rules.schema.json` against the code.
 
 ## Pull Requests
 

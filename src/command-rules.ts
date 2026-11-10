@@ -801,6 +801,9 @@ export function loadCommandRules(path = userRulesPath()): CommandRules {
 
 const RESTRICTION: Record<RuleOutcome, number> = { review: 1, ask: 2, block: 3 };
 
+/** The id of the ask rule that stands in for rules that could not be loaded. */
+export const RULES_PROBLEM_ID = "rules-unreadable";
+
 /** What a bash command's text calls for beyond the fast path's own checks. */
 export interface Escalation {
   outcome: RuleOutcome;
@@ -815,6 +818,22 @@ export interface Escalation {
  * cannot be matched.
  */
 export function escalateCommand(command: string, rules: CommandRules): Escalation | null {
+  // Rules that cannot be read might have held any block or ask rule: ask
+  // the user about every command until they are fixed.
+  if (rules.problem) {
+    return {
+      outcome: "ask",
+      rule: {
+        id: RULES_PROBLEM_ID,
+        match: [],
+        patterns: [],
+        outcome: "ask",
+        prefix: null,
+        why: rules.problem,
+        source: rules.files[0] ?? "config/default-rules.jsonc",
+      },
+    };
+  }
   const segments = commandSegments(command);
   let deciding: CommandRule | null = null;
   for (const rule of rules.rules) {

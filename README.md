@@ -222,7 +222,7 @@ A `rules.jsonc` next to `config.jsonc` (or at `PI_AUTO_APPROVAL_RULES_PATH`) add
 - A key with several names, such as `"get describe"`, lists subcommands that share one entry. Subcommands of subcommands are not entries of their own, so `"worktree list"` means `worktree` and `list`; to allow only `git worktree list`, give `worktree` the operand check `{ "literals": { "min": 1, "max": 1, "pattern": "^list$" } }`, as the example does.
 - `"include": ["~/…/kubectl.jsonc"]` reads more files, by absolute path or `~/`. Each program may be defined in one file only.
 - Options and subcommands an entry does not list are reviewed, as with the built-in rules, and every check in code still applies: programs run from OMP's startup PATH, files are read only inside the read roots, and so on.
-- If any of these files has an error (an unknown key, kind or check, an option listed twice, a broken include), no rules are used and every bash command is reviewed until it is fixed. `/auto-approval status` shows the files in use or the error, and OMP warns at session start.
+- If any of these files has an error (an unknown key, kind or check, an option listed twice, a broken include), no rules are used: since the file might have held block or ask rules, every bash command asks you first until it is fixed (and is denied in `auto` mode or without a UI). OMP shows an error at session start, and `/auto-approval status` shows the files in use or the error; after fixing the file, any `/auto-approval` command reloads it.
 - The files are read at session start and on any `/auto-approval` command. The write fast path never writes them, nor `config.jsonc`, even when they are inside the working directory.
 
 There are no per-project rules files: a cloned repository could ship one.
@@ -260,7 +260,7 @@ Among the rules a command matches, the most restrictive decides: block, then ask
 
 Git also forces a push when a branch is prefixed with `+` (`git push origin +main`), which no word list can express; the regex above catches it. The program is matched by name, so write `git`, not `/usr/bin/git`.
 
-Matching errs toward finding the command: the words also match when they are arguments to another command (`echo git push --force`), inside loops, `$(…)` and `sh -c '…'`, which the fast path never reads, and quotes around `;` or `|` (`git -c 'x=a;b' push --force`) or a backslash-newline do not hide a command. Rules are a best-effort tripwire, not a sandbox: a program named by a variable (`$k delete`), an alias or a script gets past them, and is then reviewed by the classifier as usual.
+Matching errs toward finding the command: the words also match when they are arguments to another command (`echo git push --force`), inside loops, `$(…)` and `sh -c '…'`, which the fast path never reads, and quotes around `;` or `|` (`git -c 'x=a;b' push --force`) or a backslash-newline do not hide a command. A program named by a variable or a substitution (`$k delete --all`, `$(command -v kubectl) delete --all`) may be any program, so in a pattern of more than one word it matches whatever the rest of the pattern matches; a one-word pattern such as `rm` does not, or every command with a variable in it would match. Regex patterns read the text as written. Rules are a best-effort tripwire, not a sandbox: an alias, a function or a script still gets past them, and is then reviewed by the classifier as usual.
 
 ### Allow rules
 

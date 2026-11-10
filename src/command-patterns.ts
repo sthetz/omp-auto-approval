@@ -21,13 +21,64 @@ export function commandSegments(command: string): string[][] {
   const naive = text.split(COMMAND_BOUNDARY).map((segment) => unquote(segment).split(/\s+/).filter(Boolean));
   const quoted = commandLines(text).map((words) => words.map(unquote).filter(Boolean));
   const recognized = recognizeShell(text)?.pipelines.flat().map((simple) => simple.words.map((word) => word.text)) ?? [];
-  return [...naive, ...quoted, ...recognized].filter((segment) => segment.length > 0);
+  return [...resolveExpansions(naive), ...resolveExpansions(quoted), ...recognized].filter((segment) => segment.length > 0);
+}
+
+// Marks a word the shell expands to something unknown (see resolveExpansions).
+const EXPANDED = "\u0000";
+
+/**
+ * Lines with variables the command sets to plain text written out
+ * (`K=kubectl; $K delete` reads `kubectl delete`), as the shell would, and
+ * every other word that is an expansion or a substitution marked, since it
+ * could be any program. A line of only assignments, or of `export` and the
+ * like, sets variables; a value with `$` or a substitution in it is unknown.
+ */
+function resolveExpansions(lines: string[][]): string[][] {
+  const literals = new Map<string, string>();
+  return lines.map((words) => {
+    const first = words.findIndex((word) => !ASSIGNMENT.test(word));
+    const setters = first < 0 ? words : ["export", "declare", "typeset", "local", "readonly"].includes(words[first]) ? words.slice(first + 1) : [];
+    for (const word of setters) {
+      const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(word);
+      if (assignment) {
+        if (EXPANSION.test(assignment[2])) {
+          literals.delete(assignment[1]);
+        } else {
+          literals.set(assignment[1], assignment[2]);
+        }
+      }
+    }
+    return words.flatMap((word) => {
+      const variable = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(word);
+      if (variable && literals.has(variable[1])) {
+        return literals.get(variable[1])!.split(/\s+/).filter(Boolean);
+      }
+      return EXPANSION.test(word) && !ASSIGNMENT.test(word) ? [`${EXPANDED}${word}`] : [word];
+    });
+  });
 }
 
 function programName(word: string): string {
   return word.slice(word.lastIndexOf("/") + 1);
 }
 
+// Words that run the command that follows them.
+const WRAPPERS = new Set(["sudo", "doas", "env", "command", "builtin", "exec", "eval", "time", "nohup", "nice", "xargs", "stdbuf", "setsid", "then", "do", "else", "!"]);
+
+/**
+ * Whether the word at `index` is where a program would be: the first word,
+ * or one after only assignments, wrappers and their options. Elsewhere an
+ * expansion is an argument (`grep $pattern -i`).
+ */
+function atCommandPosition(segment: string[], index: number): boolean {
+  return segment.slice(0, index).every((word) => ASSIGNMENT.test(word) || WRAPPERS.has(programName(word)) || word.startsWith("-"));
+}
+
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/;
+
+// A word that holds a parameter expansion or a command substitution.
+const EXPANSION = /[$`]/;
 const SHORT_FLAG = /^-[A-Za-z0-9]$/;
 const SHORT_FLAG_GROUP = /^-[A-Za-z0-9]+$/;
 
@@ -128,13 +179,20 @@ export function compileCommandPattern(raw: string): CommandPattern {
     throw new Error(`programs are matched by name, so "${words[0]}" never matches; write "${words[0].slice(words[0].lastIndexOf("/") + 1)}"`);
   }
   const [program, ...rest] = words.map(wordTest);
+  // A word the shell expands (`$k`, `${KUBECTL}`, `$(command -v kubectl)`)
+  // where a program would be could be the program: agents often name one
+  // through a variable. Only when the pattern has more words, which must
+  // still follow, or every command run by a variable would match a one-word
+  // pattern.
+  const expansionIsProgram = rest.length > 0;
   return (_command, segments) => segments.some((segment) => segment.some((word, start) => {
-    if (!program(programName(word))) {
+    const expanded = word.startsWith(EXPANDED);
+    if (!program(programName(expanded ? word.slice(1) : word)) && !(expansionIsProgram && expanded && atCommandPosition(segment, start))) {
       return false;
     }
     let next = start + 1;
     return rest.every((wanted) => {
-      while (next < segment.length && !wanted(segment[next])) {
+      while (next < segment.length && !wanted(segment[next].replace(EXPANDED, ""))) {
         next += 1;
       }
       next += 1;

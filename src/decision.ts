@@ -2,7 +2,7 @@ import type { AuditEntry, AutoReviewConfig, ExtensionContextLike, ReviewDecision
 import { classifyAction, type ClassifierClient } from "./classifier.js";
 import { writeAudit } from "./logging.js";
 import { planSafeCommand, type SafeCommandPlan } from "./safe-command.js";
-import { defaultRules, escalateCommand, userRulesPath, type CommandRule, type CommandRules, type Escalation } from "./command-rules.js";
+import { defaultRules, escalateCommand, RULES_PROBLEM_ID, userRulesPath, type CommandRule, type CommandRules, type Escalation } from "./command-rules.js";
 import { configPath } from "./extension-config.js";
 import { SessionApprovalStore } from "./session-approval-store.js";
 import {
@@ -209,10 +209,9 @@ export function selectFastPath(
   if (escalation?.outcome === "ask") {
     return "ask_rule";
   }
-  // A bash command a review rule matches, or any bash command while the
-  // rules cannot be read (they might have held a block), is reviewed even
-  // when bash is in reviewExemptTools.
-  const reviewBash = command !== undefined && (escalation?.outcome === "review" || rules.problem !== null);
+  // A bash command a review rule matches is reviewed even when bash is in
+  // reviewExemptTools. (Rules that cannot be read ask, above.)
+  const reviewBash = command !== undefined && escalation?.outcome === "review";
   if (builtin && isLocalStateTool(toolName)) {
     return "local_state";
   }
@@ -392,7 +391,10 @@ async function decideToolCall(
     if (config.mode === "fallback" && ctx.hasUI) {
       return handleHumanFallback(ctx, config, store, subject, { started, route: "ask_rule", rule });
     }
-    const reason = `This command matches the command rule "${rule?.id}", which asks the user to approve it, and the user cannot be asked${config.mode === "auto" ? " in auto mode" : " without an interactive UI"}.${rule?.why ? ` Why: ${rule.why}` : ""} Do not retry it in another form; tell the user what you wanted to run and why.`;
+    const unasked = config.mode === "auto" ? " in auto mode" : " without an interactive UI";
+    const reason = rule?.id === RULES_PROBLEM_ID
+      ? `The command rules could not be loaded, so every bash command needs the user's approval, and the user cannot be asked${unasked}. Problem: ${rule.why}. Do not retry; tell the user to fix the rules file.`
+      : `This command matches the command rule "${rule?.id}", which asks the user to approve it, and the user cannot be asked${unasked}.${rule?.why ? ` Why: ${rule.why}` : ""} Do not retry it in another form; tell the user what you wanted to run and why.`;
     await audit({ route, outcome: "deny", reason });
     return automaticDeny(ctx, config, store, reason);
   }

@@ -50,9 +50,11 @@ export function commandLines(text: string): string[][] {
   let word = "";
   let started = false;
   let quote: "'" | "\"" | null = null;
-  // Open command substitutions: the quoting to return to when each closes,
-  // and how many plain parentheses are open inside it.
-  const substitutions: { quote: "\"" | null; backtick: boolean; depth: number }[] = [];
+  // Open command substitutions: the quoting and the outer line's words to
+  // return to when each closes, and how many plain parentheses are open
+  // inside it. Its commands become lines of their own; the outer word gets
+  // `$(…)` in its place, so a command named by a substitution stays visible.
+  const substitutions: { quote: "\"" | null; backtick: boolean; depth: number; outer: { words: string[]; word: string; started: boolean } }[] = [];
   // Heredocs opened on the current line, whose bodies start after it.
   const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
   const endWord = () => {
@@ -66,6 +68,22 @@ export function commandLines(text: string): string[][] {
     endWord();
     lines.push(words);
     words = [];
+  };
+  const openSubstitution = (backtick: boolean) => {
+    // Never inside single quotes, which are read before substitutions.
+    substitutions.push({ quote: quote as "\"" | null, backtick, depth: 0, outer: { words, word, started } });
+    words = [];
+    word = "";
+    started = false;
+    quote = null;
+  };
+  const closeSubstitution = () => {
+    endLine();
+    const { quote: outerQuote, outer } = substitutions.pop()!;
+    quote = outerQuote;
+    words = outer.words;
+    word = `${outer.word}$(…)`;
+    started = true;
   };
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index];
@@ -90,14 +108,11 @@ export function commandLines(text: string): string[][] {
     }
     // Command substitutions run commands, inside double quotes too.
     if (char === "`" && quote === null && substitutions.at(-1)?.backtick) {
-      endLine();
-      quote = substitutions.pop()!.quote;
+      closeSubstitution();
       continue;
     }
     if (char === "`" || (char === "$" && next === "(")) {
-      endLine();
-      substitutions.push({ quote, backtick: char === "`", depth: 0 });
-      quote = null;
+      openSubstitution(char === "`");
       index += char === "$" ? 1 : 0;
       continue;
     }
@@ -149,8 +164,7 @@ export function commandLines(text: string): string[][] {
       open.depth += 1;
     } else if (char === ")" && open && !open.backtick) {
       if (open.depth === 0) {
-        endLine();
-        quote = substitutions.pop()!.quote;
+        closeSubstitution();
         continue;
       }
       open.depth -= 1;
@@ -163,6 +177,10 @@ export function commandLines(text: string): string[][] {
       word += char;
       started = true;
     }
+  }
+  // An unclosed substitution ends with the text.
+  while (substitutions.length) {
+    closeSubstitution();
   }
   endLine();
   return lines;
@@ -223,7 +241,7 @@ export function shellHook(command: string, directory: string, depth = 0): string
       // Unquoted, the value splits into words and the first is the program.
       const program = value === undefined ? undefined : words[position].startsWith("\"") ? value : value.trim().split(/\s+/)[0];
       if (program === undefined) {
-        return `a command named by a variable (\`${words[position].slice(0, 40)}\`)`;
+        return `a command named by a ${words[position].includes("$(…)") ? "command substitution" : "variable"} (\`${words[position].slice(0, 40)}\`)`;
       }
       if (HOOK_COMMANDS.has(program)) {
         return `\`${program}\` (through \`${words[position].slice(0, 40)}\`)`;

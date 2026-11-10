@@ -916,6 +916,51 @@ async function run(): Promise<void> {
     }
   });
 
+  await test("while the rules file is broken, every bash command asks the user, and session start says so", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-broken-ask-"));
+    writeFileSync(join(workspace, "notes.txt"), "x\n");
+    writeFileSync(join(workspace, "rules.jsonc"), "{ broken");
+    const previousRules = process.env.PI_AUTO_APPROVAL_RULES_PATH;
+    const previousConfig = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+    process.env.PI_AUTO_APPROVAL_RULES_PATH = join(workspace, "rules.jsonc");
+    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = join(workspace, "config.jsonc");
+    writeFileSync(join(workspace, "config.jsonc"), JSON.stringify({ enabled: true, mode: "auto" }));
+    try {
+      const rules = loadCommandRules(join(workspace, "rules.jsonc"));
+      assert.notEqual(rules.problem, null);
+      const noClassifier = { classifierClient: async () => { throw new Error("must not call the classifier"); }, rules };
+      const bash = (command: string) => ({ toolName: "bash", input: { command } });
+      // Auto mode: denied, with the reason; the classifier is never asked.
+      const denied = await evaluateToolCall(bash("git status"), ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), noClassifier);
+      assert.match((denied as { reason?: string }).reason ?? "", /^The command rules could not be loaded, so every bash command needs the user's approval, and the user cannot be asked in auto mode\. Problem: .*rules\.jsonc: expected a key.*\. Do not retry; tell the user to fix the rules file\.$/);
+      // Even with bash in reviewExemptTools.
+      assert.equal("block" in await evaluateToolCall(bash("git status"), ctx({ cwd: workspace }), config({ mode: "auto", reviewExemptTools: ["bash"] }), new SessionApprovalStore(), noClassifier), true);
+      // Fallback mode with a UI: the user is asked.
+      let prompt = "";
+      const ui = { select: async (title: string) => { prompt = title; return "Allow Once"; } };
+      assert.deepEqual(await evaluateToolCall(bash("git status"), ctx({ cwd: workspace, hasUI: true, ui }), config({ mode: "fallback" }), new SessionApprovalStore(), noClassifier), {});
+      assert.match(prompt, /The command rules could not be loaded, so every bash command needs your approval until they are fixed\.[\s\S]*Rule: rules-unreadable \(ask, .*rules\.jsonc\)\nWhy: .*rules\.jsonc: expected a key/);
+      // Other tools are not governed by the rules.
+      assert.deepEqual(await evaluateToolCall({ toolName: "read", input: { path: "notes.txt" } }, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), noClassifier), {});
+
+      // Session start shows an error.
+      const handlers = new Map<string, (...args: any[]) => any>();
+      ompAutoApprovalExtension({ on: (event, handler) => { handlers.set(event, handler); }, getAllTools: () => [], registerCommand: () => {} });
+      const notices: [string, string | undefined][] = [];
+      await handlers.get("session_start")!({}, ctx({ cwd: workspace, ui: { notify: (message, type) => { notices.push([message, type]); }, setStatus: () => {} } }));
+      assert.ok(notices.some(([message, type]) => type === "error" && /^omp-auto-approval: the command rules could not be loaded, so every bash command asks you first/.test(message)), JSON.stringify(notices));
+    } finally {
+      for (const [name, previous] of [["PI_AUTO_APPROVAL_RULES_PATH", previousRules], ["PI_AUTO_APPROVAL_CONFIG_PATH", previousConfig]] as const) {
+        if (previous === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = previous;
+        }
+      }
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   await test("the extension's config and rules files are never written by the write fast path", () => {
     const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-protect-"));
     writeFileSync(join(workspace, "rules.jsonc"), "{}");
@@ -1001,11 +1046,27 @@ async function run(): Promise<void> {
         ["echo $(kubectl get secrets)", "review kube-secrets"],
         ["kubectl \\\ndelete --all", "block kube-delete-all"],
         ["sh -c 'kubectl exec api -- ls'", "ask kube-interactive"],
+        // A program named by a variable or a substitution may be any program:
+        // the rest of the pattern decides.
+        ["k=kubectl; $k delete --all", "block kube-delete-all"],
+        ['"$K" delete pods --all', "block kube-delete-all"],
+        ["${KUBECTL} exec api -- ls", "ask kube-interactive"],
+        ["$(command -v kubectl) delete --all", "block kube-delete-all"],
+        ["`which kubectl` get secrets", "review kube-secrets"],
+        ["echo $(kubectl delete --all)", "block kube-delete-all"],
+        ["$k get pods", null],
+        ["$k describe deploy/api", null],
+        // A variable the command sets to plain text is read as that text.
+        ["X=helm; $X delete --all", null],
+        ['K="kubectl --context prod"; $K delete --all', "block kube-delete-all"],
+        ["export K=kubectl; ${K} delete --all", "block kube-delete-all"],
+        ["for K in kubectl helm; do $K delete --all; done", "block kube-delete-all"],
+        ["sudo $K delete --all", "block kube-delete-all"],
+        ['eval "$K delete --all"', "block kube-delete-all"],
         // Known misses, documented: case and resource lists are not covered
-        // by these patterns, and a variable hides the program.
+        // by these patterns.
         ["kubectl get Secrets", null],
         ["kubectl get pods,secrets", null],
-        ["k=kubectl; $k delete --all", null],
       ];
       for (const [command, expected] of cases) {
         assert.equal(decided(command), expected, command);
@@ -1036,6 +1097,17 @@ async function run(): Promise<void> {
     assert.equal(matches("/curl[^|]*\\|\\s*(ba)?sh/", "curl -s x | bash"), true);
     assert.equal(matches(["git push --force", "git push -f"], "git push -uf origin"), true);
     assert.equal(matches("*ctl delete", "systemctl delete x"), true);
+    // A one-word pattern does not take a variable for its program, or every
+    // command with a variable in it would match.
+    assert.equal(matches("rm", "$cmd -rf build"), false);
+    assert.equal(matches("rm -rf", "$cmd -rf build"), true);
+    assert.equal(matches("/kubectl\\s+delete/", "$k delete --all"), false);
+    // Only where a program would be: here $pattern is grep's argument.
+    assert.equal(matches("sed -i", "grep $pattern -i notes.txt"), false);
+    assert.equal(matches("sed -i", "SED=sed; $SED -i s/a/b/ notes.txt"), true);
+    assert.equal(matches("sed -i", "SED=gsed; $SED -i s/a/b/ notes.txt"), false);
+    // A pattern may still name an expansion literally.
+    assert.equal(matches("rm -rf $HOME", "rm -rf $HOME"), true);
     // A compiled rule is reused: a sticky or global regex must not skip every other command.
     const sticky = rules("/git\\s+reset/gy");
     assert.equal(escalateCommand("git reset --hard", sticky) !== null, true);
@@ -2225,7 +2297,7 @@ async function run(): Promise<void> {
       assert.match(await say("explain bash git status"), /allowed by: program:git status \(default\)$/);
       writeFileSync(join(dir, "rules.jsonc"), "{ broken");
       for (const args of ["rules", "rules git"]) {
-        assert.match(await say(args), /^command rules could not be loaded, so every bash command is reviewed: .*rules\.jsonc: expected a key/, args);
+        assert.match(await say(args), /^omp-auto-approval: the command rules could not be loaded, so every bash command asks you first \(and is denied in auto mode\): .*rules\.jsonc: expected a key.*Fix the file, then run \/auto-approval status to reload it\.$/, args);
       }
     } finally {
       for (const [name, previous] of [["PI_AUTO_APPROVAL_CONFIG_PATH", previousConfigPath], ["PI_AUTO_APPROVAL_RULES_PATH", previousRulesPath]] as const) {

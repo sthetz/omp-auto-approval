@@ -71,7 +71,7 @@ function stateText(config: AutoReviewConfig): "off" | "fallback" | "auto" {
 }
 
 function rulesProblemText(rules: CommandRules): string {
-  return `command rules could not be loaded, so every bash command is reviewed: ${rules.problem}`;
+  return `omp-auto-approval: the command rules could not be loaded, so every bash command asks you first (and is denied in auto mode): ${rules.problem}. Fix the file, then run /auto-approval status to reload it.`;
 }
 
 function rulesStatusText(rules: CommandRules): string[] {
@@ -153,7 +153,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
         notify(ctx, loadResult.notice, "warning");
       }
       if (options.announce && rules.problem) {
-        notify(ctx, rulesProblemText(rules), "warning");
+        notify(ctx, rulesProblemText(rules), "error");
       }
     }
   }

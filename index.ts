@@ -1,7 +1,8 @@
-import type { AutoReviewConfig, ExtensionContextLike, ToolCallEventLike } from "./src/types.js";
+import type { AutoReviewConfig, ExtensionContextLike } from "./src/types.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, saveConfig } from "./src/extension-config.js";
 import { defaultRulesPath, loadCommandRules, userRulesPath, type CommandRules } from "./src/command-rules.js";
-import { bashEscalation, evaluateToolCall, planBashCommand, selectFastPath, sessionKey, type FastPathRoute } from "./src/decision.js";
+import { decide, sessionKey, snapshotDecisionState, type Decision } from "./src/decision.js";
+import { canonicalContext, canonicalTools, evaluateToolCall } from "./src/omp-host.js";
 import { describeRule, rulesOverview } from "./src/rules-report.js";
 import { toRecord } from "./src/common.js";
 import { findToolDefinition } from "./src/tool-routing.js";
@@ -10,14 +11,14 @@ import { SessionApprovalStore } from "./src/session-approval-store.js";
 import { selectClassifierModel } from "./src/model-selector.js";
 
 type ExtensionAPI = {
-  on(event: string, handler: (...args: any[]) => any): void;
-  getAllTools?: () => unknown[];
+  on(event: string, handler: (event: unknown, ctx: unknown) => unknown): void;
+  getAllTools?: () => unknown;
   registerCommand?: (
     name: string,
     definition: {
       description: string;
-      getArgumentCompletions?: (argumentPrefix: string) => Array<{ value: string; label?: string; description?: string }> | null | Promise<Array<{ value: string; label?: string; description?: string }> | null>;
-      handler: (args: string, ctx: ExtensionContextLike) => Promise<void> | void;
+      getArgumentCompletions?: (argumentPrefix: unknown) => Array<{ value: string; label?: string; description?: string }> | null | Promise<Array<{ value: string; label?: string; description?: string }> | null>;
+      handler: (args: unknown, ctx: unknown) => Promise<void> | void;
     },
   ) => void;
 };
@@ -33,7 +34,9 @@ export const SYSTEM_PROMPT_NOTE = [
   "Tell the user what was blocked and why, and wait for their guidance.",
 ].join(" ");
 
-const ROUTE_EXPLANATIONS: Record<FastPathRoute, string> = {
+const ROUTE_EXPLANATIONS: Record<Decision["route"], string> = {
+  disabled: "allowed without review: omp-clearance is off",
+  invalid: "blocked: no tool name was provided",
   blocked_command: "blocked: matches a block command rule, never auto-approved or asked",
   ask_rule: "asks you directly, without the classifier: matches an ask command rule (denied in auto mode or without a UI)",
   local_state: "allowed without review: local session state (todo, wait)",
@@ -43,7 +46,23 @@ const ROUTE_EXPLANATIONS: Record<FastPathRoute, string> = {
   workspace_write: "allowed without review: write inside the workspace, outside protected entries",
   safe_command: "allowed without review: every command is read-only by the command rules",
   manual_only: "needs manual approval: this tool cannot be auto-approved",
+  session_approval: "allowed without review: exact session approval",
+  classifier_cache: "decided by the cached classifier verdict",
+  classifier: "classifier review",
+  human: "asks you for approval",
 };
+
+function decisionExplanation(decision: Decision): string {
+  if (decision.outcome === "review") {
+    return decision.state.config.mode === "fallback"
+      ? "classifier review; you decide if it denies or fails"
+      : "classifier review; blocked if it denies or fails";
+  }
+  if (decision.route === "manual_only" && decision.outcome === "deny" && decision.state.config.mode === "auto") {
+    return "blocked: this tool cannot be auto-approved and auto mode never asks";
+  }
+  return ROUTE_EXPLANATIONS[decision.route];
+}
 
 function parseExplainInput(toolName: string, rest: string): { input: unknown } | { error: string } {
   if (toolName === "bash") {
@@ -137,7 +156,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
   // Latest assistant text in the current agent run, for the classifier.
   let agentMessage: string | undefined;
 
-  function refresh(ctx?: ExtensionContextLike, options: { announce?: boolean } = {}): void {
+  function refresh(ctx?: ExtensionContextLike, options: { announce?: boolean; quiet?: boolean } = {}): void {
     if (ctx) {
       lastContext = ctx;
     }
@@ -146,7 +165,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
     rules = loadCommandRules();
     if (ctx) {
       setStatus(ctx, config);
-      if (loadResult.warning) {
+      if (loadResult.warning && !options.quiet) {
         notify(ctx, loadResult.warning, "warning");
       }
       if (options.announce && loadResult.notice) {
@@ -164,7 +183,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
       notify(ctx, "Usage: /clearance explain <tool> [path | JSON arguments | bash command], or a bash command", "warning");
       return;
     }
-    const tools = omp.getAllTools?.() ?? [];
+    const tools = canonicalTools(omp.getAllTools?.());
     // `explain ls -la` means the shell command: no session tool has that name.
     const asCommand = firstWord !== "bash" && tools.length > 0 && findToolDefinition(firstWord, tools) === undefined;
     const toolName = asCommand ? "bash" : firstWord;
@@ -174,31 +193,16 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
       return;
     }
     const source = toRecord(toRecord(findToolDefinition(toolName, tools)).sourceInfo).source;
-    const escalation = bashEscalation(toolName, parsed.input, config, rules);
-    const route = selectFastPath(toolName, parsed.input, {
-      escalation,
-      cwd: ctx.cwd || process.cwd(),
-      config,
-      tools,
-      hasUI: ctx.hasUI === true,
-      shellLatched: approvals.shellLatch(sessionKey(ctx)) !== null,
-      rules,
-    });
-    const plan = route === "safe_command" ? planBashCommand(toolName, parsed.input, ctx.cwd || process.cwd(), config, rules) : null;
-    const review = config.mode === "fallback"
-      ? "classifier review; you decide if it denies or fails"
-      : "classifier review; blocked if it denies or fails";
-    const outcome = route === "manual_only" && config.mode === "auto"
-      ? "blocked: this tool cannot be auto-approved and auto mode never asks"
-      : route
-        ? ROUTE_EXPLANATIONS[route]
-        : review;
+    const call = { toolName, input: parsed.input };
+    const decision = decide(call, snapshotDecisionState(call, ctx, config, approvals, { tools, rules }));
+    const plan = decision.plan;
+    const escalation = decision.staticVerdict?.escalation;
     notify(ctx, [
       ...(asCommand ? [`note: no tool named "${firstWord}" in this session; explained as a bash command`] : []),
       `state: ${stateText(config)}${config.enabled ? "" : " (nothing is reviewed while off)"}`,
       `tool: ${toolName}${typeof source === "string" ? ` (${source})` : ""}`,
       `arguments: ${JSON.stringify(parsed.input)}`,
-      `route: ${outcome}`,
+      `route: ${decisionExplanation(decision)}`,
       ...(plan && plan.command !== toRecord(parsed.input).command ? [`runs as: ${plan.command}`] : []),
       ...(plan?.cwd ? [`runs in: ${plan.cwd}`] : []),
       ...(plan ? [`allowed by: ${plan.rules.map((used) => `${used.id} (${used.source})`).join(", ")}`] : []),
@@ -273,7 +277,6 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
         }
         break;
       case "status":
-      default:
         notify(
           ctx,
           [
@@ -287,24 +290,35 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
           ].join("\n"),
         );
         break;
+      default:
+        notify(ctx, `Unknown /clearance subcommand "${command}". Use status, off, fallback, auto, model, rules, or explain.`, "warning");
+        break;
     }
   }
 
   omp.registerCommand?.("clearance", {
     description: "args: status | off | fallback | auto | model | rules | explain",
-    getArgumentCompletions: getAutoReviewArgumentCompletions,
-    handler: async (args, ctx) => {
-      await runCommand(parseCommand(args), parseCommandRest(args), ctx);
+    getArgumentCompletions: (prefix) => getAutoReviewArgumentCompletions(typeof prefix === "string" ? prefix : ""),
+    handler: async (args, context) => {
+      const ctx = canonicalContext(context);
+      if (!ctx) {
+        return;
+      }
+      const text = typeof args === "string" ? args : "";
+      await runCommand(parseCommand(text), parseCommandRest(text), ctx);
     },
   });
 
-  omp.on("session_start", async (_event: unknown, ctx: ExtensionContextLike) => {
+  omp.on("session_start", async (_event: unknown, context: unknown) => {
     approvals.clear();
     agentMessage = undefined;
-    refresh(ctx, { announce: true });
+    const ctx = canonicalContext(context);
+    if (ctx) {
+      refresh(ctx, { announce: true });
+    }
   });
 
-  // OMP passes the system prompt as an array of sections, Pi as one string.
+  // OMP passes the system prompt as an array of sections.
   omp.on("before_agent_start", async (event: unknown) => {
     agentMessage = undefined;
     if (!config.enabled) {
@@ -320,8 +334,8 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
     return undefined;
   });
 
-  omp.on("resources_discover", async (_event: unknown, ctx: ExtensionContextLike) => {
-    refresh(ctx ?? lastContext ?? undefined);
+  omp.on("resources_discover", async (_event: unknown, context: unknown) => {
+    refresh(canonicalContext(context) ?? lastContext ?? undefined);
   });
 
   omp.on("session_shutdown", async () => {
@@ -330,16 +344,25 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
     lastContext = null;
   });
 
-  omp.on("tool_call", async (event: ToolCallEventLike, ctx: ExtensionContextLike) => {
-    lastContext = ctx;
-    if (loadResult.created || loadResult.warning) {
-      refresh(ctx);
+  omp.on("tool_call", async (event: unknown, context: unknown) => {
+    try {
+      const ctx = canonicalContext(context);
+      if (!ctx) {
+        return { block: true, reason: "Tool call was blocked because OMP supplied an invalid extension context." };
+      }
+      lastContext = ctx;
+      if (loadResult.created || loadResult.warning) {
+        refresh(ctx, { quiet: true });
+      }
+      return await evaluateToolCall(event, ctx, config, approvals, {
+        tools: canonicalTools(omp.getAllTools?.()),
+        agentMessage,
+        rules,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { block: true, reason: `omp-clearance failed to decide this tool call: ${reason}. Do not retry; report this error to the user.` };
     }
-    return evaluateToolCall(event, ctx, config, approvals, {
-      tools: omp.getAllTools?.() ?? [],
-      agentMessage,
-      rules,
-    });
   });
 
   // OMP fires tool_call while the assistant message that issued it is still

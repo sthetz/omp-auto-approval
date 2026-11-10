@@ -5,7 +5,7 @@ import { canonicalPath, getString, relativePathWithin, resolvePathForCwd, sha256
 
 export { resolveReadRoots, type ReadRoots } from "./common.js";
 import { isSensitivePath } from "./sensitive-paths.js";
-import type { ReviewSubject, ToolCallEventLike } from "./types.js";
+import type { ReviewSubject } from "./types.js";
 
 const LOCAL_STATE_TOOLS: Record<string, true> = { todo: true, wait: true };
 
@@ -59,19 +59,6 @@ const PROTECTED_WORKSPACE_ENTRIES = new Set([
   ".husky",
   ".devcontainer",
 ]);
-
-export function getToolName(event: ToolCallEventLike): string | null {
-  const direct = getString(event.toolName) ?? getString(event.name);
-  if (direct) {
-    return direct;
-  }
-  const toolRecord = toRecord(event.tool);
-  return getString(toolRecord.name) ?? getString(toolRecord.toolName) ?? null;
-}
-
-export function getToolInput(event: ToolCallEventLike): unknown {
-  return event.input !== undefined ? event.input : event.arguments ?? {};
-}
 
 export function isLocalStateTool(toolName: string): boolean {
   return LOCAL_STATE_TOOLS[toolName.trim().toLowerCase()] === true;

@@ -9,7 +9,8 @@ import { compileCommandPattern } from "../src/command-patterns.js";
 import { isWorkspaceWriteFastPath, resolveReadRoots } from "../src/tool-routing.js";
 import { buildProjectedContext } from "../src/context-projection.js";
 import { configPath, DEFAULT_CONFIG, extensionRoot, loadConfig, logPath, logsDir, normalizeConfig, saveConfig } from "../src/extension-config.js";
-import { evaluateToolCall, selectFastPath } from "../src/decision.js";
+import { decide, type DecisionState } from "../src/decision.js";
+import { canonicalContext, canonicalToolCall, canonicalTools, evaluateToolCall, type ToolCallDecision } from "../src/omp-host.js";
 import { columnWidth, truncateVisible } from "../src/model-selector.js";
 import { planSafeCommand } from "../src/safe-command.js";
 import { isSafeSedScript } from "../src/program-rules.js";
@@ -98,6 +99,20 @@ function ctx(overrides: Partial<ExtensionContextLike> = {}): ExtensionContextLik
     sessionManager: { getBranch: () => [] },
     ...overrides,
   };
+}
+
+function staticRoute(
+  toolName: string,
+  input: unknown,
+  options: Pick<DecisionState, "cwd" | "config" | "tools" | "hasUI"> & Partial<Pick<DecisionState, "rules" | "shellLatched">>,
+): string | null {
+  const decision = decide({ toolName, input }, {
+    ...options,
+    shellLatched: options.shellLatched ?? false,
+    rules: options.rules ?? defaultRules(),
+    exactApproved: false,
+  });
+  return decision.staticVerdict?.outcome === "review" ? null : decision.staticVerdict?.route ?? null;
 }
 
 const CLASSIFIER_DENY_REASON = "The approval classifier rejected this action. Reason: needs review Do not retry the same action unless the user explicitly approves it.";
@@ -1021,15 +1036,15 @@ async function run(): Promise<void> {
       for (const path of ["rules.jsonc", "./rules.jsonc", "link.jsonc", "kube.jsonc", join(workspace, "rules.jsonc")]) {
         assert.equal(isWorkspaceWriteFastPath(write(path), workspace, protectedFiles), false, path);
       }
-      // selectFastPath protects config.jsonc and rules.jsonc even before they exist.
+      // The static evaluator protects config.jsonc and rules.jsonc even before they exist.
       process.env.CLEARANCE_RULES_PATH = join(workspace, "new-rules.jsonc");
       process.env.CLEARANCE_CONFIG_PATH = join(workspace, "config.jsonc");
-      const route = (path: string) => selectFastPath("write", write(path), { cwd: workspace, config: config(), tools: [], hasUI: false });
+      const route = (path: string) => staticRoute("write", write(path), { cwd: workspace, config: config(), tools: [], hasUI: false });
       assert.equal(route("notes.txt"), "workspace_write");
       assert.equal(route("new-rules.jsonc"), null);
       assert.equal(route("config.jsonc"), null);
       const rules: CommandRules = { ...defaultRules(), files: [join(workspace, "kube.jsonc")] };
-      assert.equal(selectFastPath("write", write("kube.jsonc"), { cwd: workspace, config: config(), tools: [], hasUI: false, rules }), null);
+      assert.equal(staticRoute("write", write("kube.jsonc"), { cwd: workspace, config: config(), tools: [], hasUI: false, rules }), null);
     } finally {
       process.env.CLEARANCE_RULES_PATH = previousRules;
       if (previousConfig === undefined) {
@@ -1582,6 +1597,54 @@ async function run(): Promise<void> {
       assert.equal(isSafeReadOnlyCommand(command, glued, "/tmp/workspace"), false, command);
     }
     assert.equal(isSafeReadOnlyCommand("python -m pytest -x tests", glued, "/tmp/workspace"), true);
+  });
+
+  await test("the OMP boundary validates events, contexts, tools, session data and registry results", async () => {
+    assert.deepEqual(canonicalToolCall({ tool: { name: "bash" }, arguments: { command: "pwd" } }), { toolName: "bash", input: { command: "pwd" } });
+    assert.deepEqual(canonicalToolCall(null), { toolName: null, input: {} });
+    assert.deepEqual(canonicalTools(null), []);
+    assert.equal(canonicalContext(null), null);
+
+    const hostCtx = canonicalContext({
+      cwd: 42,
+      hasUI: true,
+      ui: { select: async () => 42, notify: "not a function" },
+      sessionManager: { getBranch: () => null, getSessionId: () => null },
+      modelRegistry: {
+        getAvailable: async () => null,
+        getApiKeyAndHeaders: async () => ({ ok: "yes", headers: { good: "value", bad: 7 } }),
+      },
+    });
+    assert.ok(hostCtx);
+    assert.equal(hostCtx.cwd, undefined);
+    assert.equal(hostCtx.hasUI, true);
+    assert.equal(await hostCtx.ui?.select?.("question", []), undefined);
+    assert.equal(hostCtx.ui?.notify, undefined);
+    assert.deepEqual(hostCtx.sessionManager?.getBranch?.(), []);
+    assert.equal(hostCtx.sessionManager?.getSessionId?.(), "");
+    assert.deepEqual(await hostCtx.modelRegistry?.getAvailable?.(), []);
+    assert.deepEqual(await hostCtx.modelRegistry?.getApiKeyAndHeaders?.({}), { ok: false, headers: { good: "value" } });
+
+    const missingName = await evaluateToolCall(null, hostCtx, config({ mode: "auto" }), new SessionApprovalStore(), classifierDenyOptions());
+    assert.equal("block" in missingName && missingName.block, true);
+    assert.match("reason" in missingName ? missingName.reason : "", /no tool name/);
+
+    const handlers = new Map<string, (event: unknown, context: unknown) => unknown>();
+    ompClearanceExtension({ on: (event, handler) => { handlers.set(event, handler); } });
+    const invalidContext: unknown = await handlers.get("tool_call")?.({ toolName: "bash", input: { command: "pwd" } }, null);
+    assert.deepEqual(invalidContext, { block: true, reason: "Tool call was blocked because OMP supplied an invalid extension context." });
+
+    const throwingContext = new Proxy({}, { get: () => { throw new Error("host context getter failed"); } });
+    const failedContext: unknown = await handlers.get("tool_call")?.({ toolName: "bash", input: { command: "pwd" } }, throwingContext);
+    assert.deepEqual(failedContext, { block: true, reason: "omp-clearance failed to decide this tool call: host context getter failed. Do not retry; report this error to the user." });
+
+    const throwingHandlers = new Map<string, (event: unknown, context: unknown) => unknown>();
+    ompClearanceExtension({
+      on: (event, handler) => { throwingHandlers.set(event, handler); },
+      getAllTools: () => { throw new Error("host tools unavailable"); },
+    });
+    const failed: unknown = await throwingHandlers.get("tool_call")?.({ toolName: "bash", input: { command: "pwd" } }, ctx());
+    assert.deepEqual(failed, { block: true, reason: "omp-clearance failed to decide this tool call: host tools unavailable. Do not retry; report this error to the user." });
   });
 
   await test("disabled extension transparently allows", async () => {
@@ -2338,18 +2401,23 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("extension registers one slash command with subcommands", () => {
+  await test("extension registers one slash command and rejects unknown subcommands", async () => {
     const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
     const configPath = join(tmpdir(), `omp-clearance-${Date.now()}.jsonc`);
     process.env.CLEARANCE_CONFIG_PATH = configPath;
     const commands: string[] = [];
+    let handler: ((args: string, ctx: ExtensionContextLike) => Promise<void> | void) | undefined;
     ompClearanceExtension({
       on: () => {},
-      registerCommand: (name) => {
+      registerCommand: (name, definition) => {
         commands.push(name);
+        handler = definition.handler;
       },
     });
     assert.deepEqual(commands, ["clearance"]);
+    const messages: string[] = [];
+    await handler?.("unknown", ctx({ ui: { notify: (message) => { messages.push(message); } } }));
+    assert.deepEqual(messages, ['Unknown /clearance subcommand "unknown". Use status, off, fallback, auto, model, rules, or explain.']);
     rmSync(configPath, { force: true });
     if (previousConfigPath === undefined) {
       delete process.env.CLEARANCE_CONFIG_PATH;
@@ -2515,7 +2583,7 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("unknown config keys are reported once at session start, not on every tool call", async () => {
+  await test("config notices and read warnings are reported once at session start, not on every tool call", async () => {
     const configFile = join(tmpdir(), `omp-clearance-keys-${Date.now()}.jsonc`);
     writeFileSync(configFile, JSON.stringify({ $schema: "./schemas/config.schema.json", enabled: true, safeCommandAllowList: ["make"], modes: "auto" }));
     const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
@@ -2539,6 +2607,19 @@ async function run(): Promise<void> {
       await handlers.get("tool_call")?.({ toolName: "read", input: { path: "a.ts" } }, sessionCtx);
       await handlers.get("tool_call")?.({ toolName: "read", input: { path: "b.ts" } }, sessionCtx);
       assert.equal(notices.filter((message) => message.includes("unknown key")).length, 1);
+
+      writeFileSync(configFile, "{");
+      const warningHandlers = new Map<string, (event: unknown, context: ExtensionContextLike) => unknown>();
+      ompClearanceExtension({ on: (event, handler) => { warningHandlers.set(event, handler); } });
+      await warningHandlers.get("session_start")?.({}, sessionCtx);
+      await warningHandlers.get("tool_call")?.({ toolName: "read", input: { path: "a.ts" } }, sessionCtx);
+      await warningHandlers.get("tool_call")?.({ toolName: "read", input: { path: "b.ts" } }, sessionCtx);
+      assert.equal(notices.filter((message) => message.includes("Failed to read omp-clearance config")).length, 1);
+
+      writeFileSync(configFile, JSON.stringify({ enabled: true, mode: "auto" }));
+      await warningHandlers.get("tool_call")?.({ toolName: "read", input: { path: "a.ts" } }, sessionCtx);
+      assert.deepEqual(await warningHandlers.get("before_agent_start")?.({ systemPrompt: ["base"] }, sessionCtx), { systemPrompt: ["base", SYSTEM_PROMPT_NOTE] });
+      assert.equal(notices.filter((message) => message.includes("Failed to read omp-clearance config")).length, 1);
     } finally {
       rmSync(configFile, { force: true });
       if (previousConfigPath === undefined) {
@@ -2680,6 +2761,46 @@ async function run(): Promise<void> {
     assert.equal(reviewed, true);
   });
 
+  await test("exact session approval audits do not repeat an earlier classifier denial", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-exact-audit-"));
+    const previousLogsDir = process.env.CLEARANCE_LOGS_DIR;
+    process.env.CLEARANCE_LOGS_DIR = dir;
+    const store = new SessionApprovalStore();
+    const event = { toolName: "bash", input: { command: "make deploy" } };
+    try {
+      await evaluateToolCall(event, ctx({ hasUI: true, ui: { select: async () => "Allow Always This Exact Action" } }), config({ mode: "fallback", audit: true }), store, classifierDenyOptions());
+      await evaluateToolCall(event, ctx(), config({ mode: "auto", audit: true }), store, classifierDenyOptions());
+      const entries = readFileSync(logPath(), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+      assert.equal(entries.length, 2);
+      assert.equal(entries[0]?.route, "human");
+      assert.equal(entries[1]?.route, "session_approval");
+      assert.equal(entries[1]?.classifierDecision, undefined);
+    } finally {
+      if (previousLogsDir === undefined) {
+        delete process.env.CLEARANCE_LOGS_DIR;
+      } else {
+        process.env.CLEARANCE_LOGS_DIR = previousLogsDir;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test("a classifier verdict cannot be discarded by a later static re-plan", async () => {
+    const input: { command: string; pty?: boolean } = { command: "git status", pty: true };
+    assert.equal(staticRoute("bash", input, { cwd: "/tmp/workspace", config: config(), tools: [], hasUI: false }), null);
+    const result = await evaluateToolCall(
+      { toolName: "bash", input },
+      ctx(),
+      config({ mode: "auto" }),
+      new SessionApprovalStore(),
+      { classifierClient: async () => {
+        delete input.pty;
+        return { content: [{ type: "text", text: '{"outcome":"deny","rationale":"needs review"}' }] };
+      } },
+    );
+    assert.deepEqual(result, { block: true, reason: CLASSIFIER_DENY_REASON });
+  });
+
   await test("the classifier and its cache see the command exactly as bash will run it", async () => {
     const store = new SessionApprovalStore();
     const seen: string[] = [];
@@ -2703,7 +2824,7 @@ async function run(): Promise<void> {
   await test("bash calls with fields that change how they run are not fast-pathed", () => {
     const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-fields-"));
     try {
-      const route = (input: Record<string, unknown>) => selectFastPath("bash", input, { cwd: workspace, config: config(), tools: [], hasUI: false });
+      const route = (input: Record<string, unknown>) => staticRoute("bash", input, { cwd: workspace, config: config(), tools: [], hasUI: false });
       assert.equal(route({ command: "git status", timeout: 30, description: "status" }), "safe_command");
       assert.equal(route({ command: "git status", pty: false, async: false }), "safe_command");
       for (const extra of [{ pty: true }, { async: true }, { name: "svc" }, { env: { LD_PRELOAD: "/tmp/x.so" } }, { ready: "listening" }, { log: "out.log" }, { surprise: 1 }]) {
@@ -3326,6 +3447,57 @@ async function run(): Promise<void> {
     assert.match(last, /rejected 2 actions in a row; stop and ask the user for guidance/);
   });
 
+  await test("denial-threshold audits keep the base reason for block and unanswered ask", async () => {
+    const root = mkdtempSync(join(tmpdir(), "omp-clearance-threshold-audit-"));
+    const previousLogsDir = process.env.CLEARANCE_LOGS_DIR;
+    try {
+      for (const testCase of [
+        { route: "blocked_command", commands: ["make a", "make b"], blockRules: ["make"] },
+        { route: "ask_rule", commands: ["git reset --hard HEAD~1", "git reset --hard HEAD~2"], blockRules: [] },
+      ]) {
+        process.env.CLEARANCE_LOGS_DIR = join(root, testCase.route);
+        const cfg = config({ mode: "auto", audit: true, maxConsecutiveDenials: 2, blockRules: testCase.blockRules });
+        const store = new SessionApprovalStore();
+        let second: ToolCallDecision = {};
+        for (const command of testCase.commands) {
+          second = await evaluateToolCall({ toolName: "bash", input: { command } }, ctx(), cfg, store, { rules: cfg.rules });
+        }
+        assert.match("reason" in second ? second.reason : "", /rejected 2 actions in a row/);
+        const entries = readFileSync(logPath(), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+        assert.equal(entries.length, 2);
+        assert.equal(entries[1]?.route, testCase.route);
+        assert.equal(entries[1]?.reason, entries[0]?.reason);
+        assert.doesNotMatch(String(entries[1]?.reason), /rejected 2 actions in a row/);
+      }
+    } finally {
+      if (previousLogsDir === undefined) {
+        delete process.env.CLEARANCE_LOGS_DIR;
+      } else {
+        process.env.CLEARANCE_LOGS_DIR = previousLogsDir;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test("concurrent classifier denials return the committed threshold reason", async () => {
+    const store = new SessionApprovalStore();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const client = async () => {
+      await gate;
+      return { content: [{ type: "text", text: '{"outcome":"deny","rationale":"needs review"}' }] };
+    };
+    let aborts = 0;
+    const context = ctx({ abort: () => { aborts += 1; } });
+    const first = evaluateToolCall({ toolName: "bash", input: { command: "make a" } }, context, config({ mode: "auto", maxConsecutiveDenials: 2 }), store, { classifierClient: client });
+    const second = evaluateToolCall({ toolName: "bash", input: { command: "make b" } }, context, config({ mode: "auto", maxConsecutiveDenials: 2 }), store, { classifierClient: client });
+    release();
+    const results = await Promise.all([first, second]);
+    assert.deepEqual(results[0], { block: true, reason: CLASSIFIER_DENY_REASON });
+    assert.match("reason" in results[1] ? results[1].reason : "", /rejected 2 actions in a row and stopped the turn/);
+    assert.equal(aborts, 1);
+  });
+
   await test("fallback offers Reject and Stop, which ends the turn", async () => {
     let aborts = 0;
     let offered: string[] = [];
@@ -3352,6 +3524,19 @@ async function run(): Promise<void> {
       classifierDenyOptions(),
     );
     assert.ok(!offered.includes("Reject and Stop the Turn"));
+  });
+
+  await test("manual-only tools keep their prompt explanation and rejection reason", async () => {
+    let prompt = "";
+    const result = await evaluateToolCall(
+      { toolName: "computer", input: {} },
+      ctx({ hasUI: true, ui: { select: async (title) => { prompt = title; return "Reject"; } } }),
+      config({ mode: "fallback" }),
+      new SessionApprovalStore(),
+      { classifierClient: async () => { throw new Error("manual-only tools must not reach the classifier"); } },
+    );
+    assert.match(prompt, /Failure: This tool requires explicit user interaction and cannot be auto-approved\./);
+    assert.deepEqual(result, { block: true, reason: "This tool requires explicit user interaction and cannot be auto-approved." });
   });
 
   await test("human rejections count once toward consecutive denials", async () => {

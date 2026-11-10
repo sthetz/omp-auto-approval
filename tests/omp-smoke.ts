@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ompClearanceExtension from "../index.js";
-import { evaluateToolCall } from "../src/decision.js";
+import { evaluateToolCall } from "../src/omp-host.js";
 import { loadConfig, logPath } from "../src/extension-config.js";
 import { SessionApprovalStore } from "../src/session-approval-store.js";
 import type { ExtensionContextLike } from "../src/types.js";

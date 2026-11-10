@@ -30,15 +30,6 @@ export interface ReviewDecision {
   rationale?: string;
 }
 
-export interface ToolCallEventLike {
-  toolCallId?: string;
-  tool?: unknown;
-  toolName?: unknown;
-  name?: unknown;
-  input?: unknown;
-  arguments?: unknown;
-}
-
 export interface ExtensionContextLike {
   cwd?: string;
   mode?: "tui" | "rpc" | "print" | string;
@@ -62,7 +53,7 @@ export interface ExtensionContextLike {
   abort?: () => void;
   model?: unknown;
   modelRegistry?: {
-    refresh?: () => void;
+    refresh?: () => unknown;
     getError?: () => string | undefined;
     find?: (provider: string, id: string) => unknown;
     getAvailable?: () => unknown[] | Promise<unknown[]>;

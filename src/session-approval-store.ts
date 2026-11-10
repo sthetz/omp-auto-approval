@@ -37,8 +37,8 @@ export class SessionApprovalStore {
   /**
    * Turn the bash fast path off for the rest of the session: an approved
    * command may have left the shell running code before later commands.
+   * Return whether this call set it (an earlier latch stays as it was).
    */
-  /** Latch, and say whether this call set it (an earlier latch stays as it was). */
   latchShell(session: string, reason: string): boolean {
     if (this.shellHooks.has(session)) {
       return false;

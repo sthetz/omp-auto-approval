@@ -306,7 +306,7 @@ async function main(): Promise<void> {
   }
   const rng = random(Number(option("--seed") ?? 1));
   const count = Number(option("--count") ?? 2000);
-  const config = { ...DEFAULT_CONFIG, enabled: true };
+  const config = { ...DEFAULT_CONFIG, reviewer: "ai" as const };
   const commands = new Set<string>();
   for (let attempt = 0; commands.size < count && attempt < count * 20; attempt += 1) {
     commands.add(generate(rng));

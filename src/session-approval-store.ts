@@ -25,6 +25,10 @@ export class SessionApprovalStore {
     this.classifierDecisions.set(actionHash, decision);
   }
 
+  get consecutiveDenialCount(): number {
+    return this.consecutiveDenials;
+  }
+
   recordDenial(): number {
     this.consecutiveDenials += 1;
     return this.consecutiveDenials;

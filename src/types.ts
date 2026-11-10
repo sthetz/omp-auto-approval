@@ -1,4 +1,4 @@
-export type ClearanceMode = "fallback" | "auto";
+export type Reviewer = "ai" | "manual" | "off";
 
 export interface AuthResolution {
   ok: boolean;
@@ -9,8 +9,7 @@ export interface AuthResolution {
 }
 
 export interface ClearanceConfig {
-  enabled: boolean;
-  mode: ClearanceMode;
+  reviewer: Reviewer;
   classifierModel: string | null;
   approvalTimeoutSeconds: number;
   classifierTimeoutSeconds: number;
@@ -84,7 +83,7 @@ export interface ReviewSubject {
 }
 
 export type RouteName =
-  | "disabled"
+  | "reviewer_off"
   | "local_state"
   | "ui_only"
   | "tool_allowlist"
@@ -95,6 +94,7 @@ export type RouteName =
   | "classifier_cache"
   | "classifier"
   | "human"
+  | "manual_unavailable"
   | "manual_only"
   | "blocked_command"
   | "ask_rule";
@@ -102,7 +102,7 @@ export type RouteName =
 export interface AuditEntry {
   event: string;
   route: RouteName;
-  mode: ClearanceMode;
+  reviewer: Reviewer;
   toolName: string;
   actionSummary: string;
   actionHash: string;
@@ -125,7 +125,7 @@ export interface AuditEntry {
 /** An approved bash command turned the session's bash fast path off (see shellHook). */
 export interface ShellLatchEntry {
   event: "shell_latch";
-  mode: ClearanceMode;
+  reviewer: Reviewer;
   toolName: string;
   actionSummary: string;
   actionHash: string;

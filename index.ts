@@ -1,4 +1,4 @@
-import type { ClearanceConfig, ExtensionContextLike } from "./src/types.js";
+import type { ClearanceConfig, ExtensionContextLike, Reviewer } from "./src/types.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, saveConfig } from "./src/extension-config.js";
 import { defaultRulesPath, loadCommandRules, userRulesPath, type CommandRules } from "./src/command-rules.js";
 import { decide, sessionKey, snapshotDecisionState, type Decision } from "./src/decision.js";
@@ -9,6 +9,7 @@ import { findToolDefinition } from "./src/tool-routing.js";
 import { assistantText } from "./src/context-projection.js";
 import { SessionApprovalStore } from "./src/session-approval-store.js";
 import { selectClassifierModel } from "./src/model-selector.js";
+import { loadReviewerState, reviewerStatePath, saveReviewerState, type ReviewerState } from "./src/reviewer-state.js";
 
 type ExtensionAPI = {
   on(event: string, handler: (event: unknown, ctx: unknown) => unknown): void;
@@ -25,7 +26,7 @@ type ExtensionAPI = {
 
 const STATUS_KEY = "omp-clearance";
 
-// Appended to the system prompt while omp-clearance is on, so a blocked call
+// Appended to the system prompt in every reviewer mode, so a blocked call
 // is reported instead of retried in another form.
 export const SYSTEM_PROMPT_NOTE = [
   "Tool calls in this session are reviewed by omp-clearance before they run.",
@@ -35,16 +36,17 @@ export const SYSTEM_PROMPT_NOTE = [
 ].join(" ");
 
 const ROUTE_EXPLANATIONS: Record<Decision["route"], string> = {
-  disabled: "allowed without review: omp-clearance is off",
+  reviewer_off: "allowed: the reviewer is off (block and ask rules still apply)",
   invalid: "blocked: no tool name was provided",
-  blocked_command: "blocked: matches a block command rule, never auto-approved or asked",
-  ask_rule: "asks you directly, without the classifier: matches an ask command rule (denied in auto mode or without a UI)",
+  blocked_command: "blocked: matches a block command rule and never runs",
+  ask_rule: "asks you directly, without the classifier: matches an ask command rule (denied without a UI)",
   local_state: "allowed without review: local session state (todo, wait)",
   ui_only: "allowed without review: interactive ask with no remote content",
   tool_allowlist: "allowed without review: tool is listed in reviewExemptTools",
   readonly: "allowed without review: read-only builtin tool, every target is a non-sensitive path in the workspace or readRoots",
   workspace_write: "allowed without review: write inside the workspace, outside protected entries",
   safe_command: "allowed without review: every command is read-only by the command rules",
+  manual_unavailable: "blocked: manual review needs an interactive UI, but none is available",
   manual_only: "needs manual approval: this tool cannot be auto-approved",
   session_approval: "allowed without review: exact session approval",
   classifier_cache: "decided by the cached classifier verdict",
@@ -54,12 +56,13 @@ const ROUTE_EXPLANATIONS: Record<Decision["route"], string> = {
 
 function decisionExplanation(decision: Decision): string {
   if (decision.outcome === "review") {
-    return decision.state.config.mode === "fallback"
-      ? "classifier review; you decide if it denies or fails"
-      : "classifier review; blocked if it denies or fails";
+    return "classifier review; a denial goes to the agent, while a failure or the denial threshold asks you when possible";
   }
-  if (decision.route === "manual_only" && decision.outcome === "deny" && decision.state.config.mode === "auto") {
-    return "blocked: this tool cannot be auto-approved and auto mode never asks";
+  if (decision.route === "manual_unavailable") {
+    return "blocked: manual review needs an interactive UI, but none is available";
+  }
+  if (decision.route === "manual_only" && decision.outcome === "deny") {
+    return "blocked: this tool requires explicit user approval, but no interactive UI is available";
   }
   return ROUTE_EXPLANATIONS[decision.route];
 }
@@ -78,19 +81,12 @@ function parseExplainInput(toolName: string, rest: string): { input: unknown } |
   return { input: rest ? { path: rest } : {} };
 }
 
-function statusText(config: ClearanceConfig): string | undefined {
-  if (!config.enabled) {
-    return undefined;
-  }
-  return `clearance:${config.mode}`;
-}
-
-function stateText(config: ClearanceConfig): "off" | "fallback" | "auto" {
-  return config.enabled ? config.mode : "off";
+function statusText(state: ReviewerState): string {
+  return `clearance:${state.reviewer}${state.problem ? " (invalid reviewer state)" : ""}`;
 }
 
 function rulesProblemText(rules: CommandRules): string {
-  return `omp-clearance: the command rules could not be loaded, so every bash command asks you first (and is denied in auto mode): ${rules.problem}. Fix the file, then run /clearance status to reload it.`;
+  return `omp-clearance: the command rules could not be loaded, so every bash command asks you first (and is denied without an interactive UI): ${rules.problem}. Fix the file, then run /clearance status to reload it.`;
 }
 
 function rulesStatusText(rules: CommandRules): string[] {
@@ -108,8 +104,8 @@ function notify(ctx: ExtensionContextLike, message: string, type: "info" | "warn
   ctx.ui?.notify?.(message, type);
 }
 
-function setStatus(ctx: ExtensionContextLike, config: ClearanceConfig): void {
-  ctx.ui?.setStatus?.(STATUS_KEY, statusText(config));
+function setStatus(ctx: ExtensionContextLike, state: ReviewerState): void {
+  ctx.ui?.setStatus?.(STATUS_KEY, statusText(state));
 }
 
 function parseCommand(args: string): string {
@@ -127,10 +123,10 @@ function classifierModelText(config: ClearanceConfig): string {
 }
 
 const COMMAND_ARGUMENTS = [
-  { value: "status", label: "status", description: "Show current state and approval model" },
-  { value: "off", label: "off", description: "Disable automatic approval" },
-  { value: "fallback", label: "fallback", description: "AI review, then human approval on failure or denial" },
-  { value: "auto", label: "auto", description: "AI review only; fail closed on failure or denial" },
+  { value: "status", label: "status", description: "Show current reviewer and approval model" },
+  { value: "ai", label: "ai", description: "Classifier handles review; denials return to the agent" },
+  { value: "manual", label: "manual", description: "Ask you to handle review" },
+  { value: "off", label: "off", description: "Review runs; block and ask policy still applies" },
   { value: "model", label: "model", description: "Select approval classifier model" },
   { value: "model current", label: "model current", description: "Use the active OMP session model for approval" },
   { value: "rules", label: "rules", description: "Show the command rules in use: rules [program | rule id]" },
@@ -148,6 +144,7 @@ function getClearanceArgumentCompletions(argumentPrefix: string): Array<{ value:
 export default function ompClearanceExtension(omp: ExtensionAPI): void {
   let loadResult = loadConfig();
   let config = loadResult.config;
+  let reviewerState = loadReviewerState(config, loadResult.reviewerConfigured);
   // The command rules for this session: re-read at session start and on any
   // /clearance command.
   let rules = loadCommandRules();
@@ -162,14 +159,18 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
     }
     loadResult = loadConfig();
     config = loadResult.config;
+    reviewerState = loadReviewerState(config, loadResult.reviewerConfigured);
     rules = loadCommandRules();
     if (ctx) {
-      setStatus(ctx, config);
+      setStatus(ctx, reviewerState);
       if (loadResult.warning && !options.quiet) {
         notify(ctx, loadResult.warning, "warning");
       }
       if (options.announce && loadResult.notice) {
         notify(ctx, loadResult.notice, "warning");
+      }
+      if (options.announce && reviewerState.problem) {
+        notify(ctx, reviewerState.problem, "error");
       }
       if (options.announce && rules.problem) {
         notify(ctx, rulesProblemText(rules), "error");
@@ -194,12 +195,12 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
     }
     const source = toRecord(toRecord(findToolDefinition(toolName, tools)).sourceInfo).source;
     const call = { toolName, input: parsed.input };
-    const decision = decide(call, snapshotDecisionState(call, ctx, config, approvals, { tools, rules }));
+    const decision = decide(call, snapshotDecisionState(call, ctx, config, approvals, { reviewer: reviewerState.reviewer, tools, rules }));
     const plan = decision.plan;
     const escalation = decision.staticVerdict?.escalation;
     notify(ctx, [
       ...(asCommand ? [`note: no tool named "${firstWord}" in this session; explained as a bash command`] : []),
-      `state: ${stateText(config)}${config.enabled ? "" : " (nothing is reviewed while off)"}`,
+      `reviewer: ${reviewerState.reviewer} (from ${reviewerState.source})`,
       `tool: ${toolName}${typeof source === "string" ? ` (${source})` : ""}`,
       `arguments: ${JSON.stringify(parsed.input)}`,
       `route: ${decisionExplanation(decision)}`,
@@ -225,26 +226,32 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
       return;
     }
     config = next;
-    setStatus(ctx, config);
+    setStatus(ctx, reviewerState);
+  }
+
+  function persistReviewer(reviewer: Reviewer, ctx: ExtensionContextLike): void {
+    const saved = saveReviewerState(reviewer);
+    if (!saved.success) {
+      notify(ctx, `Failed to save omp-clearance reviewer state: ${saved.error ?? "unknown error"}`, "error");
+      return;
+    }
+    reviewerState = loadReviewerState(config, loadResult.reviewerConfigured);
+    setStatus(ctx, reviewerState);
+    notify(ctx, `omp-clearance reviewer: ${reviewer}.`);
   }
 
   async function runCommand(command: string, rest: string, ctx: ExtensionContextLike): Promise<void> {
     lastContext = ctx;
     refresh(ctx);
     switch (command) {
+      case "ai":
+        persistReviewer("ai", ctx);
+        break;
+      case "manual":
+        persistReviewer("manual", ctx);
+        break;
       case "off":
-        persist({ ...config, enabled: false }, ctx);
-        // The shell keeps whatever earlier commands set up, so its latch stays.
-        approvals.clear();
-        notify(ctx, "omp-clearance state: off.");
-        break;
-      case "fallback":
-        persist({ ...config, enabled: true, mode: "fallback" }, ctx);
-        notify(ctx, "omp-clearance state: fallback.");
-        break;
-      case "auto":
-        persist({ ...config, enabled: true, mode: "auto" }, ctx);
-        notify(ctx, "omp-clearance state: auto.");
+        persistReviewer("off", ctx);
         break;
       case "model": {
         if (!rest) {
@@ -280,7 +287,9 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
         notify(
           ctx,
           [
-            `state: ${stateText(config)}`,
+            `reviewer: ${reviewerState.reviewer} (from ${reviewerState.source})`,
+            `reviewer state: ${reviewerStatePath()}`,
+            ...(reviewerState.problem ? [reviewerState.problem] : []),
             `approval classifier model: ${classifierModelText(config)}`,
             `config: ${configPath()}`,
             `audit log: ${logPath()}`,
@@ -291,13 +300,13 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
         );
         break;
       default:
-        notify(ctx, `Unknown /clearance subcommand "${command}". Use status, off, fallback, auto, model, rules, or explain.`, "warning");
+        notify(ctx, `Unknown /clearance subcommand "${command}". Use status, ai, manual, off, model, rules, or explain.`, "warning");
         break;
     }
   }
 
   omp.registerCommand?.("clearance", {
-    description: "args: status | off | fallback | auto | model | rules | explain",
+    description: "args: status | ai | manual | off | model | rules | explain",
     getArgumentCompletions: (prefix) => getClearanceArgumentCompletions(typeof prefix === "string" ? prefix : ""),
     handler: async (args, context) => {
       const ctx = canonicalContext(context);
@@ -321,9 +330,6 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
   // OMP passes the system prompt as an array of sections.
   omp.on("before_agent_start", async (event: unknown) => {
     agentMessage = undefined;
-    if (!config.enabled) {
-      return undefined;
-    }
     const systemPrompt = toRecord(event).systemPrompt;
     if (Array.isArray(systemPrompt)) {
       return { systemPrompt: [...systemPrompt, SYSTEM_PROMPT_NOTE] };
@@ -354,7 +360,14 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
       if (loadResult.created || loadResult.warning) {
         refresh(ctx, { quiet: true });
       }
+      const nextReviewer = loadReviewerState(config, loadResult.reviewerConfigured, reviewerState);
+      if (nextReviewer.problem && nextReviewer.problem !== reviewerState.problem) {
+        notify(ctx, nextReviewer.problem, "error");
+      }
+      reviewerState = nextReviewer;
+      setStatus(ctx, reviewerState);
       return await evaluateToolCall(event, ctx, config, approvals, {
+        reviewer: reviewerState.reviewer,
         tools: canonicalTools(omp.getAllTools?.()),
         agentMessage,
         rules,

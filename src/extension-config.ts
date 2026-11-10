@@ -1,14 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ClearanceConfig, ClearanceMode } from "./types.js";
+import type { ClearanceConfig, Reviewer } from "./types.js";
 import { toRecord } from "./common.js";
 
 export const EXTENSION_ID = "omp-clearance";
 
 export const DEFAULT_CONFIG: ClearanceConfig = {
-  enabled: false,
-  mode: "fallback",
+  reviewer: "off",
   classifierModel: null,
   approvalTimeoutSeconds: 30,
   classifierTimeoutSeconds: 25,
@@ -24,9 +23,6 @@ export const DEFAULT_CONFIG: ClearanceConfig = {
 // OMP blocks a tool call whose extension handler runs past
 // extensionHandlers.toolCallTimeoutMs (30 s by default).
 const OMP_DEFAULT_HANDLER_TIMEOUT_SECONDS = 30;
-
-// Always written, so the file shows the current state at a glance.
-const ALWAYS_SAVED_KEYS: Array<keyof ClearanceConfig> = ["enabled", "mode"];
 
 export function extensionRoot(moduleUrl = import.meta.url): string {
   return join(dirname(fileURLToPath(moduleUrl)), "..");
@@ -60,15 +56,14 @@ function positiveNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-function normalizeMode(value: unknown): ClearanceMode {
-  return value === "auto" ? "auto" : "fallback";
+function normalizeReviewer(value: unknown): Reviewer {
+  return value === "ai" || value === "manual" || value === "off" ? value : "off";
 }
 
 export function normalizeConfig(raw: unknown): ClearanceConfig {
   const record = toRecord(raw);
   return {
-    enabled: record.enabled === true,
-    mode: normalizeMode(record.mode),
+    reviewer: normalizeReviewer(record.reviewer),
     classifierModel: typeof record.classifierModel === "string" && record.classifierModel.trim()
       ? record.classifierModel.trim()
       : null,
@@ -89,19 +84,19 @@ export function normalizeConfig(raw: unknown): ClearanceConfig {
 const MOVED_TO_RULES: Record<string, string> = { safeCommandAllowlist: "allow", blockCommands: "block" };
 
 export function unknownConfigKeys(raw: unknown): string[] {
-  const known = new Set([...Object.keys(DEFAULT_CONFIG), "$schema", ...Object.keys(MOVED_TO_RULES)]);
+  const known = new Set([...Object.keys(DEFAULT_CONFIG), "$schema", "enabled", "mode", ...Object.keys(MOVED_TO_RULES)]);
   return Object.keys(toRecord(raw)).filter((key) => !known.has(key));
 }
 
 /**
  * The config as written to disk: only values that differ from the defaults,
- * plus ALWAYS_SAVED_KEYS, so later default changes reach existing installs.
+ * so later default changes reach existing installs.
  */
 export function serializeConfig(config: ClearanceConfig): string {
   const normalized = normalizeConfig(config);
   const saved: Partial<Record<keyof ClearanceConfig, unknown>> = {};
   for (const key of Object.keys(DEFAULT_CONFIG) as Array<keyof ClearanceConfig>) {
-    if (ALWAYS_SAVED_KEYS.includes(key) || JSON.stringify(normalized[key]) !== JSON.stringify(DEFAULT_CONFIG[key])) {
+    if (JSON.stringify(normalized[key]) !== JSON.stringify(DEFAULT_CONFIG[key])) {
       saved[key] = normalized[key];
     }
   }
@@ -114,6 +109,14 @@ function configNotices(path: string, raw: unknown, config: ClearanceConfig): str
   if (unknownKeys.length > 0) {
     notices.push(`omp-clearance config at '${path}' has unknown key(s) that are ignored: ${unknownKeys.join(", ")}.`);
   }
+  for (const key of ["enabled", "mode"]) {
+    if (Object.prototype.hasOwnProperty.call(toRecord(raw), key)) {
+      notices.push(`${key} is no longer read: set reviewer in config.jsonc only as the starting value, and use /clearance ai, /clearance manual, or /clearance off for the shared session reviewer.`);
+    }
+  }
+  if (toRecord(raw).reviewer !== undefined && !["ai", "manual", "off"].includes(String(toRecord(raw).reviewer))) {
+    notices.push(`reviewer must be "ai", "manual", or "off"; the invalid value is ignored and the default "off" is used while no reviewer-state.json exists.`);
+  }
   for (const [key, kind] of Object.entries(MOVED_TO_RULES)) {
     const value = toRecord(raw)[key];
     if (Array.isArray(value) && value.length > 0) {
@@ -123,13 +126,13 @@ function configNotices(path: string, raw: unknown, config: ClearanceConfig): str
   if (config.classifierTimeoutSeconds >= OMP_DEFAULT_HANDLER_TIMEOUT_SECONDS) {
     notices.push(
       `classifierTimeoutSeconds is ${config.classifierTimeoutSeconds}s, but OMP blocks a tool call whose extension handler runs longer than `
-      + `extensionHandlers.toolCallTimeoutMs (${OMP_DEFAULT_HANDLER_TIMEOUT_SECONDS}s by default). Raise that OMP setting above it, or slow reviews are blocked before the classifier answers and fallback mode never asks you.`,
+      + `extensionHandlers.toolCallTimeoutMs (${OMP_DEFAULT_HANDLER_TIMEOUT_SECONDS}s by default). Raise that OMP setting above it, or slow reviews are blocked before the classifier answers and the user cannot be asked.`,
     );
   }
   return notices;
 }
 
-export function loadConfig(path = configPath()): { config: ClearanceConfig; warning?: string; notice?: string; created: boolean } {
+export function loadConfig(path = configPath()): { config: ClearanceConfig; reviewerConfigured: boolean; warning?: string; notice?: string; created: boolean } {
   let created = false;
   if (!existsSync(path)) {
     mkdirSync(dirname(path), { recursive: true });
@@ -143,6 +146,7 @@ export function loadConfig(path = configPath()): { config: ClearanceConfig; warn
     const notices = configNotices(path, parsed, config);
     return {
       config,
+      reviewerConfigured: parsed.reviewer === "ai" || parsed.reviewer === "manual" || parsed.reviewer === "off",
       created,
       ...(notices.length > 0 ? { notice: notices.join("\n") } : {}),
     };
@@ -150,6 +154,7 @@ export function loadConfig(path = configPath()): { config: ClearanceConfig; warn
     const message = error instanceof Error ? error.message : String(error);
     return {
       config: { ...DEFAULT_CONFIG },
+      reviewerConfigured: false,
       created,
       warning: `Failed to read omp-clearance config at '${path}': ${message}; using defaults.`,
     };

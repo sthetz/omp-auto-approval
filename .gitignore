@@ -10,6 +10,8 @@ build/
 .env.*
 !.env.example
 config.jsonc
+reviewer-state.json
+reviewer-state.json.*.tmp
 
 # --- Logs ---
 logs/

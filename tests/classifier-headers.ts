@@ -3,8 +3,7 @@ import { classifyAction } from "../src/classifier.js";
 import type { ClearanceConfig, ExtensionContextLike } from "../src/types.js";
 
 const config: ClearanceConfig = {
-  enabled: true,
-  mode: "auto",
+  reviewer: "ai",
   classifierModel: "openrouter/some-model",
   approvalTimeoutSeconds: 30,
   classifierTimeoutSeconds: 30,

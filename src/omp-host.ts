@@ -1,4 +1,4 @@
-import type { AuthResolution, ClearanceConfig, ExtensionContextLike } from "./types.js";
+import type { AuthResolution, ClearanceConfig, ExtensionContextLike, Reviewer } from "./types.js";
 import type { ClassifierClient } from "./classifier.js";
 import type { CommandRules } from "./command-rules.js";
 import { getString, toRecord } from "./common.js";
@@ -174,6 +174,7 @@ export async function evaluateToolCall(
   config: ClearanceConfig,
   store: SessionApprovalStore,
   options: {
+    reviewer?: Reviewer;
     tools?: unknown[];
     classifierClient?: ClassifierClient;
     agentMessage?: string;

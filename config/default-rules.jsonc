@@ -63,7 +63,9 @@
 //   src/program-rules.ts.
 //
 //   "rules": [{ "id", "match", "outcome", "why" }]
-//     Rules that send matching bash commands to review ("review"), to the
+//     With "outcome": "allow" and "prefix" instead of "match", a command
+//     that starts with the prefix skips review (see the README's "Allow
+//     rules"). Otherwise, rules send matching bash commands to review ("review"), to the
 //     user without the classifier ("ask"; denied in auto mode or without a
 //     UI), or to a block ("block"). Among the rules that match, the most
 //     restrictive decides, and any of them overrides the programs above.
@@ -691,7 +693,6 @@
     }
   },
 
-  // None built in yet: blockCommands in config.jsonc, and the user's
-  // rules.jsonc, hold them.
+  // None built in yet; the user's rules.jsonc holds them.
   "rules": []
 }

@@ -4,13 +4,14 @@ import { delimiter, isAbsolute, join } from "node:path";
 import { relativePathWithin, resolvePathForCwd, resolveReadRoots, type ReadRoots } from "./common.js";
 import { boundedGlobMatches, isTreeClean } from "./path-expansion.js";
 import { defaultRules, type CommandRules } from "./command-rules.js";
+import { allowPrefixProblem, SCRIPT_PROGRAMS } from "./allow-prefix.js";
 import { safeByProgramRule, type RuleContext } from "./program-rules.js";
 import { isSensitivePath } from "./sensitive-paths.js";
 import { recognizeShell, type ShellCommand, type ShellRedirect, type ShellWord } from "./shell-syntax.js";
 import type { AutoReviewConfig } from "./types.js";
 
-// safeCommandAllowlist entries are prefixes, so allowlisting a program would
-// otherwise allow every option it has. Options that execute other programs or
+// Allow rules are prefixes, so allowing a program would otherwise allow
+// every option it has. Options that execute other programs or
 // write files never take the fast path, whichever entry matched.
 interface UnsafeOptions {
   exact?: string[];
@@ -36,20 +37,6 @@ const UNSAFE_PROGRAM_OPTIONS: Record<string, UnsafeOptions> = {
     shortLetters: "IFxcruA",
   },
 };
-
-// Programs whose arguments are a script or another command line. No
-// safeCommandAllowlist entry for them is honoured.
-const SCRIPT_PROGRAMS = new Set(["xargs", "parallel", "sed", "awk", "gawk", "mawk", "nawk"]);
-
-// Shells, interpreters, and wrappers that run another command. Allowlisting
-// the bare program would allow any code; an entry must name a specific
-// invocation, such as `python -m pytest` or `npm test`.
-const CODE_RUNNERS = new Set([
-  "sh", "bash", "zsh", "dash", "fish", "ksh",
-  "python", "python3", "node", "deno", "bun", "ruby", "perl", "php", "lua", "npx",
-  "env", "sudo", "doas", "su", "nice", "nohup", "timeout", "time", "watch", "command", "builtin",
-  "exec", "eval", "stdbuf", "chroot", "setsid", "flock", "strace",
-]);
 
 export function normalizeCommand(command: string): string {
   return command.replace(/\s+/g, " ").trim();
@@ -166,12 +153,12 @@ function namesNoUnreadableFile(text: string, place: Place): boolean {
 }
 
 /**
- * An argument of an allowlisted command that names nothing outside the
+ * An argument of a command an allow rule matches that names nothing outside the
  * workspace or read roots and nothing credential-like. Arguments the shell
  * expands (unquoted globs, braces, `~user`, `name=~/…`) are not fast-pathed,
  * since their final form is unknown; a leading `~` or `~/` is pinned.
  */
-function isAllowlistedArgumentSafe(word: ShellWord, check: Check): boolean {
+function isAllowedArgumentSafe(word: ShellWord, check: Check): boolean {
   if (!word.expands) {
     return namesNoUnreadableFile(word.text, check.place);
   }
@@ -182,24 +169,9 @@ function isAllowlistedArgumentSafe(word: ShellWord, check: Check): boolean {
   return true;
 }
 
-/**
- * Why a safeCommandAllowlist entry is ignored, or null when it is honoured.
- */
-export function allowlistEntryProblem(entry: string): string | null {
-  const words = entry.trim().replace(/\*$/, "").trim().split(/\s+/).filter(Boolean);
-  const program = words[0] ? programName(words[0]) : "";
-  if (SCRIPT_PROGRAMS.has(program)) {
-    return `${program} runs commands or writes files from its arguments`;
-  }
-  if (CODE_RUNNERS.has(program) && words.length < 2) {
-    return `allowing bare ${program} would allow any code; list a specific invocation such as "python -m pytest" or "npm test"`;
-  }
-  return null;
-}
-
-function matchesAllowlistEntry(command: string, entry: string): boolean {
+function matchesAllowEntry(command: string, entry: string): boolean {
   const trimmed = entry.trim();
-  if (!trimmed || allowlistEntryProblem(trimmed)) {
+  if (!trimmed || allowPrefixProblem(trimmed)) {
     return false;
   }
   if (trimmed.endsWith("*")) {
@@ -208,11 +180,11 @@ function matchesAllowlistEntry(command: string, entry: string): boolean {
   return command === trimmed || command.startsWith(`${trimmed} `);
 }
 
-function isUserAllowlisted(words: ShellWord[], check: Check): boolean {
+function isAllowedByRule(words: ShellWord[], check: Check): boolean {
   // Entries match the command as written, quotes included, without its
   // redirections.
   const written = normalizeCommand(words.map((word) => check.source.slice(word.start, word.end)).join(" "));
-  const entry = check.config.safeCommandAllowlist.find((candidate) => matchesAllowlistEntry(written, candidate));
+  const entry = check.rules.rules.find((rule) => rule.outcome === "allow" && rule.prefix !== null && matchesAllowEntry(written, rule.prefix));
   if (entry === undefined) {
     return false;
   }
@@ -221,10 +193,10 @@ function isUserAllowlisted(words: ShellWord[], check: Check): boolean {
   if (first.expands || SCRIPT_PROGRAMS.has(program) || hasUnsafeOption(program, args.map((word) => word.text))) {
     return false;
   }
-  if (!args.every((word) => isAllowlistedArgumentSafe(word, check))) {
+  if (!args.every((word) => isAllowedArgumentSafe(word, check))) {
     return false;
   }
-  check.used.push({ id: `safeCommandAllowlist ${JSON.stringify(entry.trim())}`, source: "config.jsonc" });
+  check.used.push({ id: entry.id, source: entry.source });
   return true;
 }
 
@@ -372,7 +344,7 @@ function ruleContext(check: Check, place = check.place): RuleContext {
 
 /**
  * Whether one simple command is safe on its own, by its program's entry in
- * the command rules or by a safeCommandAllowlist entry; its program is then
+ * the command rules or by an allow rule; its program is then
  * pinned (see planSafeCommand).
  */
 function isSafeCommand(words: ShellWord[], check: Check): boolean {
@@ -400,7 +372,7 @@ function isSafeCommand(words: ShellWord[], check: Check): boolean {
     return entry !== null;
   };
   const safe = (!program.text.includes("/") && attempt(byRule))
-    || attempt(() => isUserAllowlisted(words, check));
+    || attempt(() => isAllowedByRule(words, check));
   return safe && pinProgram(program, check);
 }
 
@@ -425,8 +397,8 @@ export interface SafeCommandPlan {
   // The command to run in place of the original: every program named by its
   // absolute path, any leading `cd <dir> &&` removed.
   command: string;
-  // The rules that let it through: program entries, or safeCommandAllowlist
-  // entries, one per simple command (and per command `timeout` runs).
+  // The rules that let it through: program entries or allow rules, one per
+  // simple command (and per command `timeout` runs).
   rules: { id: string; source: string }[];
   // The directory a leading `cd` moved it to; absent when there was none.
   cwd?: string;
@@ -438,7 +410,7 @@ export interface SafeCommandPlan {
  *
  * The command must be in the subset recognizeShell reads exactly, and every
  * simple command in it must be safe on its own: by its program's entry in the
- * command rules (config/default-rules.jsonc), or a safeCommandAllowlist entry
+ * command rules (config/default-rules.jsonc), or an allow rule
  * whose arguments stay inside the read roots, with only safe redirections
  * (see isSafeRedirect). Rules that failed to load review everything. `&&`,
  * `||`, `;`, newlines, and pipes between them add nothing a command could not

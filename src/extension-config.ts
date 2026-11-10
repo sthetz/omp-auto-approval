@@ -3,7 +3,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AutoReviewConfig, AutoReviewMode } from "./types.js";
 import { toRecord } from "./common.js";
-import { allowlistEntryProblem } from "./safe-command.js";
 
 export const EXTENSION_ID = "omp-auto-approval";
 
@@ -14,8 +13,6 @@ export const DEFAULT_CONFIG: AutoReviewConfig = {
   approvalTimeoutSeconds: 30,
   classifierTimeoutSeconds: 25,
   maxConsecutiveDenials: 3,
-  safeCommandAllowlist: [],
-  blockCommands: [],
   readRoots: [],
   reviewExemptTools: [],
   allow: [],
@@ -85,8 +82,6 @@ export function normalizeConfig(raw: unknown): AutoReviewConfig {
       ? DEFAULT_CONFIG.classifierTimeoutSeconds
       : positiveNumber(record.classifierTimeoutSeconds, DEFAULT_CONFIG.classifierTimeoutSeconds),
     maxConsecutiveDenials: positiveNumber(record.maxConsecutiveDenials, DEFAULT_CONFIG.maxConsecutiveDenials),
-    safeCommandAllowlist: stringArray(record.safeCommandAllowlist),
-    blockCommands: stringArray(record.blockCommands),
     readRoots: stringArray(record.readRoots),
     reviewExemptTools: stringArray(record.reviewExemptTools),
     allow: stringArray(record.allow),
@@ -97,8 +92,11 @@ export function normalizeConfig(raw: unknown): AutoReviewConfig {
 }
 
 /** Top-level keys that normalizeConfig would silently drop, e.g. typos. */
+// Settings that moved to rules.jsonc in 0.4.0, as the kind of rule that replaces each.
+const MOVED_TO_RULES: Record<string, string> = { safeCommandAllowlist: "allow", blockCommands: "block" };
+
 export function unknownConfigKeys(raw: unknown): string[] {
-  const known = new Set([...Object.keys(DEFAULT_CONFIG), "$schema"]);
+  const known = new Set([...Object.keys(DEFAULT_CONFIG), "$schema", ...Object.keys(MOVED_TO_RULES)]);
   return Object.keys(toRecord(raw)).filter((key) => !known.has(key));
 }
 
@@ -123,10 +121,10 @@ function configNotices(path: string, raw: unknown, config: AutoReviewConfig): st
   if (unknownKeys.length > 0) {
     notices.push(`omp-auto-approval config at '${path}' has unknown key(s) that are ignored: ${unknownKeys.join(", ")}.`);
   }
-  for (const entry of config.safeCommandAllowlist) {
-    const problem = allowlistEntryProblem(entry);
-    if (problem) {
-      notices.push(`safeCommandAllowlist entry "${entry}" is ignored: ${problem}.`);
+  for (const [key, kind] of Object.entries(MOVED_TO_RULES)) {
+    const value = toRecord(raw)[key];
+    if (Array.isArray(value) && value.length > 0) {
+      notices.push(`${key} is no longer read and its ${value.length} entr${value.length === 1 ? "y is" : "ies are"} ignored: write them as ${kind} rules in rules.jsonc (see config/rules.example.jsonc).`);
     }
   }
   if (config.classifierTimeoutSeconds >= OMP_DEFAULT_HANDLER_TIMEOUT_SECONDS) {

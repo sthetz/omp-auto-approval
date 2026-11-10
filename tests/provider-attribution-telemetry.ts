@@ -10,8 +10,6 @@ const config: AutoReviewConfig = {
   approvalTimeoutSeconds: 30,
   classifierTimeoutSeconds: 30,
   maxConsecutiveDenials: 3,
-  safeCommandAllowlist: [],
-  blockCommands: [],
   readRoots: [],
   reviewExemptTools: [],
   allow: [],

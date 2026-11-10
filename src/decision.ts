@@ -171,12 +171,12 @@ export function plannedInput(input: unknown, plan: SafeCommandPlan): Record<stri
  * tools.
  */
 /**
- * What the command rules and blockCommands call for, for a bash call; null
+ * What the command rules call for, for a bash call; null
  * for other tools and for commands no rule matches.
  */
 export function bashEscalation(toolName: string, input: unknown, config: AutoReviewConfig, rules: CommandRules = defaultRules()): Escalation | null {
   const command = bashCommand(toolName, input);
-  return command ? escalateCommand(command, rules, config.blockCommands) : null;
+  return command ? escalateCommand(command, rules) : null;
 }
 
 export function selectFastPath(
@@ -378,9 +378,7 @@ async function decideToolCall(
   });
 
   if (route === "blocked_command") {
-    const reason = rule
-      ? `This command matches the command rule "${rule.id}" (block) and is never auto-approved.${rule.why ? ` Why: ${rule.why}` : ""} Do not retry it in another form; tell the user what you wanted to run and why.`
-      : `This command matches the blockCommands rule "${escalation?.blockPattern}" and is never auto-approved. Do not retry it in another form; tell the user what you wanted to run and why.`;
+    const reason = `This command matches the command rule "${rule?.id}" (block) and is never auto-approved.${rule?.why ? ` Why: ${rule.why}` : ""} Do not retry it in another form; tell the user what you wanted to run and why.`;
     await audit({ route, outcome: "deny", reason });
     return automaticDeny(ctx, config, store, reason);
   }

@@ -385,48 +385,78 @@
       }
     },
     "rule": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "match",
-        "outcome"
-      ],
-      "properties": {
-        "id": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "match",
+            "outcome"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            },
+            "match": {
+              "description": "A pattern or a list of them. \"/regex/flags\" is tested against the whole command; otherwise words: a program, then words that must follow it in order within one command. A word may list alternatives with |, use the globs * ? [...], and --name also matches --name=value; -f also matches grouped short flags such as -uf.",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              ]
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "review",
+                "ask",
+                "block"
+              ]
+            },
+            "why": {
+              "type": "string",
+              "description": "Shown in the denial, in the approval prompt, and to the classifier."
+            }
+          }
         },
-        "match": {
-          "description": "A pattern or a list of them. \"/regex/flags\" is tested against the whole command; otherwise words: a program, then words that must follow it in order within one command. A word may list alternatives with |, use the globs * ? [...], and --name also matches --name=value; -f also matches grouped short flags such as -uf.",
-          "oneOf": [
-            {
+        {
+          "description": "An allow rule: a command as written that starts with \"prefix\" (exactly, followed by a space, or anything after a trailing *) may skip review. Every check in code still applies.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "prefix",
+            "outcome"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            },
+            "prefix": {
               "type": "string",
               "minLength": 1
             },
-            {
-              "type": "array",
-              "minItems": 1,
-              "items": {
-                "type": "string",
-                "minLength": 1
-              }
+            "outcome": {
+              "const": "allow"
+            },
+            "why": {
+              "type": "string"
             }
-          ]
-        },
-        "outcome": {
-          "type": "string",
-          "enum": [
-            "review",
-            "ask",
-            "block"
-          ]
-        },
-        "why": {
-          "type": "string",
-          "description": "Shown in the denial, in the approval prompt, and to the classifier."
+          }
         }
-      }
+      ]
     }
   }
 }

@@ -70,10 +70,15 @@
   // command matches, the most restrictive decides: "block" (never runs),
   // "ask" (you decide, without the classifier; denied in auto mode), then
   // "review" (the classifier, then you, as for any reviewed command). Any of
-  // them overrides the programs above, the allowlist and reviewExemptTools.
+  // them overrides the programs above, allow rules and reviewExemptTools.
   // They match the command's text, also inside loops and `sh -c '…'`; a
   // program named by a variable (`$k delete`) gets past them.
   "rules": [
+    // An allow rule: a command that starts with "npm test" skips review.
+    // The checks in code still apply (no options that run programs or write
+    // files, no files outside the read roots), but npm runs whatever the
+    // project's test script says.
+    { "id": "npm-test", "prefix": "npm test", "outcome": "allow" },
     // `secret|secrets|secret/*` would miss `Secrets` and `pods,secrets`;
     // a glob with letter classes catches both.
     { "id": "kube-secrets", "match": "kubectl get|describe *[Ss][Ee][Cc][Rr][Ee][Tt]*", "outcome": "review",

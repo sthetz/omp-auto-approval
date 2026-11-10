@@ -1,7 +1,8 @@
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import { commandSegments, compileCommandPattern, matchBlockedCommand, type CommandPattern } from "./block-commands.js";
+import { commandSegments, compileCommandPattern, type CommandPattern } from "./command-patterns.js";
+import { allowPrefixProblem } from "./allow-prefix.js";
 import { configPath, extensionRoot } from "./extension-config.js";
 import { parseJsonc } from "./jsonc.js";
 
@@ -128,13 +129,20 @@ export interface ProgramEntry {
 export const RULE_OUTCOMES = ["review", "ask", "block"] as const;
 export type RuleOutcome = (typeof RULE_OUTCOMES)[number];
 
-/** A rule that sends matching bash commands to review, to the user, or to a block. */
+/**
+ * A rule that sends matching bash commands to review, to the user, or to a
+ * block; or, with outcome "allow", lets a command through when it starts
+ * with `prefix`.
+ */
 export interface CommandRule {
   id: string;
-  // The patterns as written; any one matching is enough.
+  // The patterns as written; any one matching is enough. Empty for allow rules.
   match: string[];
   patterns: CommandPattern[];
-  outcome: RuleOutcome;
+  outcome: RuleOutcome | "allow";
+  // Allow rules only: the command as written starts with it (see
+  // matchesAllowEntry in safe-command.ts).
+  prefix: string | null;
   why: string | null;
   // "default", or the user rules file it came from.
   source: string;
@@ -164,7 +172,7 @@ function compileRuleList(value: unknown, source: string, where: string, seen: Se
   return value.map((raw, index) => {
     const ruleWhere = `${where}[${index}]`;
     const object = record(raw, ruleWhere);
-    onlyKeys(object, ["id", "match", "outcome", "why"], ruleWhere);
+    onlyKeys(object, ["id", "match", "prefix", "outcome", "why"], ruleWhere);
     const id = object.id;
     if (typeof id !== "string" || !RULE_NAME.test(id)) {
       throw new RulesError(`${ruleWhere}.id: expected a name of letters, digits, ".", "_" and "-", got ${JSON.stringify(id)}`);
@@ -174,11 +182,29 @@ function compileRuleList(value: unknown, source: string, where: string, seen: Se
     }
     seen.add(id);
     const at = `${where}[${JSON.stringify(id)}]`;
+    if (object.why !== undefined && typeof object.why !== "string") {
+      throw new RulesError(`${at}.why: expected text`);
+    }
+    const why = (object.why as string | undefined) ?? null;
     if (object.outcome === "allow") {
-      throw new RulesError(`${at}.outcome: "allow" rules are not supported; list the program in "programs"`);
+      // A prefix of the command as written (see matchesAllowEntry in safe-command.ts).
+      if (object.match !== undefined) {
+        throw new RulesError(`${at}: an allow rule takes "prefix", the start of the command as written, not "match"`);
+      }
+      if (typeof object.prefix !== "string" || !object.prefix.trim() || object.prefix.trim() === "*") {
+        throw new RulesError(`${at}.prefix: expected the start of a command, such as "npm test" or "rg *"`);
+      }
+      const problem = allowPrefixProblem(object.prefix);
+      if (problem) {
+        throw new RulesError(`${at}.prefix: ${problem}`);
+      }
+      return { id, match: [], patterns: [], outcome: "allow" as const, prefix: object.prefix.trim(), why, source };
+    }
+    if (object.prefix !== undefined) {
+      throw new RulesError(`${at}: "prefix" is for allow rules; use "match"`);
     }
     if (typeof object.outcome !== "string" || !(RULE_OUTCOMES as readonly string[]).includes(object.outcome)) {
-      throw new RulesError(`${at}.outcome: expected one of ${RULE_OUTCOMES.join(", ")}`);
+      throw new RulesError(`${at}.outcome: expected one of allow, ${RULE_OUTCOMES.join(", ")}`);
     }
     const match = typeof object.match === "string" ? [object.match] : object.match;
     if (!Array.isArray(match) || !match.length || !match.every((pattern) => typeof pattern === "string")) {
@@ -186,15 +212,12 @@ function compileRuleList(value: unknown, source: string, where: string, seen: Se
     }
     const patterns = (match as string[]).map((pattern) => {
       try {
-        return compileCommandPattern(pattern, { extended: true });
+        return compileCommandPattern(pattern);
       } catch (error) {
         throw new RulesError(`${at}.match: ${JSON.stringify(pattern)}: ${(error as Error).message}`);
       }
     });
-    if (object.why !== undefined && typeof object.why !== "string") {
-      throw new RulesError(`${at}.why: expected text`);
-    }
-    return { id, match: match as string[], patterns, outcome: object.outcome as RuleOutcome, why: (object.why as string | undefined) ?? null, source };
+    return { id, match: match as string[], patterns, outcome: object.outcome as RuleOutcome, prefix: null, why, source };
   });
 }
 
@@ -782,28 +805,25 @@ const RESTRICTION: Record<RuleOutcome, number> = { review: 1, ask: 2, block: 3 }
 export interface Escalation {
   outcome: RuleOutcome;
   // The deciding rule: the most restrictive that matched, the first of those.
-  rule: CommandRule | null;
-  // Or the blockCommands entry that matched.
-  blockPattern: string | null;
+  rule: CommandRule;
 }
 
 /**
- * The most restrictive rule a bash command matches, with `blockCommands`
- * entries as block rules, or null. Rules match the command's text, so they
- * apply to commands the fast path never reads (loops, functions,
- * substitutions); a command a variable names (`$cmd`) cannot be matched.
+ * The most restrictive rule a bash command matches, or null. Rules match the
+ * command's text, so they apply to commands the fast path never reads
+ * (loops, functions, substitutions); a command a variable names (`$cmd`)
+ * cannot be matched.
  */
-export function escalateCommand(command: string, rules: CommandRules, blockCommands: readonly string[]): Escalation | null {
-  const blocked = matchBlockedCommand(command, blockCommands);
-  if (blocked) {
-    return { outcome: "block", rule: null, blockPattern: blocked };
-  }
+export function escalateCommand(command: string, rules: CommandRules): Escalation | null {
   const segments = commandSegments(command);
   let deciding: CommandRule | null = null;
   for (const rule of rules.rules) {
-    if ((!deciding || RESTRICTION[rule.outcome] > RESTRICTION[deciding.outcome]) && rule.patterns.some((pattern) => pattern(command, segments))) {
+    if (rule.outcome === "allow") {
+      continue;
+    }
+    if ((!deciding || RESTRICTION[rule.outcome] > RESTRICTION[deciding.outcome as RuleOutcome]) && rule.patterns.some((pattern) => pattern(command, segments))) {
       deciding = rule;
     }
   }
-  return deciding && { outcome: deciding.outcome, rule: deciding, blockPattern: null };
+  return deciding && { outcome: deciding.outcome as RuleOutcome, rule: deciding };
 }

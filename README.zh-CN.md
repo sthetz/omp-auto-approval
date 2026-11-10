@@ -88,7 +88,7 @@ sequenceDiagram
 
     alt 状态为 off
         Ext-->>OMP: 不做决策，使用 OMP 默认行为
-    else bash 命令匹配 blockCommands 或 block 规则
+    else bash 命令匹配 block 规则
         Ext-->>OMP: 直接阻止，不审批也不询问
     else bash 命令匹配 ask 规则
         Ext->>Human: 直接询问，不经过分类器（auto 模式下拒绝）
@@ -137,13 +137,13 @@ sequenceDiagram
 
 `off` 表示扩展不做自动审批决策。
 
-`fallback` 表示本地 fast path 会先处理已知低风险动作，例如非敏感的工作区读取、工作区内写入、显式 allowlist 的安全命令，或当前会话中已批准过的精确动作。其他工具调用会先交给分类器审批。如果分类器允许，工具会执行。如果分类器拒绝、失败、超时，或工具必须人工审批，并且 UI 可用，OMP 会通过审批 UI 询问人工确认。
+`fallback` 表示本地 fast path 会先处理已知低风险动作，例如非敏感的工作区读取、工作区内写入、命令规则允许的命令，或当前会话中已批准过的精确动作。其他工具调用会先交给分类器审批。如果分类器允许，工具会执行。如果分类器拒绝、失败、超时，或工具必须人工审批，并且 UI 可用，OMP 会通过审批 UI 询问人工确认。
 
 `auto` 表示非 fast-path 工具调用由分类器作为审批关口。本地 fast path 仍然可以允许静态可证明低风险或当前会话已批准的动作。对于进入审批的动作，分类器允许时工具执行；分类器拒绝、失败、超时，或工具必须人工审批时，工具调用会被阻止。
 
 ### 结束当前轮次
 
-连续出现 `maxConsecutiveDenials` 次自动拒绝（默认 3 次：分类器拒绝或失败，以及 `blockCommands` 阻止）后，扩展会直接结束代理的当前轮次，而不是指望代理自己停下。`fallback` 模式下的人工审批界面也提供 **Reject and Stop the Turn**。
+连续出现 `maxConsecutiveDenials` 次自动拒绝（默认 3 次：分类器拒绝或失败，以及 ask 和 block 规则的拒绝）后，扩展会直接结束代理的当前轮次，而不是指望代理自己停下。`fallback` 模式下的人工审批界面也提供 **Reject and Stop the Turn**。
 
 自动审批开启时，系统提示词中会追加一段简短说明，要求代理在调用被阻止时向你报告，而不是换一种方式重试。
 
@@ -172,7 +172,7 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
   - 任意层级、解析符号链接后的受保护条目：`.git`、`.omp`、`.pi`、`.claude`、`.mcp.json`、`.cursor`、`.envrc`、`.vscode`、`.idea`、`.husky`、`.devcontainer`。它们的内容之后会被直接执行或信任：`.git/config` 中的 `core.fsmonitor` 会在 `git status` 时运行，`.claude/settings.json` 中的 Claude Code hooks 会执行 shell 命令；
   - 上文读取部分列出的凭据类文件，例如 `.env` 或 `*.pem`；
   - 创建或修改程序的写入：内容以 `#!` 开头（OMP 的 `write` 工具会把这样的文件设为可执行），或目标文件已经可执行。工作区中的程序可能在 shell 的 PATH 上遮蔽某个命令。
-- **安全 bash 命令**：只读 git 命令、`grep`、`cat`、`head`、`ls`、`sed -n`、`jq` 等常见只读程序（见[内置只读程序](#内置只读程序)），以及 `safeCommandAllowlist` 中的条目。它们可以用 `&&`、`||`、`;`、换行和管道连接，每条命令会被单独检查：`git log --oneline | grep -i fix | head -5` 无需审批。只有一个很小的 bash 子集会走这条路径，本扩展对它的解读与 bash 完全一致（已用 bash 本身测试，见 `CONTRIBUTING.md`）：普通单词和带引号的单词、上述操作符、注释，以及以下重定向：
+- **安全 bash 命令**：只读 git 命令、`grep`、`cat`、`head`、`ls`、`sed -n`、`jq` 等常见只读程序（见[内置只读程序](#内置只读程序)），以及 allow 规则指定的命令。它们可以用 `&&`、`||`、`;`、换行和管道连接，每条命令会被单独检查：`git log --oneline | grep -i fix | head -5` 无需审批。只有一个很小的 bash 子集会走这条路径，本扩展对它的解读与 bash 完全一致（已用 bash 本身测试，见 `CONTRIBUTING.md`）：普通单词和带引号的单词、上述操作符、注释，以及以下重定向：
   - 标准输入、标准输出和标准错误之间的复制（`2>&1`）；
   - `/dev/null`（`2>/dev/null`、`&>/dev/null`、`</dev/null`）；
   - 对 fast path 本来就能读取的文件使用 `< file`。
@@ -223,38 +223,50 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 
 没有按项目区分的规则文件：克隆下来的仓库可能会自带一个。
 
-#### 审查、询问与阻止规则
+#### allow、review、ask 与 block 规则
 
-程序条目只说明哪些命令可以免审批。`rules` 列表则说明哪些命令不能：
+程序条目通过读取选项和操作数来决定哪些命令可以免审批。`rules` 列表则按命令文本添加规则：
 
 ```jsonc
 "rules": [
+  { "id": "npm-test", "prefix": "npm test", "outcome": "allow" },
   { "id": "kube-secrets", "match": "kubectl get|describe *[Ss][Ee][Cc][Rr][Ee][Tt]*", "outcome": "review",
     "why": "Secret values must not reach the model unreviewed." },
   { "id": "kube-interactive", "match": "kubectl exec|port-forward|cp|edit|apply|rollout", "outcome": "ask" },
-  { "id": "kube-delete-all", "match": "kubectl delete --all", "outcome": "block" }
+  { "id": "no-force-push", "match": ["git push --force", "git push -f", "/\\bgit\\b.*\\bpush\\b.*\\s\\+\\S/"], "outcome": "block" }
 ]
 ```
 
+- `allow`：以 `prefix` 开头的命令免审批，检查见 [allow 规则](#allow-规则)。
 - `review`：交给分类器，然后按模式交给你，与其他需审批的命令相同；永远不走快速通道。
 - `ask`：由你决定，不经过分类器。在 `auto` 模式下或没有交互界面时，命令会被拒绝。选择“Allow Always This Exact Action”后，本会话内完全相同的命令不再询问。
-- `block`：不询问任何人直接拒绝，与 `blockCommands` 相同。
+- `block`：在任何模式下直接拒绝，既不询问分类器，也不询问你。`deny` 只是给分类器的指导，而 block 无法被说服。
 
-在命令匹配到的规则以及 `blockCommands` 中，最严格的一项生效：block，其次 ask，再次 review。任何一项都优先于程序条目、`safeCommandAllowlist` 和 `reviewExemptTools`，因此宽泛的允许永远不会掩盖例外。`why` 会显示在拒绝原因和审批提示中，并作为你的理由提供给分类器。
+在命令匹配到的规则中，最严格的一项生效：block，其次 ask，再次 review。任何一项都优先于程序条目、allow 规则和 `reviewExemptTools`，因此宽泛的允许永远不会掩盖例外。ask 和 block 的拒绝计入 `maxConsecutiveDenials`。`why` 会显示在拒绝原因和审批提示中，并作为你的理由提供给分类器。`id` 必须唯一；`disable` 可按 id 移除内置规则（目前还没有）。
 
-`match` 是一个模式或模式列表，写法与 `blockCommands` 相同（见[阻止的命令](#阻止的命令)），并为单词增加了：`a|b` 多选、`*`、`?` 和 `[…]` 通配符，以及 `--name` 同时匹配 `--name=value`。规则读取的是命令文本，因此在循环、`$(…)` 和 `sh -c '…'` 中同样生效，而快速通道从不读取这些内容；由变量指定的程序（`$k delete`）可以绕过规则，此时它照常需要审批。`id` 必须唯一；`disable` 可按 id 移除内置规则（目前还没有）。
+`/auto-approval rules` 列出正在使用的程序和规则及其来源文件；`/auto-approval rules <程序 | 规则 id>` 显示其中一项。`explain` 会给出起决定作用的规则，审计日志将其记录为 `ruleId` 和 `ruleSource`（对于走快速通道的命令，放行它的条目记录为 `ruleIds`）。
 
-`/auto-approval rules` 列出正在使用的程序和规则及其来源文件；`/auto-approval rules <程序 | 规则 id>` 显示其中一项。`explain` 会给出起决定作用的规则，审计日志将其记录为 `ruleId` 和 `ruleSource`（对于走快速通道的命令，放行它的程序条目记录为 `ruleIds`）。
+#### 模式
 
-### allowlist 中的命令
+`match` 是一个模式或模式列表。模式可以是 `/regex/flags`（对整条命令做匹配），也可以是一串单词：第一个单词是程序名，其余单词需按顺序出现在同一条命令中。`git push --force` 能匹配 `git push origin main --force`、`/usr/bin/git push --force`、`cd repo && git push --force` 和 `bash -lc "git push --force"`，但不匹配 `git push --force-with-lease`。单词中：
 
-`safeCommandAllowlist` 条目是前缀（`"rg *"`、`"find"`、`"npm test"`），单靠它会信任该程序的所有选项。即使条目匹配，以下命令仍需审批：
+- `a|b` 表示多选，`*`、`?` 和 `[…]` 是通配符；`[|]`、`[*]` 等匹配字符本身；
+- `--name` 同时匹配 `--name=value`，但不匹配缩写的 `--na`，如果程序接受缩写，请分别列出；
+- 单字母参数也能匹配合并的短参数：`git push -f` 能匹配 `git push -uf origin main`。
 
-- 使用会运行其他程序或写文件的选项：`find -exec/-execdir/-ok/-okdir/-delete/-fprint*/-fls`、`fd -x/-X/--exec*`（包括 `-Hx` 这样的组合）、`rg --pre`、`sort -o/--output/--compress-program`、`tar -I/-F/--to-command/--checkpoint-action/--use-compress-program/...`，以及解包或写入归档的 `tar`（`x`、`c`、`r`、`u`、`A`、`--extract`、`--delete` 等）。GNU 工具接受缩写的长选项，因此 `sort --outp=x` 等同于 `--output`；
-- 参数指向工作目录和 `readRoots` 之外的已存在路径，或凭据类路径。这也包括紧跟在选项后的值和 `name=value` 形式的参数：`cat ~/.ssh/id_ed25519`、`cat .env`、`rg TOKEN --file=../x`、`grep -f/etc/x`、`dd if=../x`；
-- 参数会被 shell 展开，因为其最终形式未知：未加引号的通配符或花括号、`~user`，或 `name=value` 形式中 `=` 或 `:` 之后的 `~`（bash 会展开它，例如 `dd if=~/key`）。`cat secrets*` 需要审批，`find . -name '*.ts'` 不需要。
+在分支前加 `+`（`git push origin +main`）同样会强制推送，单词列表无法表达这种形式，上例中的正则表达式可以捕获它。程序按名称匹配，因此请写 `git` 而不是 `/usr/bin/git`。
 
-内置表拒绝的命令仍可以由条目按以下规则允许。有些条目会被忽略，`/auto-approval status` 会提示：参数本身就是脚本或命令行的程序（`sed`、`awk`、`xargs`、`parallel`；只读的 `sed` 脚本由其内置表覆盖）的任何条目，以及 shell、解释器和包装命令（`bash`、`python`、`node`、`env`、`sudo`、`timeout` 等）的裸条目，因为它们等于允许任意代码。请改为写出具体调用，例如 `"python -m pytest"` 或 `"npm test"`。除这些规则外，条目仍然信任该程序：`npm test` 会运行 `test` 脚本中的任何内容。
+匹配倾向于找到命令：这些单词作为其他命令的参数出现时（`echo git push --force`）、在循环、`$(…)` 和 `sh -c '…'` 中（快速通道从不读取这些内容）也会匹配；引号中的 `;` 或 `|`（`git -c 'x=a;b' push --force`）以及反斜杠换行也无法隐藏命令。规则只是尽力而为的绊线，而不是沙箱：由变量指定的程序（`$k delete`）、别名或脚本可以绕过规则，此时它照常交给分类器审批。
+
+### allow 规则
+
+allow 规则的 `prefix` 是按原样书写的命令开头（包含引号，不含重定向）：命令必须与它相同或在其后接一个空格；带结尾 `*` 时，只需以其余部分开头（`"rg *"` 匹配 `rg x`，但不匹配单独的 `rg`）。链或管道中的每条命令都需要各自的规则或程序条目。由于前缀会信任该程序的所有选项，以下命令仍需审批：
+
+- 使用会运行其他程序或写文件的选项：`find -exec/-execdir/-ok/-okdir/-delete/-fprint*/-fls`、`fd -x/-X/--exec*`（也包括 `-Hx` 这类组合）、`rg --pre`、`sort -o/--output/--compress-program`、`tar -I/-F/--to-command/--checkpoint-action/--use-compress-program/...`，以及解压或写入归档的 `tar`（`x`、`c`、`r`、`u`、`A`、`--extract`、`--delete` 等）。GNU 工具接受缩写的长选项，因此 `sort --outp=x` 视同 `--output`；
+- 某个参数指向工作目录和 `readRoots` 之外的已有路径，或凭据类路径。这包括紧贴在选项后的值和 `name=value` 参数：`cat ~/.ssh/id_ed25519`、`cat .env`、`rg TOKEN --file=../x`、`grep -f/etc/x`、`dd if=../x`；
+- 某个参数会被 shell 展开，最终形式未知：未加引号的通配符或花括号、`~user`，或 `name=value` 中 `=` 或 `:` 之后的 `~`（bash 会展开它，例如 `dd if=~/key`）。`cat secrets*` 需要审批，`find . -name '*.ts'` 不需要。
+
+被程序条目拒绝的命令仍可以在这些检查下由规则放行。为参数是脚本或命令行的程序（`sed`、`awk`、`xargs`、`parallel`；只读的 `sed` 脚本由其条目覆盖），或为 shell、解释器和包装器本身（`bash`、`python`、`node`、`env`、`sudo`、`timeout` 等，会允许任意代码）写的前缀是错误。请写出具体的调用方式，例如 `"python -m pytest"` 或 `"npm test"`。除此之外，规则仍然信任该程序：`npm test` 会运行 `test` 脚本里写的任何内容。
 
 ### 额外的可读目录
 
@@ -266,21 +278,7 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 }
 ```
 
-条目必须是绝对路径或以 `~/` 开头。可读目录下的凭据类文件仍需审批。`readRoots` 也覆盖走 fast path 的 bash 命令所指定的路径（allowlist 命令的参数和 `<` 重定向），但它永远不会让一条命令加入 fast path。
-
-## 阻止的命令
-
-`blockCommands` 列出的 bash 命令在任何模式下都会被直接阻止，既不询问分类器，也不询问你。它优先于所有 fast path、`safeCommandAllowlist` 和 `reviewExemptTools`。`deny` 只是给分类器的指导，而这里的阻止无法被说服。
-
-```json
-{
-  "blockCommands": ["git push --force", "git push -f", "/\\bgit\\b.*\\bpush\\b.*\\s\\+\\S/", "terraform apply", "/curl[^|]*\\|\\s*(ba)?sh/"]
-}
-```
-
-模式可以是 `/regex/flags`（对整条命令做匹配），也可以是一串单词：第一个单词是程序名，其余单词需按顺序出现在同一条命令中。`git push --force` 能匹配 `git push origin main --force`、`/usr/bin/git push --force`、`cd repo && git push --force` 和 `bash -lc "git push --force"`，但不匹配 `git push --force-with-lease`。长参数按字面比较，因此 `-f` 需要单独列出。单字母参数也能匹配合并的短参数：`git push -f` 能匹配 `git push -uf origin main`。在分支前加 `+`（`git push origin +main`）同样会强制推送，单词列表无法表达这种形式，上例中的正则表达式可以捕获它。匹配倾向于阻止：这些单词作为其他命令的参数出现时（例如 `echo git push --force`）也会匹配；引号中的 `;` 或 `|`（`git -c 'x=a;b' push --force`）以及反斜杠换行也无法隐藏命令。
-
-这只是针对你绝不希望无人值守执行的命令的尽力而为的绊线，而不是沙箱：足够“有创意”的命令（变量、别名、脚本）仍可能绕过它，此时会照常由分类器审批。
+条目必须是绝对路径或以 `~/` 开头。可读目录下的凭据类文件仍需审批。`readRoots` 也覆盖走 fast path 的 bash 命令所指定的路径（allow 规则放行的命令的参数和 `<` 重定向），但它永远不会让一条命令加入 fast path。
 
 ## 工具审批豁免
 
@@ -298,7 +296,7 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 }
 ```
 
-工具名不区分大小写。这是确定性的豁免，即使工具原本需要人工审批也会绕过，因此只应加入你允许其不经 AI 审批就执行的工具。相比之下，`allow` 只向分类器提示词添加指导，并不保证放行。`blockCommands` 对豁免工具同样生效。
+工具名不区分大小写。这是确定性的豁免，即使工具原本需要人工审批也会绕过，因此只应加入你允许其不经 AI 审批就执行的工具。相比之下，`allow` 只向分类器提示词添加指导，并不保证放行。`bash` 被豁免时，review、ask 和 block 规则仍然对它生效。
 
 ## 分类器模型
 
@@ -333,8 +331,6 @@ OMP 代替他人放入 user 角色的消息（`attribution: "agent"`）不算作
 | `classifierTimeoutSeconds` | `25` | 见[分类器超时](#分类器超时)。 |
 | `approvalTimeoutSeconds` | `30` | 人工审批界面等待多久后视为拒绝。 |
 | `maxConsecutiveDenials` | `3` | 连续自动拒绝多少次后结束当前轮次。 |
-| `safeCommandAllowlist` | `[]` | 额外允许免审批的 bash 命令：完全匹配、前缀加空格，或 `prefix*`。见[allowlist 中的命令](#allowlist-中的命令)。 |
-| `blockCommands` | `[]` | 见[阻止的命令](#阻止的命令)。 |
 | `readRoots` | `[]` | 见[额外的可读目录](#额外的可读目录)。 |
 | `reviewExemptTools` | `[]` | 完全跳过审批的工具名。 |
 | `allow`、`deny` | `[]` | 给分类器提示词的额外指导。 |

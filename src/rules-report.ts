@@ -76,12 +76,13 @@ function ruleLines(rule: CommandRule): string[] {
   return [
     `${rule.id}: ${rule.outcome} (${rule.source})`,
     ...rule.match.map((pattern) => `  match: ${pattern}`),
+    ...(rule.prefix !== null ? [`  prefix: ${rule.prefix}`] : []),
     ...(rule.why ? [`  why: ${rule.why}`] : []),
   ];
 }
 
 /** The overview: files, programs by source, and every rule. */
-export function rulesOverview(rules: CommandRules, blockCommands: readonly string[]): string {
+export function rulesOverview(rules: CommandRules): string {
   if (rules.problem) {
     return `command rules could not be loaded, so every bash command is reviewed: ${rules.problem}`;
   }
@@ -95,9 +96,8 @@ export function rulesOverview(rules: CommandRules, blockCommands: readonly strin
     "programs that skip review when every option and operand is allowed:",
     ...[...bySource].map(([source, names]) => `  ${source}: ${names.join(", ")}`),
     "",
-    rules.rules.length || blockCommands.length ? "rules, most restrictive first wins (block, ask, review):" : "rules: none",
+    rules.rules.length ? "rules (block, then ask, then review wins over any allow):" : "rules: none",
     ...rules.rules.flatMap(ruleLines).map((line) => `  ${line}`),
-    ...blockCommands.filter((pattern) => pattern.trim()).map((pattern) => `  blockCommands: block (config.jsonc)\n    match: ${pattern.trim()}`),
     "",
     "/auto-approval rules <program | rule id> shows one entry.",
   ].join("\n");

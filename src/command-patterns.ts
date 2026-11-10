@@ -33,12 +33,11 @@ const SHORT_FLAG_GROUP = /^-[A-Za-z0-9]+$/;
 
 type WordTest = (word: string) => boolean;
 
-/** `-f` also matches a group of short flags that contains it, such as `-uf`. */
-function literalWord(wanted: string, extended: boolean): WordTest {
+/** `-f` also matches a group of short flags that contains it (`-uf`), and `--as` matches `--as=admin`. */
+function literalWord(wanted: string): WordTest {
   return (word) => word === wanted
     || (SHORT_FLAG.test(wanted) && SHORT_FLAG_GROUP.test(word) && word.includes(wanted[1]))
-    // `--as` also matches `--as=admin`.
-    || (extended && wanted.startsWith("--") && word.startsWith(`${wanted}=`));
+    || (wanted.startsWith("--") && word.startsWith(`${wanted}=`));
 }
 
 function globWord(glob: string): WordTest {
@@ -65,17 +64,38 @@ function globWord(glob: string): WordTest {
   return (word) => regex.test(word);
 }
 
-/**
- * One word of a pattern. Plain (blockCommands): the word itself. Extended
- * (command rules): `a|b` alternatives, each a literal or a glob with `*`, `?`
- * and `[…]`, and `--name` also matching `--name=value`.
- */
-function wordTest(wanted: string, extended: boolean): WordTest {
-  if (!extended) {
-    return literalWord(wanted, false);
+/** `a|b` split at each `|` outside `[…]`, so that `[|]` is a literal `|`. */
+function splitAlternatives(word: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  for (let index = 0; index < word.length; index += 1) {
+    const char = word[index];
+    if (char === "[") {
+      const end = word.indexOf("]", index + 2);
+      if (end >= 0) {
+        current += word.slice(index, end + 1);
+        index = end;
+        continue;
+      }
+    }
+    if (char === "|") {
+      parts.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
   }
-  const alternatives = wanted.split("|").filter(Boolean).map((alternative) => (
-    /[*?[]/.test(alternative) ? globWord(alternative) : literalWord(alternative, true)
+  parts.push(current);
+  return parts;
+}
+
+/**
+ * One word of a pattern: `a|b` alternatives, each a literal or a glob with
+ * `*`, `?` and `[…]`; `[|]` is a literal `|`.
+ */
+function wordTest(wanted: string): WordTest {
+  const alternatives = splitAlternatives(wanted).filter(Boolean).map((alternative) => (
+    /[*?[]/.test(alternative) ? globWord(alternative) : literalWord(alternative)
   ));
   if (!alternatives.length) {
     throw new Error(`empty word in a pattern: ${JSON.stringify(wanted)}`);
@@ -92,7 +112,7 @@ export type CommandPattern = (command: string, segments: string[][]) => boolean;
  * rest must follow it, in order, within the same command. Throws on an
  * invalid pattern.
  */
-export function compileCommandPattern(raw: string, options: { extended: boolean }): CommandPattern {
+export function compileCommandPattern(raw: string): CommandPattern {
   const pattern = raw.trim();
   if (!pattern) {
     throw new Error("empty pattern");
@@ -104,10 +124,10 @@ export function compileCommandPattern(raw: string, options: { extended: boolean 
     return (command) => compiled.test(command);
   }
   const words = pattern.split(/\s+/);
-  if (options.extended && words[0].includes("/")) {
+  if (words[0].includes("/")) {
     throw new Error(`programs are matched by name, so "${words[0]}" never matches; write "${words[0].slice(words[0].lastIndexOf("/") + 1)}"`);
   }
-  const [program, ...rest] = words.map((word) => wordTest(word, options.extended));
+  const [program, ...rest] = words.map(wordTest);
   return (_command, segments) => segments.some((segment) => segment.some((word, start) => {
     if (!program(programName(word))) {
       return false;
@@ -121,35 +141,4 @@ export function compileCommandPattern(raw: string, options: { extended: boolean 
       return next <= segment.length;
     });
   }));
-}
-
-/**
- * The first `blockCommands` pattern a bash command matches, or null.
- *
- * A pattern is either `/regex/flags`, tested against the whole command, or a
- * list of words: the first names a program and the rest must follow it, in
- * order, within the same command. `git push --force` matches
- * `git push origin main --force` and `/usr/bin/git push --force`, but not
- * `git push --force-with-lease`. A single-letter flag such as `-f` also matches
- * grouped short flags (`-uf`). Matching errs toward blocking: the words also
- * match when they appear as another command's arguments. An invalid regex
- * never matches.
- */
-export function matchBlockedCommand(command: string, patterns: readonly string[]): string | null {
-  const segments = commandSegments(command);
-  for (const raw of patterns) {
-    if (!raw.trim()) {
-      continue;
-    }
-    let pattern: CommandPattern;
-    try {
-      pattern = compileCommandPattern(raw, { extended: false });
-    } catch {
-      continue;
-    }
-    if (pattern(command, segments)) {
-      return raw.trim();
-    }
-  }
-  return null;
 }

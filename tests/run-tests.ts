@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import ompAutoApprovalExtension, { SYSTEM_PROMPT_NOTE } from "../index.js";
 import { applyDecisionPolicy, classifyAction, parseReviewDecision } from "../src/classifier.js";
-import { compileCommandPattern, matchBlockedCommand } from "../src/block-commands.js";
+import { compileCommandPattern } from "../src/command-patterns.js";
 import { isWorkspaceWriteFastPath, resolveReadRoots } from "../src/tool-routing.js";
 import { buildProjectedContext } from "../src/context-projection.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, logsDir, normalizeConfig, saveConfig } from "../src/extension-config.js";
@@ -40,13 +40,13 @@ process.on("exit", () => rmSync(STUB_BIN, { recursive: true, force: true }));
 // No user rules file unless a test names one.
 process.env.PI_AUTO_APPROVAL_RULES_PATH = join(STUB_BIN, "no-rules.jsonc");
 
-function isSafeReadOnlyCommand(command: string, cfg: AutoReviewConfig, cwd: string): boolean {
-  return planSafeCommand(command, cfg, { workspace: cwd, searchPath: TEST_PATH }) !== null;
+function isSafeReadOnlyCommand(command: string, cfg: TestConfig, cwd: string): boolean {
+  return planSafeCommand(command, cfg, { workspace: cwd, searchPath: TEST_PATH, rules: cfg.rules }) !== null;
 }
 
 /** The command a fast-pathed command runs as, or null when it is reviewed. */
-function pinnedCommand(command: string, cfg: AutoReviewConfig, workspace: string, searchPath = TEST_PATH): string | null {
-  return planSafeCommand(command, cfg, { workspace, searchPath })?.command ?? null;
+function pinnedCommand(command: string, cfg: TestConfig, workspace: string, searchPath = TEST_PATH): string | null {
+  return planSafeCommand(command, cfg, { workspace, searchPath, rules: cfg.rules })?.command ?? null;
 }
 
 function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -57,8 +57,34 @@ function test(name: string, fn: () => void | Promise<void>): Promise<void> {
     });
 }
 
-function config(overrides: Partial<AutoReviewConfig> = {}): AutoReviewConfig {
-  return { ...DEFAULT_CONFIG, enabled: true, audit: false, ...overrides };
+// A config, and the command rules to use with it: the built-in ones, plus
+// allow rules for `allowRules` prefixes and block rules for `blockRules` patterns.
+type TestConfig = AutoReviewConfig & { rules: CommandRules };
+const RULES_DIR = mkdtempSync(join(tmpdir(), "omp-auto-approval-test-rules-"));
+process.on("exit", () => rmSync(RULES_DIR, { recursive: true, force: true }));
+let rulesFiles = 0;
+
+function testRules(allowRules: string[] = [], blockRules: string[] = []): CommandRules {
+  if (!allowRules.length && !blockRules.length) {
+    return defaultRules();
+  }
+  const file = join(RULES_DIR, `rules-${(rulesFiles += 1)}.jsonc`);
+  writeFileSync(file, JSON.stringify({
+    rules: [
+      ...allowRules.map((prefix, index) => ({ id: `allow-${index}`, outcome: "allow", prefix })),
+      ...blockRules.map((match, index) => ({ id: `block-${index}`, outcome: "block", match })),
+    ],
+  }));
+  const rules = loadCommandRules(file);
+  if (rules.problem) {
+    throw new Error(rules.problem);
+  }
+  return rules;
+}
+
+function config(overrides: Partial<AutoReviewConfig> & { allowRules?: string[]; blockRules?: string[] } = {}): TestConfig {
+  const { allowRules, blockRules, ...rest } = overrides;
+  return { ...DEFAULT_CONFIG, enabled: true, audit: false, ...rest, rules: testRules(allowRules, blockRules) };
 }
 
 function ctx(overrides: Partial<ExtensionContextLike> = {}): ExtensionContextLike {
@@ -162,7 +188,7 @@ async function run(): Promise<void> {
   });
 
   await test("safe command fast path rejects newline, background, and wrapped command chaining", () => {
-    const cfg = config({ safeCommandAllowlist: ["rg *"] });
+    const cfg = config({ allowRules: ["rg *"] });
     assert.equal(isSafeReadOnlyCommand("git status\nrm -rf tmp", cfg, "/tmp/workspace"), false);
     assert.equal(isSafeReadOnlyCommand("git status\r\nrm -rf tmp", cfg, "/tmp/workspace"), false);
     assert.equal(isSafeReadOnlyCommand("git status & rm -rf tmp", cfg, "/tmp/workspace"), false);
@@ -194,7 +220,7 @@ async function run(): Promise<void> {
   });
 
   await test("safe command user allowlist remains explicit", () => {
-    const cfg = config({ safeCommandAllowlist: ["rg *", "npm test"] });
+    const cfg = config({ allowRules: ["rg *", "npm test"] });
     assert.equal(isSafeReadOnlyCommand("rg needle src", cfg, "/tmp/workspace"), true);
     assert.equal(isSafeReadOnlyCommand("npm test", cfg, "/tmp/workspace"), true);
     assert.equal(isSafeReadOnlyCommand("npm install", cfg, "/tmp/workspace"), false);
@@ -208,7 +234,7 @@ async function run(): Promise<void> {
     writeFileSync(join(workspace, "secrets.yaml"), "token: x\n");
     writeFileSync(join(workspace, "notes.txt"), "notes\n");
     writeFileSync(join(root, "outside.txt"), "outside\n");
-    const cfg = config({ safeCommandAllowlist: ["find", "fd *", "rg *", "cat *", "sort *", "tar *", "ls"] });
+    const cfg = config({ allowRules: ["find", "fd *", "rg *", "cat *", "sort *", "tar *", "ls"] });
     try {
       for (const command of [
         "find . -name '*.ts'",
@@ -256,7 +282,7 @@ async function run(): Promise<void> {
       ]) {
         assert.equal(isSafeReadOnlyCommand(command, cfg, workspace), false, command);
       }
-      assert.equal(isSafeReadOnlyCommand(`cat ${join(root, "outside.txt")}`, config({ safeCommandAllowlist: ["cat *"], readRoots: [root] }), workspace), true);
+      assert.equal(isSafeReadOnlyCommand(`cat ${join(root, "outside.txt")}`, config({ allowRules: ["cat *"], readRoots: [root] }), workspace), true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -364,7 +390,7 @@ async function run(): Promise<void> {
     }
     mkdirSync(join(root, "links"));
     symlinkSync(join(workspace, "bin", "git"), join(root, "links", "git"));
-    const cfg = config({ safeCommandAllowlist: ["rg *", "./scripts/check.sh"] });
+    const cfg = config({ allowRules: ["rg *", "./scripts/check.sh"] });
     try {
       assert.equal(pinnedCommand("git status --short", cfg, workspace, TEST_PATH), `${STUB_BIN}/git status --short`);
       assert.equal(pinnedCommand('  "git" log -1', cfg, workspace, TEST_PATH), `  ${STUB_BIN}/git log -1`);
@@ -388,8 +414,8 @@ async function run(): Promise<void> {
     writeFileSync(join(workspace, "notes.txt"), "notes\n");
     writeFileSync(join(workspace, ".env"), "TOKEN=x\n");
     writeFileSync(join(root, "outside.txt"), "outside\n");
-    const cfg = config({ safeCommandAllowlist: ["rg", "head", "cat"] });
-    const plan = (command: string) => planSafeCommand(command, cfg, { workspace, searchPath: TEST_PATH });
+    const cfg = config({ allowRules: ["rg", "head", "cat"] });
+    const plan = (command: string) => planSafeCommand(command, cfg, { workspace, searchPath: TEST_PATH, rules: cfg.rules });
     try {
       for (const command of [
         "git status && git log -1",
@@ -455,7 +481,7 @@ async function run(): Promise<void> {
         command: `2>/dev/null ${STUB_BIN}/git status # done`,
         cwd: workspace,
       });
-      assert.deepEqual(where(planSafeCommand("cd .. && git status", cfg, { workspace, cwd: join(workspace, "sub"), searchPath: TEST_PATH })), {
+      assert.deepEqual(where(planSafeCommand("cd .. && git status", cfg, { workspace, cwd: join(workspace, "sub"), searchPath: TEST_PATH, rules: cfg.rules })), {
         command: `${STUB_BIN}/git status`,
         cwd: workspace,
       });
@@ -475,7 +501,7 @@ async function run(): Promise<void> {
     }
     writeFileSync(join(root, "outside.txt"), "outside\n");
     const cfg = config();
-    const safe = (command: string, cwd?: string) => planSafeCommand(command, cfg, { workspace, cwd, searchPath: TEST_PATH }) !== null;
+    const safe = (command: string, cwd?: string) => planSafeCommand(command, cfg, { workspace, cwd, searchPath: TEST_PATH, rules: cfg.rules }) !== null;
     try {
       for (const command of [
         "cat notes.txt", "cat -n src/a.ts", "head -20 notes.txt", "head -n 5 notes.txt", "tail -n +2 notes.txt", "tail -3 notes.txt",
@@ -529,7 +555,7 @@ async function run(): Promise<void> {
     process.env.HOME = home;
     writeFileSync(join(home, "notes.txt"), "x\n");
     try {
-      const cfg = config({ readRoots: ["~"], safeCommandAllowlist: ["rg"] });
+      const cfg = config({ readRoots: ["~"], allowRules: ["rg"] });
       const workspace = join(home, "workspace");
       mkdirSync(workspace);
       assert.equal(pinnedCommand("cat ~/notes.txt", cfg, workspace), `${STUB_BIN}/cat ${home}/notes.txt`);
@@ -563,7 +589,7 @@ async function run(): Promise<void> {
     const schema = JSON.parse(readFileSync(new URL("../schemas/rules.schema.json", import.meta.url), "utf8"));
     assert.deepEqual([...schema.$defs.operandCheck.enum].sort(), Object.keys(OPERAND_CHECKS).sort());
     assert.deepEqual(schema.$defs.entry.properties.arguments.enum, [...ARGUMENT_PARSERS]);
-    assert.deepEqual(schema.$defs.rule.properties.outcome.enum, [...RULE_OUTCOMES]);
+    assert.deepEqual(schema.$defs.rule.oneOf[0].properties.outcome.enum, [...RULE_OUTCOMES]);
     const kinds = new Set<string>();
     for (const entry of defaultRules().programs.values()) {
       for (const sub of [entry, ...(entry.subcommands?.values() ?? [])]) {
@@ -613,7 +639,7 @@ async function run(): Promise<void> {
         assert.equal(rules.programs.size, 0);
         // Not even the allowlist applies: the file could have held a rule
         // that is meant to restrict it.
-        const cfg = config({ safeCommandAllowlist: ["rg"] });
+        const cfg = config({ allowRules: ["rg"] });
         for (const command of ["cat notes.txt", "rg x", "pwd"]) {
           assert.equal(planSafeCommand(command, cfg, { workspace, searchPath: TEST_PATH, rules }), null, `${text}: ${command}`);
         }
@@ -645,7 +671,7 @@ async function run(): Promise<void> {
     const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-equals-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
     try {
-      const cfg = config({ safeCommandAllowlist: ["npm view"] });
+      const cfg = config({ allowRules: ["npm view"] });
       for (const command of [
         "npm view x go-template-file=/etc/passwd", "npm view x --from-file=key=/etc/passwd", "npm view x a=b=/etc/passwd", "npm view x -ofile=/etc/passwd",
       ]) {
@@ -773,7 +799,7 @@ async function run(): Promise<void> {
         assert.equal(safe(command), false, command);
       }
       const decided = (command: string) => {
-        const escalation = escalateCommand(command, rules, []);
+        const escalation = escalateCommand(command, rules);
         return escalation && `${escalation.outcome} ${escalation.rule?.id}`;
       };
       assert.equal(decided("kubectl get pods"), null);
@@ -868,7 +894,7 @@ async function run(): Promise<void> {
         const rules = loadCommandRules(file);
         assert.match(rules.problem ?? "", problem, text);
         assert.equal(rules.programs.size, 0, text);
-        assert.equal(planSafeCommand("git status", config({ safeCommandAllowlist: ["rg"] }), { workspace, searchPath: TEST_PATH, rules }), null, text);
+        assert.equal(planSafeCommand("git status", config({ allowRules: ["rg"] }), { workspace, searchPath: TEST_PATH, rules }), null, text);
       }
 
       // Through the decision itself: a broken file, and a rule that
@@ -952,9 +978,9 @@ async function run(): Promise<void> {
       assert.deepEqual(rules.rules.map((rule) => [rule.id, rule.outcome]), [
         ["kube-secrets", "review"], ["kube-impersonate", "review"], ["kube-interactive", "ask"], ["kube-delete-all", "block"],
       ]);
-      const decided = (command: string, blockCommands: string[] = []) => {
-        const escalation = escalateCommand(command, rules, blockCommands);
-        return escalation && `${escalation.outcome} ${escalation.rule?.id ?? escalation.blockPattern}`;
+      const decided = (command: string) => {
+        const escalation = escalateCommand(command, rules);
+        return escalation && `${escalation.outcome} ${escalation.rule.id}`;
       };
       const cases: [string, string | null][] = [
         ["kubectl get pods", null],
@@ -975,8 +1001,6 @@ async function run(): Promise<void> {
         ["echo $(kubectl get secrets)", "review kube-secrets"],
         ["kubectl \\\ndelete --all", "block kube-delete-all"],
         ["sh -c 'kubectl exec api -- ls'", "ask kube-interactive"],
-        // blockCommands are block rules too, and checked first.
-        ["kubectl get secrets", "review kube-secrets"],
         // Known misses, documented: case and resource lists are not covered
         // by these patterns, and a variable hides the program.
         ["kubectl get Secrets", null],
@@ -986,7 +1010,6 @@ async function run(): Promise<void> {
       for (const [command, expected] of cases) {
         assert.equal(decided(command), expected, command);
       }
-      assert.equal(decided("kubectl get secrets", ["kubectl get"]), "block kubectl get");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -997,10 +1020,10 @@ async function run(): Promise<void> {
       const patterns = [match].flat();
       return {
         ...defaultRules(),
-        rules: [{ id: "r", match: patterns, patterns: patterns.map((pattern) => compileCommandPattern(pattern, { extended: true })), outcome: "review", why: null, source: "test" }],
+        rules: [{ id: "r", match: patterns, patterns: patterns.map((pattern) => compileCommandPattern(pattern)), outcome: "review", prefix: null, why: null, source: "test" }],
       };
     };
-    const matches = (match: string | string[], command: string) => escalateCommand(command, rules(match), []) !== null;
+    const matches = (match: string | string[], command: string) => escalateCommand(command, rules(match)) !== null;
     assert.equal(matches("rm -r", "rm -rf build"), true);
     assert.equal(matches("rm -r", "rm --recursive build"), false);
     assert.equal(matches("rm -r|--recursive", "rm --recursive build"), true);
@@ -1015,16 +1038,18 @@ async function run(): Promise<void> {
     assert.equal(matches("*ctl delete", "systemctl delete x"), true);
     // A compiled rule is reused: a sticky or global regex must not skip every other command.
     const sticky = rules("/git\\s+reset/gy");
-    assert.equal(escalateCommand("git reset --hard", sticky, []) !== null, true);
-    assert.equal(escalateCommand("git reset --hard", sticky, []) !== null, true);
-    assert.throws(() => compileCommandPattern("/usr/bin/git push", { extended: true }), /programs are matched by name, so "\/usr\/bin\/git" never matches; write "git"/);
+    assert.equal(escalateCommand("git reset --hard", sticky) !== null, true);
+    assert.equal(escalateCommand("git reset --hard", sticky) !== null, true);
+    assert.throws(() => compileCommandPattern("/usr/bin/git push"), /programs are matched by name, so "\/usr\/bin\/git" never matches; write "git"/);
     // Quotes holding an operator do not split a command.
     assert.equal(matches("git push --force", "git -c 'x=a;b' push --force"), true);
-    assert.equal(matchBlockedCommand("git -c \"a|b\" push --force", ["git push --force"]), "git push --force");
-    assert.equal(matchBlockedCommand("git pu\\\nsh --force", ["git push --force"]), "git push --force");
-    // blockCommands words stay plain: no alternatives or globs.
-    assert.equal(matchBlockedCommand("git push --force", ["git push|pull --force"]), null);
-    assert.equal(matchBlockedCommand("rm -rf /tmp", ["rm -rf /*"]), null);
+    assert.equal(matches("git push --force", "git -c \"a|b\" push --force"), true);
+    assert.equal(matches("git push --force", "git pu\\\nsh --force"), true);
+    // `[|]` and `[*]` are literal.
+    assert.equal(matches("echo a[|]b", "echo 'a|b'"), true);
+    assert.equal(matches("echo a[|]b", "echo a"), false);
+    assert.equal(matches("rm -rf /[*]", "rm -rf /*"), true);
+    assert.equal(matches("rm -rf /[*]", "rm -rf /tmp"), false);
   });
 
   await test("command rules are validated: ids, outcomes, patterns", () => {
@@ -1034,8 +1059,13 @@ async function run(): Promise<void> {
         ['{ "rules": [{ "match": "x y", "outcome": "review" }] }', /rules\[0\]\.id: expected a name/],
         ['{ "rules": [{ "id": "program:x", "match": "x", "outcome": "review" }] }', /rules\[0\]\.id: expected a name/],
         ['{ "rules": [{ "id": "a", "match": "x", "outcome": "review" }, { "id": "a", "match": "y", "outcome": "block" }] }', /rules\[1\]\.id: "a" is used by another rule/],
-        ['{ "rules": [{ "id": "a", "match": "x", "outcome": "allow" }] }', /"allow" rules are not supported/],
-        ['{ "rules": [{ "id": "a", "match": "x", "outcome": "deny" }] }', /outcome: expected one of review, ask, block/],
+        ['{ "rules": [{ "id": "a", "match": "x", "outcome": "allow" }] }', /an allow rule takes "prefix", the start of the command as written, not "match"/],
+        ['{ "rules": [{ "id": "a", "prefix": "x", "outcome": "review" }] }', /"prefix" is for allow rules; use "match"/],
+        ['{ "rules": [{ "id": "a", "prefix": " ", "outcome": "allow" }] }', /prefix: expected the start of a command/],
+        ['{ "rules": [{ "id": "a", "prefix": "*", "outcome": "allow" }] }', /prefix: expected the start of a command/],
+        ['{ "rules": [{ "id": "a", "prefix": "xargs rm", "outcome": "allow" }] }', /prefix: xargs runs commands or writes files from its arguments/],
+        ['{ "rules": [{ "id": "a", "prefix": "python", "outcome": "allow" }] }', /prefix: allowing bare python would allow any code/],
+        ['{ "rules": [{ "id": "a", "match": "x", "outcome": "deny" }] }', /outcome: expected one of allow, review, ask, block/],
         ['{ "rules": [{ "id": "a", "match": [], "outcome": "review" }] }', /match: expected a pattern or a list of patterns/],
         ['{ "rules": [{ "id": "a", "match": " ", "outcome": "review" }] }', /empty pattern/],
         ['{ "rules": [{ "id": "a", "match": "/(/", "outcome": "review" }] }', /Invalid regular expression/],
@@ -1070,7 +1100,9 @@ async function run(): Promise<void> {
           { "id": "log-review", "match": "git log", "outcome": "review", "why": "Logs may name customers." },
           { "id": "push-review", "match": "git push", "outcome": "review" },
           { "id": "ask-tag", "match": "git tag -d", "outcome": "ask", "why": "Tags are releases." },
-          { "id": "no-reset", "match": "git reset --hard", "outcome": "block", "why": "Work would be lost." }
+          { "id": "no-reset", "match": "git reset --hard", "outcome": "block", "why": "Work would be lost." },
+          { "id": "fetch-dry-run", "prefix": "git fetch --dry-run", "outcome": "allow" },
+          { "id": "push-dry-run", "prefix": "git push --dry-run", "outcome": "allow" }
         ]
       }`);
       const rules = loadCommandRules(file);
@@ -1096,8 +1128,8 @@ async function run(): Promise<void> {
       assert.equal(blocked(await run("git log -1")), true);
       assert.match(contexts.at(-1) ?? "", /command rules send this action to review \(rule \\"log-review\\".*The user's reason: Logs may name customers\./);
       // (Only the allowlist lets these through; git is on the real PATH.)
-      assert.deepEqual(await run("git fetch --dry-run", { safeCommandAllowlist: ["git fetch --dry-run", "git push --dry-run"] }), {});
-      assert.equal(blocked(await run("git push --dry-run", { safeCommandAllowlist: ["git fetch --dry-run", "git push --dry-run"] })), true);
+      assert.deepEqual(await run("git fetch --dry-run"), {});
+      assert.equal(blocked(await run("git push --dry-run")), true);
       assert.equal(blocked(await run("git log", { reviewExemptTools: ["bash"] })), true);
       assert.deepEqual(await run("git status", { reviewExemptTools: ["bash"] }), {});
 
@@ -1167,11 +1199,10 @@ async function run(): Promise<void> {
       writeFileSync(join(dir, "rules.jsonc"), KUBE_RULES.replace('"programs": {', '"programs": { "git": { "extends": "default", "subcommands": { "reflog": { "options": "any", "operands": "git-operands" } } },'));
       const rules = loadCommandRules(join(dir, "rules.jsonc"));
       assert.equal(rules.problem, null);
-      const overview = rulesOverview(rules, ["git push --force"]);
+      const overview = rulesOverview(rules);
       assert.match(overview, /programs that skip review[\s\S]*  default: cat, head,[\s\S]*: kubectl/);
       assert.match(overview, /  default, .*rules\.jsonc: git\n/);
       assert.match(overview, /  kube-secrets: review \(.*rules\.jsonc\)\n    match: kubectl get\|describe secret\|secrets\|secret\/\*\n    why: Secret values/);
-      assert.match(overview, /  blockCommands: block \(config\.jsonc\)\n    match: git push --force/);
       const head = describeRule(rules, "head") ?? "";
       assert.match(head, /^program:head \(default\)\n  options:\n/);
       assert.match(head, /    -n --lines: number\n/);
@@ -1293,7 +1324,7 @@ async function run(): Promise<void> {
     writeFileSync(join(workspace, ".env"), "TOKEN=x\n");
     const outside = join(root, "outside.txt");
     writeFileSync(outside, "outside\n");
-    const cfg = config({ safeCommandAllowlist: ["sort *", "rg *", "fd *", "grep *", "dd *", "tar *", "cat *"] });
+    const cfg = config({ allowRules: ["sort *", "rg *", "fd *", "grep *", "dd *", "tar *", "cat *"] });
     try {
       for (const command of [
         "sort -k2 -t, notes.txt",
@@ -1340,26 +1371,16 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("allowlist entries for script programs and bare interpreters are ignored and reported", () => {
-    const cfg = config({ safeCommandAllowlist: ["sed -n", "xargs", "awk *", "python", "bash *", "env", "python -m pytest", "npm test"] });
-    for (const command of ["sed -n -i 1p notes.txt", "sed -n 'w /tmp/x' notes.txt", "xargs rm", "awk '{system(\"rm x\")}'", "python -c 'import os'", "bash -c 'rm -rf x'", "env rm x"]) {
+  await test("allow rules for script programs and bare interpreters are errors", () => {
+    for (const prefix of ["sed -n", "xargs", "awk *", "python", "bash *", "env"]) {
+      assert.throws(() => config({ allowRules: [prefix] }), new RegExp(`prefix: (${prefix.split(" ")[0]} runs commands|allowing bare ${prefix.split(" ")[0]} would allow any code)`), prefix);
+    }
+    const cfg = config({ allowRules: ["python -m pytest", "npm test"] });
+    for (const command of ["python -c 'import os'", "npm install"]) {
       assert.equal(isSafeReadOnlyCommand(command, cfg, "/tmp/workspace"), false, command);
     }
     assert.equal(isSafeReadOnlyCommand("python -m pytest tests", cfg, "/tmp/workspace"), true);
     assert.equal(isSafeReadOnlyCommand("npm test", cfg, "/tmp/workspace"), true);
-
-    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-allowlist-config-"));
-    try {
-      const file = join(dir, "config.jsonc");
-      writeFileSync(file, JSON.stringify({ enabled: true, safeCommandAllowlist: cfg.safeCommandAllowlist }));
-      const notice = loadConfig(file).notice ?? "";
-      for (const entry of ["sed -n", "xargs", "awk *", "python", "bash *", "env"]) {
-        assert.ok(notice.includes(`entry "${entry}" is ignored`), entry);
-      }
-      assert.ok(!notice.includes('entry "python -m pytest"') && !notice.includes('entry "npm test"'));
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
   });
 
   await test("disabled extension transparently allows", async () => {
@@ -2235,16 +2256,20 @@ async function run(): Promise<void> {
       assert.match(await routeFor("read src/a.ts"), /tool: read \(builtin\)[\s\S]*route: allowed without review: read-only builtin tool/);
       assert.match(await routeFor("read ~/.ssh/id_ed25519"), /route: classifier review; blocked if it denies or fails/);
       assert.match(await routeFor('read {"path":".env"}'), /arguments: \{"path":".env"\}[\s\S]*route: classifier review/);
-      assert.match(await routeFor("bash git status --short"), /arguments: \{"command":"git status --short"\}[\s\S]*route: allowed without review: every command is read-only by the command rules or safeCommandAllowlist\nruns as: .*\nallowed by: program:git status \(default\)/);
+      assert.match(await routeFor("bash git status --short"), /arguments: \{"command":"git status --short"\}[\s\S]*route: allowed without review: every command is read-only by the command rules\nruns as: .*\nallowed by: program:git status \(default\)/);
       assert.match(await routeFor("bash git push"), /route: classifier review/);
       assert.match(await routeFor("deploy {}"), /tool: deploy \(extension\)[\s\S]*route: classifier review/);
       assert.match(await routeFor("ls -la"), /note: no tool named "ls" in this session; explained as a bash command[\s\S]*tool: bash\n[\s\S]*arguments: \{"command":"ls -la"\}/);
-      assert.match(await routeFor("git status"), /arguments: \{"command":"git status"\}[\s\S]*route: allowed without review: every command is read-only by the command rules or safeCommandAllowlist\nruns as: .*\nallowed by: program:git status \(default\)/);
+      assert.match(await routeFor("git status"), /arguments: \{"command":"git status"\}[\s\S]*route: allowed without review: every command is read-only by the command rules\nruns as: .*\nallowed by: program:git status \(default\)/);
       assert.match(await routeFor("git status 2>&1 && git log -1"), /route: allowed without review[\s\S]*runs as: \/\S+\/git status 2>&1 && \/\S+\/git log -1/);
       assert.match(await routeFor(`bash cd ${tmpdir()} && git status`), /route: classifier review/);
       assert.match(await routeFor("read {bad"), /not valid JSON/);
-      writeFileSync(configFile, JSON.stringify({ enabled: true, mode: "auto", blockCommands: ["git push --force"] }));
-      assert.match(await routeFor("bash git push origin --force"), /route: blocked: matches a block command rule or blockCommands entry, never auto-approved or asked\nrule: blockCommands "git push --force" \(block, config.jsonc\)/);
+      writeFileSync(process.env.PI_AUTO_APPROVAL_RULES_PATH!, '{ "rules": [{ "id": "no-force", "match": "git push --force", "outcome": "block" }] }');
+      try {
+        assert.match(await routeFor("bash git push origin --force"), /route: blocked: matches a block command rule, never auto-approved or asked\nrule: no-force \(block, .*no-rules\.jsonc\)/);
+      } finally {
+        rmSync(process.env.PI_AUTO_APPROVAL_RULES_PATH!, { force: true });
+      }
       assert.match(await routeFor(""), /Usage: \/auto-approval explain/);
     } finally {
       rmSync(configFile, { force: true });
@@ -2994,13 +3019,13 @@ async function run(): Promise<void> {
       assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { enabled: false, mode: "fallback" });
       assert.equal(created.config.classifierTimeoutSeconds, 25);
 
-      writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, enabled: true, classifierTimeoutSeconds: 90, readRoots: undefined, blockCommands: undefined }));
+      writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, enabled: true, classifierTimeoutSeconds: 90, readRoots: undefined, allow: undefined }));
       const legacy = loadConfig(file);
       assert.equal(legacy.config.classifierTimeoutSeconds, 25);
       assert.equal(legacy.notice, undefined);
 
-      saveConfig({ ...legacy.config, mode: "auto", blockCommands: ["git push --force"] }, file);
-      assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { enabled: true, mode: "auto", blockCommands: ["git push --force"] });
+      saveConfig({ ...legacy.config, mode: "auto", readRoots: ["/nix/store"] }, file);
+      assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { enabled: true, mode: "auto", readRoots: ["/nix/store"] });
 
       writeFileSync(file, JSON.stringify({ enabled: true, classifierTimeoutSeconds: 45 }));
       const slow = loadConfig(file);
@@ -3241,8 +3266,10 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("blockCommands match words in order across wrappers and shell syntax", () => {
-    const patterns = ["git push --force", "terraform apply", "/curl[^|]*\\|\\s*(ba)?sh/"];
+  await test("block rules match words in order across wrappers and shell syntax", () => {
+    const rules = config({ blockRules: ["git push --force", "terraform apply", "/curl[^|]*\\|\\s*(ba)?sh/"] }).rules;
+    const matchBlockedCommand = (command: string, _patterns: unknown) => escalateCommand(command, rules)?.rule.id ?? null;
+    const patterns = null;
     for (const command of [
       "git push --force",
       "git push origin main --force",
@@ -3264,16 +3291,61 @@ async function run(): Promise<void> {
     ]) {
       assert.equal(matchBlockedCommand(command, patterns), null, command);
     }
-    assert.equal(matchBlockedCommand("anything", ["/(unclosed/", " "]), null);
   });
 
-  await test("blockCommands catch grouped short flags and the documented +branch regex", () => {
-    const patterns = ["git push --force", "git push -f", "/\\bgit\\b.*\\bpush\\b.*\\s\\+\\S/"];
+  await test("block rules catch grouped short flags and the documented +branch regex", () => {
+    const rules = config({ blockRules: ["git push --force", "git push -f", "/\\bgit\\b.*\\bpush\\b.*\\s\\+\\S/"] }).rules;
+    const matchBlockedCommand = (command: string, _patterns: unknown) => escalateCommand(command, rules)?.rule.id ?? null;
+    const patterns = null;
     for (const command of ["git push -uf origin main", "git push -fu", "git push origin +main", "git -C repo push origin +HEAD:main"]) {
       assert.notEqual(matchBlockedCommand(command, patterns), null, command);
     }
     for (const command of ["git push -u origin main", "git push --force-with-lease", "git push --follow-tags", "git commit -m 'a +b'"]) {
       assert.equal(matchBlockedCommand(command, patterns), null, command);
+    }
+  });
+
+  await test("safeCommandAllowlist and blockCommands are no longer read, and say so", () => {
+    for (const [raw, expected] of [
+      [{ safeCommandAllowlist: ["rg"] }, "safeCommandAllowlist is no longer read and its 1 entry is ignored: write them as allow rules in rules.jsonc"],
+      [{ blockCommands: ["git push --force", "x"] }, "blockCommands is no longer read and its 2 entries are ignored: write them as block rules in rules.jsonc"],
+    ] as const) {
+      const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-moved-"));
+      try {
+        writeFileSync(join(dir, "config.jsonc"), JSON.stringify(raw));
+        const loaded = loadConfig(join(dir, "config.jsonc"));
+        assert.ok((loaded.notice ?? "").includes(expected), loaded.notice);
+        assert.ok(!(loaded.notice ?? "").includes("unknown key"), loaded.notice);
+        assert.equal("safeCommandAllowlist" in loaded.config || "blockCommands" in loaded.config, false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-moved-"));
+    try {
+      writeFileSync(join(dir, "config.jsonc"), JSON.stringify({ safeCommandAllowlist: [], blockCommands: [] }));
+      assert.equal(loadConfig(join(dir, "config.jsonc")).notice, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test("allow rules let commands through by their prefix", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-allow-rules-"));
+    writeFileSync(join(workspace, "notes.txt"), "x\n");
+    writeFileSync(join(workspace, ".env"), "SECRET=1\n");
+    try {
+      writeFileSync(join(workspace, "rules.jsonc"), '{ "rules": [{ "id": "rg", "outcome": "allow", "prefix": "rg" }, { "id": "no-rg-pre", "match": "rg --pre*", "outcome": "block" }] }');
+      const rules = loadCommandRules(join(workspace, "rules.jsonc"));
+      const plan = (command: string) => planSafeCommand(command, config(), { workspace, searchPath: TEST_PATH, rules });
+      assert.deepEqual(plan("rg x notes.txt")?.rules, [{ id: "rg", source: join(workspace, "rules.jsonc").replace(homedir(), "~") }]);
+      for (const command of ["rgx", "rg x /etc/passwd", "rg --pre=cat x", "rg x .env"]) {
+        assert.equal(plan(command), null, command);
+      }
+      assert.equal(escalateCommand("rg --pre=cat x", rules)?.rule?.id, "no-rg-pre");
+      assert.equal(escalateCommand("rg x", rules), null);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
     }
   });
 
@@ -3295,17 +3367,18 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("blockCommands block before every fast path and never ask", async () => {
+  await test("block rules block before every fast path and never ask", async () => {
     let asked = false;
+    const cfg = config({ mode: "fallback", blockRules: ["git log --force"], allowRules: ["git log"], reviewExemptTools: ["bash"] });
     const result = await evaluateToolCall(
       { toolName: "bash", input: { command: "git log --force" } },
       ctx({ hasUI: true, ui: { select: async () => { asked = true; return "Allow Once"; } } }),
-      config({ mode: "fallback", blockCommands: ["git log --force"], safeCommandAllowlist: ["git log"], reviewExemptTools: ["bash"] }),
+      cfg,
       new SessionApprovalStore(),
-      { classifierClient: async () => { throw new Error("blocked command must not call classifier"); } },
+      { classifierClient: async () => { throw new Error("blocked command must not call classifier"); }, rules: cfg.rules },
     );
     assert.equal(asked, false);
-    assert.match((result as { reason: string }).reason, /matches the blockCommands rule "git log --force"/);
+    assert.match((result as { reason: string }).reason, /matches the command rule "block-0" \(block\)/);
   });
 
   await test("classifier allows of risky actions need high user authorization", async () => {

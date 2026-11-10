@@ -34,14 +34,14 @@ export const SYSTEM_PROMPT_NOTE = [
 ].join(" ");
 
 const ROUTE_EXPLANATIONS: Record<FastPathRoute, string> = {
-  blocked_command: "blocked: matches a block command rule or blockCommands entry, never auto-approved or asked",
+  blocked_command: "blocked: matches a block command rule, never auto-approved or asked",
   ask_rule: "asks you directly, without the classifier: matches an ask command rule (denied in auto mode or without a UI)",
   local_state: "allowed without review: local session state (todo, wait)",
   ui_only: "allowed without review: interactive ask with no remote content",
   tool_allowlist: "allowed without review: tool is listed in reviewExemptTools",
   readonly: "allowed without review: read-only builtin tool, every target is a non-sensitive path in the workspace or readRoots",
   workspace_write: "allowed without review: write inside the workspace, outside protected entries",
-  safe_command: "allowed without review: every command is read-only by the command rules or safeCommandAllowlist",
+  safe_command: "allowed without review: every command is read-only by the command rules",
   manual_only: "needs manual approval: this tool cannot be auto-approved",
 };
 
@@ -205,8 +205,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
       ...(plan?.rules.some((used) => used.source !== "default" && used.source !== "config.jsonc")
         ? ["note: entries from your rules files are not checked by the program oracle, as the built-in ones are"]
         : []),
-      ...(escalation?.rule ? [`rule: ${escalation.rule.id} (${escalation.rule.outcome}, ${escalation.rule.source})`, ...(escalation.rule.why ? [`why: ${escalation.rule.why}`] : [])] : []),
-      ...(escalation?.blockPattern ? [`rule: blockCommands "${escalation.blockPattern}" (block, config.jsonc)`] : []),
+      ...(escalation ? [`rule: ${escalation.rule.id} (${escalation.rule.outcome}, ${escalation.rule.source})`, ...(escalation.rule.why ? [`why: ${escalation.rule.why}`] : [])] : []),
       ...(toolName === "bash" && rules.problem ? [rulesProblemText(rules)] : []),
       ...(toolName === "bash" && approvals.shellLatch(sessionKey(ctx)) ? [`note: the bash fast path is off for this session: an approved command used ${approvals.shellLatch(sessionKey(ctx))}`] : []),
     ].join("\n"));
@@ -267,7 +266,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
         } else if (rest) {
           notify(ctx, describeRule(rules, rest) ?? `No program or rule named "${rest}". /auto-approval rules lists them.`, "info");
         } else {
-          notify(ctx, rulesOverview(rules, config.blockCommands));
+          notify(ctx, rulesOverview(rules));
         }
         break;
       case "status":

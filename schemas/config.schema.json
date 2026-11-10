@@ -42,21 +42,6 @@
       "exclusiveMinimum": 0,
       "default": 3
     },
-    "safeCommandAllowlist": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "default": []
-    },
-    "blockCommands": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "default": [],
-      "description": "Bash commands that are always blocked without review or prompt. Words in order (\"git push --force\") or /regex/flags."
-    },
     "readRoots": {
       "type": "array",
       "items": {

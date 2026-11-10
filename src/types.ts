@@ -15,8 +15,6 @@ export interface AutoReviewConfig {
   approvalTimeoutSeconds: number;
   classifierTimeoutSeconds: number;
   maxConsecutiveDenials: number;
-  safeCommandAllowlist: string[];
-  blockCommands: string[];
   readRoots: string[];
   reviewExemptTools: string[];
   allow: string[];

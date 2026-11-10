@@ -92,7 +92,7 @@ sequenceDiagram
 
     alt state is off
         Ext-->>OMP: No decision, use normal OMP behavior
-    else bash command matches blockCommands or a block rule
+    else bash command matches a block rule
         Ext-->>OMP: Block, without review or prompt
     else bash command matches an ask rule
         Ext->>Human: Ask directly, without the classifier (denied in auto mode)
@@ -141,13 +141,13 @@ sequenceDiagram
 
 `off` means the extension does not make automatic approval decisions.
 
-`fallback` means local fast paths handle actions that are already known to be low risk, such as non-sensitive workspace reads, workspace-internal writes, explicitly allowlisted safe commands, or exact actions already approved in the session. Other tool calls go to the classifier first. If it allows, the tool runs. If it denies, fails, times out, or the tool is manual-only, OMP asks the human through the approval UI when UI is available.
+`fallback` means local fast paths handle actions that are already known to be low risk, such as non-sensitive workspace reads, workspace-internal writes, commands the command rules allow, or exact actions already approved in the session. Other tool calls go to the classifier first. If it allows, the tool runs. If it denies, fails, times out, or the tool is manual-only, OMP asks the human through the approval UI when UI is available.
 
 `auto` means non-fast-path tool calls use the classifier as the approval gate. Local fast paths can still allow actions that are statically known to be low risk or already approved in the current session. For reviewed actions, a classifier allow runs the tool; a classifier deny, failure, timeout, or manual-only tool blocks the tool call.
 
 ### Stopping the turn
 
-After `maxConsecutiveDenials` automatic denials in a row (default 3: classifier denials or failures and `blockCommands` blocks), the extension ends the agent's turn instead of trusting the agent to stop on its own. The human approval prompt in `fallback` mode also offers **Reject and Stop the Turn**.
+After `maxConsecutiveDenials` automatic denials in a row (default 3: classifier denials or failures, and ask and block rule denials), the extension ends the agent's turn instead of trusting the agent to stop on its own. The human approval prompt in `fallback` mode also offers **Reject and Stop the Turn**.
 
 While auto-approval is on, a short note is added to the system prompt asking the agent to report a blocked call to you instead of retrying it in another form.
 
@@ -176,7 +176,7 @@ Fast paths approve without classifier review, so they are deliberately narrow:
   - protected entries at any depth, after resolving symlinks: `.git`, `.omp`, `.pi`, `.claude`, `.mcp.json`, `.cursor`, `.envrc`, `.vscode`, `.idea`, `.husky`, `.devcontainer`. Their contents are executed or trusted later without review: `core.fsmonitor` in `.git/config` runs on `git status`, and Claude Code hooks in `.claude/settings.json` run shell commands;
   - the credential-like files listed above for reads, such as `.env` or `*.pem`;
   - writes that create or change a program: content starting with `#!` (OMP's `write` tool makes such a file executable) or a destination that is already executable. A program in the workspace can shadow a command on the shell's PATH.
-- **Safe bash commands**: read-only git commands, common read-only programs such as `grep`, `cat`, `head`, `ls`, `sed -n` and `jq` (see [Built-in read-only programs](#built-in-read-only-programs)), and `safeCommandAllowlist` entries. They can be joined with `&&`, `||`, `;`, newlines and pipes, and each command is checked on its own: `git log --oneline | grep -i fix | head -5` skips review. Only a small subset of bash takes this path, one this extension reads exactly as bash does (it is tested against bash itself, see `CONTRIBUTING.md`): plain and quoted words, those operators, comments, and these redirections:
+- **Safe bash commands**: read-only git commands, common read-only programs such as `grep`, `cat`, `head`, `ls`, `sed -n` and `jq` (see [Built-in read-only programs](#built-in-read-only-programs)), and commands your allow rules name. They can be joined with `&&`, `||`, `;`, newlines and pipes, and each command is checked on its own: `git log --oneline | grep -i fix | head -5` skips review. Only a small subset of bash takes this path, one this extension reads exactly as bash does (it is tested against bash itself, see `CONTRIBUTING.md`): plain and quoted words, those operators, comments, and these redirections:
   - copies between stdin, stdout and stderr (`2>&1`);
   - `/dev/null` (`2>/dev/null`, `&>/dev/null`, `</dev/null`);
   - `< file` for a file the fast path could read anyway.
@@ -227,38 +227,50 @@ A `rules.jsonc` next to `config.jsonc` (or at `PI_AUTO_APPROVAL_RULES_PATH`) add
 
 There are no per-project rules files: a cloned repository could ship one.
 
-#### Review, ask and block rules
+#### Allow, review, ask and block rules
 
-Program entries only say what may skip review. A `rules` list says what must not:
+Program entries say what may skip review by reading options and operands. A `rules` list adds rules by the command's text:
 
 ```jsonc
 "rules": [
+  { "id": "npm-test", "prefix": "npm test", "outcome": "allow" },
   { "id": "kube-secrets", "match": "kubectl get|describe *[Ss][Ee][Cc][Rr][Ee][Tt]*", "outcome": "review",
     "why": "Secret values must not reach the model unreviewed." },
   { "id": "kube-interactive", "match": "kubectl exec|port-forward|cp|edit|apply|rollout", "outcome": "ask" },
-  { "id": "kube-delete-all", "match": "kubectl delete --all", "outcome": "block" }
+  { "id": "no-force-push", "match": ["git push --force", "git push -f", "/\\bgit\\b.*\\bpush\\b.*\\s\\+\\S/"], "outcome": "block" }
 ]
 ```
 
+- `allow`: a command that starts with `prefix` skips review, with the checks in [Allow rules](#allow-rules).
 - `review`: the classifier, then you, as for any reviewed command; never a fast path.
 - `ask`: you decide, without the classifier. In `auto` mode, or without an interactive UI, the command is denied. An "Allow Always This Exact Action" answer stands for that exact command for the rest of the session.
-- `block`: denied without asking anyone, like `blockCommands`.
+- `block`: denied in every mode without asking the classifier or you. Unlike `deny`, which is only guidance for the classifier, a block cannot be argued with.
 
-Among the rules a command matches, and `blockCommands`, the most restrictive decides: block, then ask, then review. Any of them overrides program entries, `safeCommandAllowlist` and `reviewExemptTools`, so a broad allow can never hide an exception. `why` is shown in the denial, in the approval prompt, and to the classifier as your reason.
+Among the rules a command matches, the most restrictive decides: block, then ask, then review. Any of them overrides program entries, allow rules and `reviewExemptTools`, so a broad allow can never hide an exception. Ask and block denials count toward `maxConsecutiveDenials`. `why` is shown in the denial, in the approval prompt, and to the classifier as your reason. `id`s are unique; `disable` removes a built-in rule by its id (there are none yet).
 
-`match` is a pattern or a list of them, written like `blockCommands` patterns (see [Blocked Commands](#blocked-commands)), with more for words: `a|b` alternatives, `*`, `?` and `[…]` globs, and `--name` also matching `--name=value`. Rules read the command's text, so they also apply inside loops, `$(…)` and `sh -c '…'`, which the fast path never reads; a program named by a variable (`$k delete`) gets past them, and is then reviewed as usual. `id`s are unique; `disable` removes a built-in rule by its id (there are none yet).
+`/auto-approval rules` lists the programs and rules in use and the file each comes from; `/auto-approval rules <program | rule id>` shows one. `explain` names the rule that decided, and the audit log records it as `ruleId` and `ruleSource` (and, for a fast-pathed command, the entries that let it through as `ruleIds`).
 
-`/auto-approval rules` lists the programs and rules in use and the file each comes from; `/auto-approval rules <program | rule id>` shows one. `explain` names the rule that decided, and the audit log records it as `ruleId` and `ruleSource` (and, for a fast-pathed command, the program entries that let it through as `ruleIds`).
+#### Patterns
 
-### Allowlisted commands
+`match` is a pattern or a list of them. A pattern is either `/regex/flags`, tested against the whole command, or words: the first names a program and the rest must follow it, in order, within the same command. `git push --force` matches `git push origin main --force`, `/usr/bin/git push --force`, `cd repo && git push --force` and `bash -lc "git push --force"`, but not `git push --force-with-lease`. In a word:
 
-A `safeCommandAllowlist` entry is a prefix (`"rg *"`, `"find"`, `"npm test"`), so on its own it would trust every option of the program. Even when an entry matches, a command is still reviewed if:
+- `a|b` lists alternatives, and `*`, `?` and `[…]` are globs; `[|]`, `[*]` and so on match the character itself;
+- `--name` also matches `--name=value`, but not a shortened `--na`, so list both spellings if a program accepts them;
+- a single-letter flag also matches grouped short flags: `git push -f` matches `git push -uf origin main`.
+
+Git also forces a push when a branch is prefixed with `+` (`git push origin +main`), which no word list can express; the regex above catches it. The program is matched by name, so write `git`, not `/usr/bin/git`.
+
+Matching errs toward finding the command: the words also match when they are arguments to another command (`echo git push --force`), inside loops, `$(…)` and `sh -c '…'`, which the fast path never reads, and quotes around `;` or `|` (`git -c 'x=a;b' push --force`) or a backslash-newline do not hide a command. Rules are a best-effort tripwire, not a sandbox: a program named by a variable (`$k delete`), an alias or a script gets past them, and is then reviewed by the classifier as usual.
+
+### Allow rules
+
+An allow rule's `prefix` is the start of a command as written, quotes included and redirections left out: the command must equal it or continue with a space, or, with a trailing `*`, start with the rest (`"rg *"` matches `rg x` but not a bare `rg`). Each command of a chain or pipeline needs its own rule or program entry. Since a prefix would trust every option of the program, a command is still reviewed if:
 
 - it uses an option that runs another program or writes files: `find -exec/-execdir/-ok/-okdir/-delete/-fprint*/-fls`, `fd -x/-X/--exec*` (also inside a group such as `-Hx`), `rg --pre`, `sort -o/--output/--compress-program`, `tar -I/-F/--to-command/--checkpoint-action/--use-compress-program/...`, and `tar` extracting or writing archives (`x`, `c`, `r`, `u`, `A`, `--extract`, `--delete`, …). GNU tools accept shortened long options, so `sort --outp=x` counts as `--output`;
 - an argument names an existing path outside the working directory and `readRoots`, or a credential-like path. This covers values glued to an option and `name=value` arguments: `cat ~/.ssh/id_ed25519`, `cat .env`, `rg TOKEN --file=../x`, `grep -f/etc/x`, `dd if=../x`;
 - an argument is expanded by the shell, since its final form is unknown: an unquoted glob or brace, `~user`, or `~` after `=` or `:` in a `name=value` word, which bash expands (`dd if=~/key`). `cat secrets*` is reviewed, `find . -name '*.ts'` is not.
 
-A command a built-in table rejects can still be allowed by an entry, under these rules. Some entries are ignored, and `/auto-approval status` says so: any entry for programs whose arguments are a script or command line (`sed`, `awk`, `xargs`, `parallel`; read-only `sed` scripts are covered by its table), and bare entries for shells, interpreters and wrappers (`bash`, `python`, `node`, `env`, `sudo`, `timeout`, …), which would allow any code. Name a specific invocation instead, such as `"python -m pytest"` or `"npm test"`. Beyond those rules, an entry still trusts the program: `npm test` runs whatever the `test` script says.
+A command a program entry rejects can still be allowed by a rule, under these checks. A prefix for a program whose arguments are a script or command line (`sed`, `awk`, `xargs`, `parallel`; read-only `sed` scripts are covered by its entry), or a bare shell, interpreter or wrapper (`bash`, `python`, `node`, `env`, `sudo`, `timeout`, …), which would allow any code, is an error. Name a specific invocation instead, such as `"python -m pytest"` or `"npm test"`. Beyond those checks, a rule still trusts the program: `npm test` runs whatever the `test` script says.
 
 ### Extra read roots
 
@@ -270,21 +282,7 @@ Reads outside the working directory are reviewed, which adds a classifier call f
 }
 ```
 
-Entries must be absolute or start with `~/`. Credential-like files below a read root are still reviewed. Read roots also cover the paths a fast-pathed bash command names (allowlisted arguments and `<` redirections), but they never add a command to the fast path.
-
-## Blocked Commands
-
-`blockCommands` lists bash commands that are always blocked, in every mode, without asking the classifier or you. They take precedence over every fast path, `safeCommandAllowlist` and `reviewExemptTools`. Unlike `deny`, which is only guidance for the classifier, a block cannot be argued with.
-
-```json
-{
-  "blockCommands": ["git push --force", "git push -f", "/\\bgit\\b.*\\bpush\\b.*\\s\\+\\S/", "terraform apply", "/curl[^|]*\\|\\s*(ba)?sh/"]
-}
-```
-
-A pattern is either `/regex/flags`, tested against the whole command, or a list of words: the first names a program and the rest must follow it, in order, within the same command. `git push --force` matches `git push origin main --force`, `/usr/bin/git push --force`, `cd repo && git push --force` and `bash -lc "git push --force"`, but not `git push --force-with-lease`. Long flags are compared as written, so list `-f` separately. A single-letter flag also matches grouped short flags: `git push -f` matches `git push -uf origin main`. Git also forces a push when a branch is prefixed with `+` (`git push origin +main`), which no word list can express; the regex above catches it. Matching errs toward blocking: the words also match when they are arguments to another command, such as `echo git push --force`, and quotes around `;` or `|` (`git -c 'x=a;b' push --force`) or a backslash-newline do not hide a command.
-
-This is a best-effort tripwire for commands you never want run unattended, not a sandbox: a sufficiently creative command (variables, aliases, scripts) can still get past it, and is then reviewed by the classifier as usual.
+Entries must be absolute or start with `~/`. Credential-like files below a read root are still reviewed. Read roots also cover the paths a fast-pathed bash command names (arguments of commands an allow rule lets through, and `<` redirections), but they never add a command to the fast path.
 
 ## Tool Review Exemptions
 
@@ -302,7 +300,7 @@ Set `reviewExemptTools` in `config.jsonc` to bypass all extension review for add
 }
 ```
 
-Tool names are case-insensitive. This is a deterministic bypass, including for tools that would otherwise require manual approval, so only list tools whose execution you are willing to allow without AI review. In contrast, `allow` only adds guidance to the classifier prompt and does not guarantee approval. `blockCommands` still applies to exempt tools.
+Tool names are case-insensitive. This is a deterministic bypass, including for tools that would otherwise require manual approval, so only list tools whose execution you are willing to allow without AI review. In contrast, `allow` only adds guidance to the classifier prompt and does not guarantee approval. Review, ask and block rules still apply to `bash` when it is exempt.
 
 ## Classifier Model
 
@@ -335,8 +333,6 @@ If you use a slower classifier model, raise both: OMP's `extensionHandlers.toolC
 | `classifierTimeoutSeconds` | `25` | See [Classifier timeout](#classifier-timeout). |
 | `approvalTimeoutSeconds` | `30` | How long the human prompt waits before rejecting. |
 | `maxConsecutiveDenials` | `3` | Automatic denials in a row before the turn is stopped. |
-| `safeCommandAllowlist` | `[]` | Extra bash commands to allow without review: exact, prefix + space, or `prefix*`. See [Allowlisted commands](#allowlisted-commands). |
-| `blockCommands` | `[]` | See [Blocked Commands](#blocked-commands). |
 | `readRoots` | `[]` | See [Extra read roots](#extra-read-roots). |
 | `reviewExemptTools` | `[]` | Tool names that skip review entirely. |
 | `allow`, `deny` | `[]` | Extra guidance lines for the classifier prompt. |

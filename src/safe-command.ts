@@ -94,29 +94,38 @@ function hasUnsafeOption(program: string, args: string[]): boolean {
   });
 }
 
-const ASSIGNMENT_PREFIX = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const MAX_SHORT_OPTION_GROUP = 512;
 
 /**
  * The parts of an argument that a program might open as a file: the value of
  * `--name=value`; any tail of a short-option group, since a value can be
  * glued to an option (`-f/path`) and which letters take one depends on the
- * program; both the whole word and the value of `name=value` (`dd if=/path`);
- * otherwise the argument itself.
+ * program; otherwise the argument itself. Of each, also every part after an
+ * `=`, since a value can itself be `key=path` (`dd if=/path`,
+ * `kubectl -o go-template-file=/path`, `--from-file=key=/path`).
  */
 function pathCandidates(text: string): string[] | null {
+  let candidates: string[];
   if (text.startsWith("--")) {
     const equals = text.indexOf("=");
-    return equals < 0 ? [] : [text.slice(equals + 1)];
-  }
-  if (text.startsWith("-")) {
+    candidates = equals < 0 ? [] : [text.slice(equals + 1)];
+  } else if (text.startsWith("-")) {
     if (text.length > MAX_SHORT_OPTION_GROUP) {
       return null;
     }
+    // Every tail, so the parts after an `=` are among them already.
     return Array.from({ length: Math.max(0, text.length - 2) }, (_, index) => text.slice(index + 2));
+  } else {
+    candidates = [text];
   }
-  const assignment = text.match(ASSIGNMENT_PREFIX);
-  return assignment ? [text, text.slice(assignment[0].length)] : [text];
+  const parts: string[] = [];
+  for (const candidate of candidates) {
+    parts.push(candidate);
+    for (let equals = candidate.indexOf("="); equals >= 0; equals = candidate.indexOf("=", equals + 1)) {
+      parts.push(candidate.slice(equals + 1));
+    }
+  }
+  return parts;
 }
 
 function isInsideReadRoots(absolute: string, roots: ReadRoots): boolean {

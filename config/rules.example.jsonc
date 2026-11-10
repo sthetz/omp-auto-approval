@@ -20,13 +20,16 @@
   "programs": {
     // A program the built-in rules don't know. Its own options come before
     // the subcommand, each a whole word; a subcommand not listed here, such
-    // as `kubectl delete`, is reviewed.
+    // as `kubectl delete`, is reviewed. A key with several names ("get
+    // describe") lists subcommands that share one entry.
     "kubectl": {
       "options": { "--context": "string" },
       "subcommands": {
         "get describe": {
           "options": {
             "-n --namespace": "string",
+            // `-o go-template-file=PATH` reads a file; like every word that
+            // names a file, it must be inside the read roots.
             "-o --output": "string",
             "-l --selector": "string",
             // Not -w/--watch, which never finishes.
@@ -50,6 +53,10 @@
       "extends": "default",
       "subcommands": {
         "reflog": { "options": "any", "operands": "git-operands" },
+        // Subcommands of subcommands are not entries of their own: a key
+        // "worktree list" would mean two subcommands, `worktree` and `list`.
+        // To allow only `git worktree list`, check the operand:
+        "worktree": { "options": "any", "operands": { "literals": { "min": 1, "max": 1, "pattern": "^list$" } } },
         "stash": null
       }
     },

@@ -636,6 +636,24 @@ async function run(): Promise<void> {
     assert.equal(programs.get("seq")?.operands?.pattern?.source, "^https?:\\/\\/x");
   });
 
+  await test("a word naming a file after any = is checked as that file", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-equals-"));
+    writeFileSync(join(workspace, "notes.txt"), "x\n");
+    try {
+      const cfg = config({ safeCommandAllowlist: ["npm view"] });
+      for (const command of [
+        "npm view x go-template-file=/etc/passwd", "npm view x --from-file=key=/etc/passwd", "npm view x a=b=/etc/passwd", "npm view x -ofile=/etc/passwd",
+      ]) {
+        assert.equal(isSafeReadOnlyCommand(command, cfg, workspace), false, command);
+      }
+      for (const command of ["npm view x go-template-file=notes.txt", "npm view x --from-file=key=notes.txt", "npm view x a=b"]) {
+        assert.equal(isSafeReadOnlyCommand(command, cfg, workspace), true, command);
+      }
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   await test("long options named like Object.prototype members are unknown options", () => {
     const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-proto-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
@@ -682,7 +700,7 @@ async function run(): Promise<void> {
 }`);
       const rules = loadCommandRules(file);
       assert.equal(rules.problem, null);
-      assert.deepEqual(rules.files, [realpathSync(file)]);
+      assert.deepEqual(rules.files, [file]);
       const label = file.startsWith(`${homedir()}/`) ? `~${file.slice(homedir().length)}` : file;
       assert.equal(rules.programs.get("cat")?.source, label);
       assert.equal(rules.programs.get("head")?.source, `default, ${label}`);
@@ -722,14 +740,15 @@ async function run(): Promise<void> {
       const safe = (command: string) => planSafeCommand(command, config(), { workspace, searchPath: TEST_PATH, rules }) !== null;
       for (const command of [
         "kubectl get pods", "kubectl --context dev get pods -n web -o wide", "kubectl describe deploy/api", "kubectl logs api-1 -c app --tail 50",
-        "git reflog", "git log", "cat -n notes.txt",
+        "git reflog", "git log", "cat -n notes.txt", "kubectl get pods -o yaml", "git worktree list", "git worktree list --porcelain",
       ]) {
         assert.equal(safe(command), true, command);
       }
       for (const command of [
         "kubectl get secrets", "kubectl get Secrets", "kubectl get secret/db -o yaml", "kubectl get pods,secrets", "kubectl delete pod x", "kubectl get pods -w",
         "kubectl get pods --as admin", "kubectl --kubeconfig x get pods", "kubectl logs", "git stash list", "git blame notes.txt",
-        "sed -n 1p notes.txt", "cat -A notes.txt",
+        "sed -n 1p notes.txt", "cat -A notes.txt", "git worktree add x", "git worktree prune", "git worktree list x", "git worktree",
+        "kubectl get pods -o go-template-file=/etc/passwd", "kubectl get pods --output=jsonpath-file=/etc/passwd", "kubectl get pods -ogo-template-file=/etc/passwd",
       ]) {
         assert.equal(safe(command), false, command);
       }
@@ -749,7 +768,7 @@ async function run(): Promise<void> {
       writeFileSync(join(home, "rules", "more.jsonc"), '{ "disable": ["program:sed"] }');
       const rules = loadCommandRules(join(home, "rules.jsonc"));
       assert.equal(rules.problem, null);
-      assert.deepEqual(rules.files, [join(home, "rules.jsonc"), join(home, "rules", "npm.jsonc"), join(home, "rules", "more.jsonc")].map((path) => realpathSync(path)));
+      assert.deepEqual(rules.files, [join(home, "rules.jsonc"), join(home, "rules", "npm.jsonc"), join(home, "rules", "more.jsonc")]);
       assert.equal(rules.programs.get("npm")?.source, "~/rules/npm.jsonc");
       assert.equal(rules.programs.has("sed"), false);
       assert.notEqual(planSafeCommand("npm ls", config(), { workspace: home, searchPath: TEST_PATH, rules }), null);
@@ -772,6 +791,17 @@ async function run(): Promise<void> {
         assert.match(result.problem ?? "", problem, JSON.stringify(files));
         assert.equal(result.programs.size, 0);
       }
+      // A missing include is still listed, so the write fast path protects it.
+      writeFileSync(join(home, "rules.jsonc"), '{ "include": ["~/rules/missing.jsonc"] }');
+      assert.deepEqual(loadCommandRules(join(home, "rules.jsonc")).files, [join(home, "rules.jsonc"), join(home, "rules", "missing.jsonc")]);
+      // The same id disabled in two files is fine.
+      writeFileSync(join(home, "rules.jsonc"), '{ "include": ["~/rules/more.jsonc"], "disable": ["program:sed"] }');
+      writeFileSync(join(home, "rules", "more.jsonc"), '{ "disable": ["program:sed", "program:sed"] }');
+      assert.equal(loadCommandRules(join(home, "rules.jsonc")).problem, null);
+      // A dangling symbolic link is an error, not "no rules file".
+      rmSync(join(home, "rules.jsonc"));
+      symlinkSync(join(home, "gone.jsonc"), join(home, "rules.jsonc"));
+      assert.match(loadCommandRules(join(home, "rules.jsonc")).problem ?? "", /^~\/rules\.jsonc: ENOENT/);
     } finally {
       process.env.HOME = previousHome;
       rmSync(home, { recursive: true, force: true });

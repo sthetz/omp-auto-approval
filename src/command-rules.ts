@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { configPath, extensionRoot } from "./extension-config.js";
@@ -125,7 +125,8 @@ export interface ProgramEntry {
 
 export interface CommandRules {
   programs: Map<string, ProgramEntry>;
-  // The user rules files read, the main one first; empty when there is none.
+  // The user rules files, the main one first, as their paths are written;
+  // empty when there is none.
   files: string[];
   // Why the rules could not be used; when set, `programs` is empty and every
   // bash command is reviewed.
@@ -449,6 +450,11 @@ function displayPath(path: string): string {
 /** Read one user rules file and the files it includes into `layer`. */
 function readUserFile(path: string, layer: UserLayer, chain: string[]): void {
   const label = displayPath(path);
+  // Recorded before reading, so that a file that is missing or broken is
+  // still protected from the write fast path and shown in status.
+  if (!layer.files.includes(path)) {
+    layer.files.push(path);
+  }
   let canonical: string;
   let document: Record<string, unknown>;
   try {
@@ -471,7 +477,6 @@ function readUserFile(path: string, layer: UserLayer, chain: string[]): void {
   } catch (error) {
     fail((error as Error).message);
   }
-  layer.files.push(canonical);
   const includes = document.include ?? [];
   if (!Array.isArray(includes)) {
     fail("include: expected a list of paths");
@@ -491,7 +496,9 @@ function readUserFile(path: string, layer: UserLayer, chain: string[]): void {
     if (typeof id !== "string" || !RULE_ID.test(id)) {
       fail(`disable: expected ids like "program:sed" or "program:git blame", got ${JSON.stringify(id)}`);
     }
-    layer.disable.push({ id: id as string, file: label });
+    if (!layer.disable.some((earlier) => earlier.id === id)) {
+      layer.disable.push({ id: id as string, file: label });
+    }
   }
   let programs: Record<string, unknown> = {};
   try {
@@ -623,8 +630,14 @@ export function loadCommandRules(path = userRulesPath()): CommandRules {
   if (base.problem || !document) {
     return base;
   }
-  if (!existsSync(path)) {
-    return base;
+  // Only a path with nothing at all there means no user file: a dangling
+  // symbolic link is an error, not a reason to drop the user's rules.
+  try {
+    lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return base;
+    }
   }
   const layer: UserLayer = { programs: new Map(), disable: [], files: [] };
   try {
@@ -669,6 +682,6 @@ export function loadCommandRules(path = userRulesPath()): CommandRules {
       throw new RulesError(`${displayPath(path)}${layer.files.length > 1 ? " (or a file it includes)" : ""}: ${(error as Error).message}`);
     }
   } catch (error) {
-    return { programs: new Map(), files: layer.files.length ? layer.files : [path], problem: (error as Error).message };
+    return { programs: new Map(), files: layer.files, problem: (error as Error).message };
   }
 }

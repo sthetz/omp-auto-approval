@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "omp-auto-approval command rules",
-  "description": "Programs, options and operands the bash fast path runs without review. See the comments at the top of config/default-rules.jsonc; src/command-rules.ts validates files more strictly than this schema can.",
+  "description": "Command rules: config/default-rules.jsonc, and a user's rules.jsonc over it. Programs, options and operands the bash fast path runs without review; see the comments at the top of config/default-rules.jsonc. src/command-rules.ts validates files more strictly than this schema can.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -16,12 +16,36 @@
       "additionalProperties": {
         "$ref": "#/$defs/program"
       }
+    },
+    "include": {
+      "description": "User rules files only: more rules files, by absolute path or one starting with ~/.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(/|~/)"
+      }
+    },
+    "disable": {
+      "description": "User rules files only: built-in entries to remove, by id.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^program:[A-Za-z0-9_][A-Za-z0-9._+-]*( [A-Za-z0-9][A-Za-z0-9._:-]*)?$"
+      }
     }
   },
   "$defs": {
     "kind": {
       "type": "string",
-      "enum": ["flag", "number", "string", "read-file", "optional", "pair", "workspace-directory"]
+      "enum": [
+        "flag",
+        "number",
+        "string",
+        "read-file",
+        "optional",
+        "pair",
+        "workspace-directory"
+      ]
     },
     "options": {
       "description": "Option names to kinds. A key may list an option and its aliases, separated by spaces; \"-NUM\" accepts -20.",
@@ -48,13 +72,28 @@
     "operandCheck": {
       "type": "string",
       "enum": [
-        "read-files", "literals", "none", "any", "printf-format", "grep-operands", "diff-operands", "sed-script", "jq-filter",
-        "duration-then-command", "git-operands", "git-branch-list", "git-tag-list", "git-remote", "git-stash-list"
+        "read-files",
+        "literals",
+        "none",
+        "any",
+        "printf-format",
+        "grep-operands",
+        "diff-operands",
+        "sed-script",
+        "jq-filter",
+        "duration-then-command",
+        "git-operands",
+        "git-branch-list",
+        "git-tag-list",
+        "git-remote",
+        "git-stash-list"
       ]
     },
     "operands": {
       "oneOf": [
-        { "$ref": "#/$defs/operandCheck" },
+        {
+          "$ref": "#/$defs/operandCheck"
+        },
         {
           "type": "object",
           "additionalProperties": false,
@@ -64,15 +103,29 @@
             "read-files": {
               "type": "object",
               "additionalProperties": false,
-              "properties": { "min": { "$ref": "#/$defs/count" }, "max": { "$ref": "#/$defs/count" } }
+              "properties": {
+                "min": {
+                  "$ref": "#/$defs/count"
+                },
+                "max": {
+                  "$ref": "#/$defs/count"
+                }
+              }
             },
             "literals": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "min": { "$ref": "#/$defs/count" },
-                "max": { "$ref": "#/$defs/count" },
-                "pattern": { "type": "string", "format": "regex" }
+                "min": {
+                  "$ref": "#/$defs/count"
+                },
+                "max": {
+                  "$ref": "#/$defs/count"
+                },
+                "pattern": {
+                  "type": "string",
+                  "format": "regex"
+                }
               }
             }
           }
@@ -84,12 +137,24 @@
       "properties": {
         "arguments": {
           "type": "string",
-          "enum": ["options", "find-expression", "literal-words"],
+          "enum": [
+            "options",
+            "find-expression",
+            "literal-words"
+          ],
           "default": "options"
         },
-        "operands": { "$ref": "#/$defs/operands" },
-        "stopAtOperand": { "type": "boolean", "default": false },
-        "opensNoFiles": { "type": "boolean", "default": false }
+        "operands": {
+          "$ref": "#/$defs/operands"
+        },
+        "stopAtOperand": {
+          "type": "boolean",
+          "default": false
+        },
+        "opensNoFiles": {
+          "type": "boolean",
+          "default": false
+        }
       }
     },
     "program": {
@@ -98,26 +163,116 @@
         {
           "description": "A program without subcommands.",
           "$ref": "#/$defs/entry",
-          "required": ["operands"],
+          "required": [
+            "operands"
+          ],
           "unevaluatedProperties": false,
           "properties": {
-            "options": { "$ref": "#/$defs/options" }
+            "options": {
+              "$ref": "#/$defs/options"
+            }
           }
         },
         {
           "description": "A program with subcommands, such as git. Its options are whole words before the subcommand.",
-          "required": ["subcommands"],
+          "required": [
+            "subcommands"
+          ],
           "additionalProperties": false,
           "properties": {
-            "options": { "$ref": "#/$defs/options" },
-            "except": { "$ref": "#/$defs/except" },
-            "opensNoFiles": { "type": "boolean" },
+            "options": {
+              "$ref": "#/$defs/options"
+            },
+            "except": {
+              "$ref": "#/$defs/except"
+            },
+            "opensNoFiles": {
+              "type": "boolean"
+            },
             "subcommands": {
               "type": "object",
               "propertyNames": {
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*( +[A-Za-z0-9][A-Za-z0-9._:-]*)*$"
               },
-              "additionalProperties": { "$ref": "#/$defs/subcommand" }
+              "additionalProperties": {
+                "$ref": "#/$defs/subcommand"
+              }
+            }
+          }
+        },
+        {
+          "description": "User rules files only: merged into the built-in entry. Option and subcommand keys are merged one by one, and null deletes a built-in one; except lists are joined; any other key replaces the built-in one.",
+          "required": [
+            "extends"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "extends": {
+              "const": "default"
+            },
+            "options": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/mergedOptions"
+                }
+              ]
+            },
+            "except": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/except"
+                }
+              ]
+            },
+            "operands": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/operands"
+                }
+              ]
+            },
+            "arguments": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stopAtOperand": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "opensNoFiles": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "subcommands": {
+              "type": "object",
+              "additionalProperties": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/subcommand"
+                  },
+                  {
+                    "$ref": "#/$defs/mergedSubcommand"
+                  }
+                ]
+              }
             }
           }
         }
@@ -125,13 +280,101 @@
     },
     "subcommand": {
       "$ref": "#/$defs/entry",
-      "required": ["operands"],
+      "required": [
+        "operands"
+      ],
       "unevaluatedProperties": false,
       "properties": {
         "options": {
-          "oneOf": [{ "const": "any" }, { "$ref": "#/$defs/options" }]
+          "oneOf": [
+            {
+              "const": "any"
+            },
+            {
+              "$ref": "#/$defs/options"
+            }
+          ]
         },
-        "except": { "$ref": "#/$defs/except" }
+        "except": {
+          "$ref": "#/$defs/except"
+        }
+      }
+    },
+    "mergedOptions": {
+      "type": "object",
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "$ref": "#/$defs/kind"
+          }
+        ]
+      }
+    },
+    "mergedSubcommand": {
+      "description": "Merged into the built-in subcommand of that name.",
+      "type": "object",
+      "required": [
+        "extends"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "extends": {
+          "const": "default"
+        },
+        "options": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "const": "any"
+            },
+            {
+              "$ref": "#/$defs/mergedOptions"
+            }
+          ]
+        },
+        "except": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/except"
+            }
+          ]
+        },
+        "operands": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/operands"
+            }
+          ]
+        },
+        "arguments": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stopAtOperand": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "opensNoFiles": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
       }
     }
   }

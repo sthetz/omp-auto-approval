@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { extensionRoot } from "./extension-config.js";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join } from "node:path";
+import { configPath, extensionRoot } from "./extension-config.js";
 import { parseJsonc } from "./jsonc.js";
 
 /**
@@ -92,6 +93,9 @@ export interface OperandRule {
 export interface ProgramEntry {
   // `program:<name>`, or `program:<name> <subcommand>`.
   id: string;
+  // The file it came from: "default", a user rules file, or both when a
+  // user entry extends the default one.
+  source: string;
   arguments: ArgumentParser;
   // `"options": "any"`: every word starting with `-` is an option, except
   // those in `except`, and every other word an operand.
@@ -121,6 +125,8 @@ export interface ProgramEntry {
 
 export interface CommandRules {
   programs: Map<string, ProgramEntry>;
+  // The user rules files read, the main one first; empty when there is none.
+  files: string[];
   // Why the rules could not be used; when set, `programs` is empty and every
   // bash command is reviewed.
   problem: string | null;
@@ -139,7 +145,7 @@ const GLOBAL_KINDS = new Set<string>(["flag", "string", "number", "read-file", "
 
 function record(value: unknown, where: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new RulesError(`${where}: expected an object`);
+    throw new RulesError(`${where ? `${where}: ` : ""}expected an object`);
   }
   return value as Record<string, unknown>;
 }
@@ -147,7 +153,7 @@ function record(value: unknown, where: string): Record<string, unknown> {
 function onlyKeys(object: Record<string, unknown>, allowed: string[], where: string): void {
   for (const key of Object.keys(object)) {
     if (!allowed.includes(key)) {
-      throw new RulesError(`${where}: unknown key "${key}"`);
+      throw new RulesError(`${where ? `${where}: ` : ""}unknown key "${key}"`);
     }
   }
 }
@@ -227,7 +233,7 @@ function compileEntry(
   value: unknown,
   id: string,
   where: string,
-  context: { subcommand: boolean; inheritedExcept: string[] },
+  context: { subcommand: boolean; inheritedExcept: string[]; source: string; sources: ReadonlyMap<string, string> },
 ): ProgramEntry {
   const object = record(value, where);
   onlyKeys(object, ["options", "except", "operands", "arguments", "subcommands", "stopAtOperand", "opensNoFiles"], where);
@@ -237,6 +243,7 @@ function compileEntry(
   }
   const entry: ProgramEntry = {
     id,
+    source: context.sources.get(id) ?? context.source,
     arguments: "options",
     anyOptions: false,
     except: [...context.inheritedExcept],
@@ -298,7 +305,12 @@ function compileEntry(
         if (entry.subcommands.has(name)) {
           throw new RulesError(`${subWhere}: subcommand "${name}" is listed twice`);
         }
-        entry.subcommands.set(name, compileEntry(sub, `${id} ${name}`, subWhere, { subcommand: true, inheritedExcept: entry.except }));
+        entry.subcommands.set(name, compileEntry(sub, `${id} ${name}`, subWhere, {
+          subcommand: true,
+          inheritedExcept: entry.except,
+          source: entry.source,
+          sources: context.sources,
+        }));
       }
     }
   } else {
@@ -306,6 +318,11 @@ function compileEntry(
       throw new RulesError(`${where}: missing "operands"`);
     }
     entry.operands = compileOperands(object.operands, `${where}.operands`);
+    // The inner command's own options must reach its check: getopt would
+    // otherwise take `timeout 5 sort -o out` as an outer -o.
+    if (entry.operands.check === "duration-then-command" && (!entry.stopAtOperand || entry.anyOptions || entry.arguments !== "options")) {
+      throw new RulesError(`${where}: "duration-then-command" needs "stopAtOperand": true and an option table`);
+    }
   }
   return entry;
 }
@@ -361,9 +378,9 @@ function compileOptions(options: Record<string, unknown>, entry: ProgramEntry, w
 }
 
 /** Compile the contents of a rules file; throws with the place of the first problem. */
-export function compileRules(raw: unknown): Map<string, ProgramEntry> {
-  const top = record(raw, "file");
-  onlyKeys(top, ["$schema", "programs"], "file");
+export function compileRules(raw: unknown, sources: ReadonlyMap<string, string> = new Map()): Map<string, ProgramEntry> {
+  const top = record(raw, "");
+  onlyKeys(top, ["$schema", "programs"], "");
   const programs = new Map<string, ProgramEntry>();
   for (const [key, entry] of Object.entries(record(top.programs ?? {}, "programs"))) {
     const where = `programs[${JSON.stringify(key)}]`;
@@ -371,7 +388,7 @@ export function compileRules(raw: unknown): Map<string, ProgramEntry> {
     if (extra.length) {
       throw new RulesError(`${where}: one program per entry`);
     }
-    programs.set(name, compileEntry(entry, `program:${name}`, where, { subcommand: false, inheritedExcept: [] }));
+    programs.set(name, compileEntry(entry, `program:${name}`, where, { subcommand: false, inheritedExcept: [], source: "default", sources }));
   }
   return programs;
 }
@@ -379,9 +396,9 @@ export function compileRules(raw: unknown): Map<string, ProgramEntry> {
 /** Read and compile a rules file; never throws. */
 export function loadRulesFile(path: string, label = path): CommandRules {
   try {
-    return { programs: compileRules(parseJsonc(readFileSync(path, "utf8"))), problem: null };
+    return { programs: compileRules(parseJsonc(readFileSync(path, "utf8"))), files: [], problem: null };
   } catch (error) {
-    return { programs: new Map(), problem: `${label}: ${(error as Error).message}` };
+    return { programs: new Map(), files: [], problem: `${label}: ${(error as Error).message}` };
   }
 }
 
@@ -389,10 +406,269 @@ export function defaultRulesPath(): string {
   return join(extensionRoot(), "config", "default-rules.jsonc");
 }
 
-let defaults: CommandRules | undefined;
+/** The user's rules file: PI_AUTO_APPROVAL_RULES_PATH, else rules.jsonc next to config.jsonc. */
+export function userRulesPath(): string {
+  return process.env.PI_AUTO_APPROVAL_RULES_PATH?.trim() || join(dirname(configPath()), "rules.jsonc");
+}
+
+let defaults: { rules: CommandRules; document: Record<string, unknown> | null } | undefined;
+
+function loadDefaults(): { rules: CommandRules; document: Record<string, unknown> | null } {
+  if (!defaults) {
+    try {
+      const document = record(parseJsonc(readFileSync(defaultRulesPath(), "utf8")), "");
+      defaults = { rules: { programs: compileRules(document), files: [], problem: null }, document };
+    } catch (error) {
+      defaults = { rules: { programs: new Map(), files: [], problem: `config/default-rules.jsonc: ${(error as Error).message}` }, document: null };
+    }
+  }
+  return defaults;
+}
 
 /** The built-in rules, read once. */
 export function defaultRules(): CommandRules {
-  defaults ??= loadRulesFile(defaultRulesPath(), "config/default-rules.jsonc");
-  return defaults;
+  return loadDefaults().rules;
+}
+
+// User rules files hold at most this many levels of `include`.
+const MAX_INCLUDE_DEPTH = 8;
+const RULE_ID = /^program:([A-Za-z0-9_][A-Za-z0-9._+-]*)(?: ([A-Za-z0-9][A-Za-z0-9._:-]*))?$/;
+
+interface UserLayer {
+  // Program entries as written, with the file each came from.
+  programs: Map<string, { entry: Record<string, unknown>; file: string }>;
+  disable: { id: string; file: string }[];
+  files: string[];
+}
+
+function displayPath(path: string): string {
+  const home = homedir();
+  return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+}
+
+/** Read one user rules file and the files it includes into `layer`. */
+function readUserFile(path: string, layer: UserLayer, chain: string[]): void {
+  const label = displayPath(path);
+  let canonical: string;
+  let document: Record<string, unknown>;
+  try {
+    canonical = realpathSync(path);
+    document = record(parseJsonc(readFileSync(canonical, "utf8")), "");
+  } catch (error) {
+    throw new RulesError(`${label}: ${(error as Error).message}`);
+  }
+  if (chain.includes(canonical)) {
+    throw new RulesError(`${label}: includes itself through ${chain.map(displayPath).join(" → ")}`);
+  }
+  if (chain.length > MAX_INCLUDE_DEPTH) {
+    throw new RulesError(`${label}: more than ${MAX_INCLUDE_DEPTH} levels of include`);
+  }
+  const fail = (message: string): never => {
+    throw new RulesError(`${label}: ${message}`);
+  };
+  try {
+    onlyKeys(document, ["$schema", "include", "programs", "disable"], "");
+  } catch (error) {
+    fail((error as Error).message);
+  }
+  layer.files.push(canonical);
+  const includes = document.include ?? [];
+  if (!Array.isArray(includes)) {
+    fail("include: expected a list of paths");
+  }
+  for (const include of includes as unknown[]) {
+    if (typeof include !== "string" || !(isAbsolute(include) || include.startsWith("~/"))) {
+      fail(`include: expected an absolute path or one starting with ~/, got ${JSON.stringify(include)}`);
+    }
+    const target = (include as string).startsWith("~/") ? join(homedir(), (include as string).slice(2)) : include as string;
+    readUserFile(target, layer, [...chain, canonical]);
+  }
+  const disable = document.disable ?? [];
+  if (!Array.isArray(disable)) {
+    fail("disable: expected a list of rule ids");
+  }
+  for (const id of disable as unknown[]) {
+    if (typeof id !== "string" || !RULE_ID.test(id)) {
+      fail(`disable: expected ids like "program:sed" or "program:git blame", got ${JSON.stringify(id)}`);
+    }
+    layer.disable.push({ id: id as string, file: label });
+  }
+  let programs: Record<string, unknown> = {};
+  try {
+    programs = record(document.programs ?? {}, "programs");
+  } catch (error) {
+    fail((error as Error).message);
+  }
+  for (const [name, entry] of Object.entries(programs)) {
+    const where = `programs[${JSON.stringify(name)}]`;
+    if (entry === null) {
+      fail(`${where}: to turn off a built-in program, list "program:${name}" in "disable"`);
+    }
+    if (typeof entry !== "object" || Array.isArray(entry)) {
+      fail(`${where}: expected an object`);
+    }
+    const earlier = layer.programs.get(name);
+    if (earlier) {
+      fail(`${where}: also defined in ${earlier.file}; define each program in one file`);
+    }
+    layer.programs.set(name, { entry: entry as Record<string, unknown>, file: label });
+  }
+}
+
+/** Subcommands by single name, as compileEntry reads grouped keys. */
+function subcommandsByName(value: unknown, where: string): Map<string, unknown> {
+  const byName = new Map<string, unknown>();
+  for (const [key, entry] of Object.entries(record(value, where))) {
+    for (const name of names(key, SUBCOMMAND_NAME, `${where}[${JSON.stringify(key)}]`)) {
+      byName.set(name, entry);
+    }
+  }
+  return byName;
+}
+
+function mergeOptions(base: Record<string, unknown>, user: Record<string, unknown>, where: string): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...base };
+  for (const [key, kind] of Object.entries(user)) {
+    if (kind !== null) {
+      merged[key] = kind;
+    } else if (Object.hasOwn(merged, key)) {
+      delete merged[key];
+    } else {
+      // Deleting by part of a grouped key would be ambiguous.
+      const tokens = key.split(/\s+/);
+      const group = Object.keys(base).find((other) => other.split(/\s+/).some((token) => tokens.includes(token)));
+      throw new RulesError(`${where}[${JSON.stringify(key)}]: no such option in the default entry${group ? `; it lists ${JSON.stringify(group)}` : ""}`);
+    }
+  }
+  return merged;
+}
+
+/**
+ * A user entry that says `"extends": "default"`, merged into the default
+ * one: `options` and `subcommands` key by key, where `null` deletes a
+ * default key; `except` lists are joined, and `"except": null` drops the
+ * default one; any other key the user gives replaces the default.
+ */
+function mergeEntry(base: Record<string, unknown>, user: Record<string, unknown>, where: string, id: string, file: string, sources: Map<string, string>): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(user)) {
+    if (key === "extends") {
+      continue;
+    }
+    if (value === null) {
+      if (!Object.hasOwn(base, key)) {
+        throw new RulesError(`${where}.${key}: the default entry has none to delete`);
+      }
+      delete merged[key];
+    } else if (key === "options" && typeof value === "object" && typeof base.options === "object" && base.options !== null) {
+      merged.options = mergeOptions(record(base.options, `${where}.options`), record(value, `${where}.options`), `${where}.options`);
+    } else if (key === "except" && Array.isArray(value) && Array.isArray(base.except)) {
+      merged.except = [...base.except, ...value.filter((option) => !(base.except as unknown[]).includes(option))];
+    } else if (key === "subcommands" && base.subcommands !== undefined) {
+      const subcommands = subcommandsByName(base.subcommands, `${where}.subcommands`);
+      for (const [userKey, entry] of Object.entries(record(value, `${where}.subcommands`))) {
+        const subWhere = `${where}.subcommands[${JSON.stringify(userKey)}]`;
+        for (const name of names(userKey, SUBCOMMAND_NAME, subWhere)) {
+          const existing = subcommands.get(name);
+          if (entry === null) {
+            if (existing === undefined) {
+              throw new RulesError(`${subWhere}: the default entry has no subcommand "${name}"`);
+            }
+            subcommands.delete(name);
+            continue;
+          }
+          const userEntry = record(entry, subWhere);
+          sources.set(`${id} ${name}`, file);
+          if (userEntry.extends === undefined) {
+            subcommands.set(name, userEntry);
+          } else if (userEntry.extends !== "default" || existing === undefined) {
+            throw new RulesError(`${subWhere}.extends: only "default", for a subcommand the default entry has`);
+          } else {
+            sources.set(`${id} ${name}`, `default, ${file}`);
+            subcommands.set(name, mergeEntry(record(existing, subWhere), userEntry, subWhere, `${id} ${name}`, file, sources));
+          }
+        }
+      }
+      merged.subcommands = Object.fromEntries(subcommands);
+    } else {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
+/** Reject `extends` in a user entry that has nothing to extend. */
+function noExtends(entry: Record<string, unknown>, where: string): void {
+  if (entry.extends !== undefined) {
+    throw new RulesError(`${where}.extends: only "default", for a program or subcommand the defaults have`);
+  }
+  if (entry.subcommands && typeof entry.subcommands === "object") {
+    for (const [key, sub] of Object.entries(entry.subcommands)) {
+      if (sub && typeof sub === "object" && (sub as Record<string, unknown>).extends !== undefined) {
+        throw new RulesError(`${where}.subcommands[${JSON.stringify(key)}].extends: only "default", for a subcommand the defaults have`);
+      }
+    }
+  }
+}
+
+/**
+ * The built-in rules with the user's rules file over them (see
+ * userRulesPath). A user entry for a program replaces the built-in one, or
+ * merges into it with `"extends": "default"`; `disable` removes built-in
+ * entries by id. With no user file, the built-in rules alone. Any problem
+ * in any file means no rules at all (see CommandRules.problem). Never throws.
+ */
+export function loadCommandRules(path = userRulesPath()): CommandRules {
+  const { rules: base, document } = loadDefaults();
+  if (base.problem || !document) {
+    return base;
+  }
+  if (!existsSync(path)) {
+    return base;
+  }
+  const layer: UserLayer = { programs: new Map(), disable: [], files: [] };
+  try {
+    readUserFile(path, layer, []);
+    // Without a prototype, so that a program named `__proto__` is just a name.
+    const programs: Record<string, unknown> = Object.assign(Object.create(null), record(document.programs ?? {}, "programs"));
+    for (const { id, file } of layer.disable) {
+      const [, name, subcommand] = RULE_ID.exec(id)!;
+      const entry = Object.hasOwn(programs, name) ? record(programs[name], name) : undefined;
+      if (!entry) {
+        throw new RulesError(`${file}: disable: no built-in rule "${id}"`);
+      }
+      if (subcommand === undefined) {
+        delete programs[name];
+        continue;
+      }
+      const subcommands = entry.subcommands === undefined ? undefined : subcommandsByName(entry.subcommands, id);
+      if (!subcommands?.delete(subcommand)) {
+        throw new RulesError(`${file}: disable: no built-in rule "${id}"`);
+      }
+      programs[name] = { ...entry, subcommands: Object.fromEntries(subcommands) };
+    }
+    const sources = new Map<string, string>();
+    for (const [name, { entry, file }] of layer.programs) {
+      const where = `${file}: programs[${JSON.stringify(name)}]`;
+      const id = `program:${name}`;
+      if (entry.extends === undefined) {
+        noExtends(entry, where);
+        programs[name] = entry;
+        sources.set(id, file);
+      } else if (entry.extends !== "default" || !Object.hasOwn(programs, name)) {
+        throw new RulesError(`${where}.extends: only "default", for a program the defaults have${Object.hasOwn(record(document.programs, "programs"), name) ? " (this one is disabled)" : ""}`);
+      } else {
+        sources.set(id, `default, ${file}`);
+        programs[name] = mergeEntry(record(programs[name], where), entry, where, id, file, sources);
+      }
+    }
+    // Errors from here on are in the merged entries; name the user file.
+    try {
+      return { programs: compileRules({ programs }, sources), files: layer.files, problem: null };
+    } catch (error) {
+      throw new RulesError(`${displayPath(path)}${layer.files.length > 1 ? " (or a file it includes)" : ""}: ${(error as Error).message}`);
+    }
+  } catch (error) {
+    return { programs: new Map(), files: layer.files.length ? layer.files : [path], problem: (error as Error).message };
+  }
 }

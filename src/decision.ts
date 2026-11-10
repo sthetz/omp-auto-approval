@@ -3,6 +3,8 @@ import { matchBlockedCommand } from "./block-commands.js";
 import { classifyAction, type ClassifierClient } from "./classifier.js";
 import { writeAudit } from "./logging.js";
 import { planSafeCommand, type SafeCommandPlan } from "./safe-command.js";
+import { defaultRules, userRulesPath, type CommandRules } from "./command-rules.js";
+import { configPath } from "./extension-config.js";
 import { SessionApprovalStore } from "./session-approval-store.js";
 import {
   createReviewSubject,
@@ -135,7 +137,7 @@ function hasOnlyPlainBashFields(input: unknown): boolean {
  * bash tool accepts a `cwd`; relative paths are resolved from it, and a
  * directory outside the workspace gets no fast path.
  */
-export function planBashCommand(toolName: string, input: unknown, cwd: string, config: AutoReviewConfig): SafeCommandPlan | null {
+export function planBashCommand(toolName: string, input: unknown, cwd: string, config: AutoReviewConfig, rules?: CommandRules): SafeCommandPlan | null {
   const command = bashCommand(toolName, input);
   if (!command || !hasOnlyPlainBashFields(input)) {
     return null;
@@ -145,7 +147,7 @@ export function planBashCommand(toolName: string, input: unknown, cwd: string, c
   if (relativePathWithin(workingDirectory, cwd) === null) {
     return null;
   }
-  return planSafeCommand(command, config, { workspace: cwd, cwd: workingDirectory });
+  return planSafeCommand(command, config, { workspace: cwd, cwd: workingDirectory, rules });
 }
 
 /** The input a planned bash call runs with: the plan's command, and its directory when a leading `cd` moved it. */
@@ -162,9 +164,10 @@ export function plannedInput(input: unknown, plan: SafeCommandPlan): Record<stri
 export function selectFastPath(
   toolName: string,
   input: unknown,
-  options: { cwd: string; config: AutoReviewConfig; tools: unknown[]; hasUI: boolean; shellLatched?: boolean },
+  options: { cwd: string; config: AutoReviewConfig; tools: unknown[]; hasUI: boolean; shellLatched?: boolean; rules?: CommandRules },
 ): FastPathRoute | null {
   const { cwd, config, tools, hasUI } = options;
+  const rules = options.rules ?? defaultRules();
   const toolDefinition = findToolDefinition(toolName, tools);
   const builtin = isBuiltinTool(toolDefinition, tools.length > 0);
   const normalizedToolName = toolName.trim().toLowerCase();
@@ -185,13 +188,13 @@ export function selectFastPath(
   if (builtin && isReadOnlyTool(toolName) && isWorkspaceReadFastPath(input, resolveReadRoots(cwd, config.readRoots))) {
     return "readonly";
   }
-  if (builtin && (toolName === "write" || toolName === "edit") && isWorkspaceWriteFastPath(input, cwd)) {
+  if (builtin && (toolName === "write" || toolName === "edit") && isWorkspaceWriteFastPath(input, cwd, [configPath(), userRulesPath(), ...rules.files])) {
     return "workspace_write";
   }
   if (isManualOnlyTool(toolName, toolDefinition)) {
     return "manual_only";
   }
-  if (!options.shellLatched && planBashCommand(toolName, input, cwd, config) !== null) {
+  if (!options.shellLatched && planBashCommand(toolName, input, cwd, config, rules) !== null) {
     return "safe_command";
   }
   return null;
@@ -236,6 +239,8 @@ type EvaluateOptions = {
   classifierClient?: ClassifierClient;
   // Text of the assistant message that issued this call, if known.
   agentMessage?: string;
+  // The session's command rules (see loadCommandRules); the built-in ones if absent.
+  rules?: CommandRules;
 };
 
 /**
@@ -305,13 +310,21 @@ async function decideToolCall(
   const cwd = ctx.cwd || process.cwd();
   const input = getToolInput(event);
   const subject = createReviewSubject(toolName, input, cwd);
-  const route = selectFastPath(toolName, input, {
+  let route = selectFastPath(toolName, input, {
     cwd,
     config,
     tools: options.tools ?? [],
     hasUI: ctx.hasUI === true,
     shellLatched,
+    rules: options.rules,
   });
+  // The command a safe_command call runs as. Planned again with the same
+  // inputs, so it agrees with the route; if not, the call is reviewed rather
+  // than run as written.
+  const plan = route === "safe_command" ? planBashCommand(toolName, input, cwd, config, options.rules) : null;
+  if (route === "safe_command" && !plan) {
+    route = null;
+  }
   const audit = (entry: Omit<AuditEntry, "event" | "mode" | "toolName" | "actionSummary" | "actionHash" | "durationMs">) => writeAudit(config, {
     event: "decision",
     mode: config.mode,
@@ -345,15 +358,12 @@ async function decideToolCall(
     if (route === "safe_command") {
       outcome.fastPathed = true;
       store.recordNonDenial();
-      const plan = planBashCommand(toolName, input, cwd, config);
-      if (plan) {
-        // OMP runs the call with the input as the tool_call handlers leave it.
-        const record = toRecord(input);
-        if (plan.command !== record.command || plan.cwd) {
-          Object.assign(record, plannedInput(input, plan));
-          await audit({ route, outcome: "allow", pinnedCommand: plan.command, ...(plan.cwd ? { pinnedCwd: plan.cwd } : {}) });
-          return {};
-        }
+      // OMP runs the call with the input as the tool_call handlers leave it.
+      const record = toRecord(input);
+      if (plan && (plan.command !== record.command || plan.cwd)) {
+        Object.assign(record, plannedInput(input, plan));
+        await audit({ route, outcome: "allow", pinnedCommand: plan.command, ...(plan.cwd ? { pinnedCwd: plan.cwd } : {}) });
+        return {};
       }
     }
     await audit({ route, outcome: "allow" });

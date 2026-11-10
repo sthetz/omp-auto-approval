@@ -53,6 +53,11 @@ export function relativePathWithin(pathValue: string, root: string): string | nu
   return resolvedPath.startsWith(prefix) ? resolvedPath.slice(prefix.length) : null;
 }
 
+/** `pathValue` from `cwd`, with symbolic links in its existing part resolved. */
+export function canonicalPath(pathValue: string, cwd: string): string {
+  return resolveExistingPathForBoundary(pathValue, cwd);
+}
+
 function resolveExistingPathForBoundary(pathValue: string, cwd: string): string {
   const resolvedPath = resolvePathForCwd(pathValue, cwd);
   if (existsSync(resolvedPath)) {

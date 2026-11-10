@@ -1,19 +1,19 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import ompAutoApprovalExtension, { SYSTEM_PROMPT_NOTE } from "../index.js";
 import { applyDecisionPolicy, classifyAction, parseReviewDecision } from "../src/classifier.js";
 import { matchBlockedCommand } from "../src/block-commands.js";
-import { resolveReadRoots } from "../src/tool-routing.js";
+import { isWorkspaceWriteFastPath, resolveReadRoots } from "../src/tool-routing.js";
 import { buildProjectedContext } from "../src/context-projection.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, logsDir, normalizeConfig, saveConfig } from "../src/extension-config.js";
 import { evaluateToolCall, selectFastPath } from "../src/decision.js";
 import { columnWidth, truncateVisible } from "../src/model-selector.js";
 import { planSafeCommand } from "../src/safe-command.js";
 import { isSafeSedScript } from "../src/program-rules.js";
-import { ARGUMENT_PARSERS, compileRules, defaultRules, loadRulesFile, OPERAND_CHECKS } from "../src/command-rules.js";
+import { ARGUMENT_PARSERS, compileRules, defaultRules, loadCommandRules, loadRulesFile, OPERAND_CHECKS, type CommandRules } from "../src/command-rules.js";
 import { parseJsonc } from "../src/jsonc.js";
 import { recognizeShell } from "../src/shell-syntax.js";
 import { shellHook } from "../src/shell-hooks.js";
@@ -26,7 +26,7 @@ import type { AutoReviewConfig, ExtensionContextLike } from "../src/types.js";
 // Stub programs make the tests independent of what this machine has
 // installed; the real PATH stays behind them.
 const STUB_PROGRAMS = [
-  "basename", "cat", "cut", "date", "dd", "diff", "du", "echo", "fd", "find", "git", "grep", "head", "jq", "ls", "npm",
+  "basename", "cat", "cut", "date", "dd", "diff", "du", "echo", "fd", "find", "git", "grep", "head", "jq", "kubectl", "ls", "npm",
   "printf", "pwd", "python", "rg", "sed", "sleep", "sort", "stat", "tail", "tar", "timeout", "tr", "uname", "uniq", "wc", "which",
 ];
 const STUB_BIN = mkdtempSync(join(tmpdir(), "omp-auto-approval-bin-"));
@@ -36,6 +36,8 @@ for (const name of STUB_PROGRAMS) {
 }
 const TEST_PATH = `${STUB_BIN}:${process.env.PATH ?? ""}`;
 process.on("exit", () => rmSync(STUB_BIN, { recursive: true, force: true }));
+// No user rules file unless a test names one.
+process.env.PI_AUTO_APPROVAL_RULES_PATH = join(STUB_BIN, "no-rules.jsonc");
 
 function isSafeReadOnlyCommand(command: string, cfg: AutoReviewConfig, cwd: string): boolean {
   return planSafeCommand(command, cfg, { workspace: cwd, searchPath: TEST_PATH }) !== null;
@@ -649,6 +651,217 @@ async function run(): Promise<void> {
     }
   });
 
+  await test("a user rules file replaces, extends, and disables built-in entries", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-user-rules-"));
+    writeFileSync(join(workspace, "notes.txt"), "x\n");
+    const file = join(workspace, "rules.jsonc");
+    try {
+      writeFileSync(file, `// My rules.
+{
+  "$schema": "../schemas/rules.schema.json",
+  "programs": {
+    // Replaces the built-in cat: only -n.
+    "cat": { "options": { "-n": "flag" }, "operands": "read-files" },
+    // Built-in head without -n/--lines.
+    "head": { "extends": "default", "options": { "-n --lines": null } },
+    "npm": {
+      "options": { "--prefix": "workspace-directory" },
+      "except": ["--global"],
+      "subcommands": { "ls list": { "options": "any", "operands": "git-operands" } }
+    },
+    "git": {
+      "extends": "default",
+      "subcommands": {
+        "stash": null,
+        "log": { "extends": "default", "except": ["-p"] },
+        "reflog": { "options": "any", "operands": "git-operands" }
+      }
+    }
+  },
+  "disable": ["program:sed", "program:git blame"],
+}`);
+      const rules = loadCommandRules(file);
+      assert.equal(rules.problem, null);
+      assert.deepEqual(rules.files, [realpathSync(file)]);
+      const label = file.startsWith(`${homedir()}/`) ? `~${file.slice(homedir().length)}` : file;
+      assert.equal(rules.programs.get("cat")?.source, label);
+      assert.equal(rules.programs.get("head")?.source, `default, ${label}`);
+      assert.equal(rules.programs.get("grep")?.source, "default");
+      assert.equal(rules.programs.get("git")?.subcommands?.get("log")?.source, `default, ${label}`);
+      assert.equal(rules.programs.get("git")?.subcommands?.get("reflog")?.id, "program:git reflog");
+      assert.equal(rules.programs.get("git")?.subcommands?.get("diff")?.source, `default, ${label}`);
+      const safe = (command: string) => planSafeCommand(command, config(), { workspace, searchPath: TEST_PATH, rules }) !== null;
+      for (const command of [
+        "cat -n notes.txt", "head -c 3 notes.txt", "head -q notes.txt", "grep -n x notes.txt", "npm ls", "npm list notes.txt",
+        "git log --oneline", "git reflog", "git status", "git diff", "npm --prefix . ls",
+      ]) {
+        assert.equal(safe(command), true, command);
+      }
+      for (const command of [
+        "cat -A notes.txt", "head -n 3 notes.txt", "head --lines 3 notes.txt", "sed -n 1p notes.txt", "git blame notes.txt",
+        "git stash list", "git log -p", "git log --output=x", "npm ls --global", "npm ls --glob", "npm install", "npm ls /etc",
+      ]) {
+        assert.equal(safe(command), false, command);
+      }
+      // Without a user file, the built-in rules.
+      const none = loadCommandRules(join(workspace, "missing.jsonc"));
+      assert.equal(none.problem, null);
+      assert.deepEqual(none.files, []);
+      assert.equal(none.programs, defaultRules().programs);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  await test("config/rules.example.jsonc loads and does what its comments say", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-example-"));
+    writeFileSync(join(workspace, "notes.txt"), "x\n");
+    try {
+      const rules = loadCommandRules(new URL("../config/rules.example.jsonc", import.meta.url).pathname);
+      assert.equal(rules.problem, null);
+      const safe = (command: string) => planSafeCommand(command, config(), { workspace, searchPath: TEST_PATH, rules }) !== null;
+      for (const command of [
+        "kubectl get pods", "kubectl --context dev get pods -n web -o wide", "kubectl describe deploy/api", "kubectl logs api-1 -c app --tail 50",
+        "git reflog", "git log", "cat -n notes.txt",
+      ]) {
+        assert.equal(safe(command), true, command);
+      }
+      for (const command of [
+        "kubectl get secrets", "kubectl get Secrets", "kubectl get secret/db -o yaml", "kubectl get pods,secrets", "kubectl delete pod x", "kubectl get pods -w",
+        "kubectl get pods --as admin", "kubectl --kubeconfig x get pods", "kubectl logs", "git stash list", "git blame notes.txt",
+        "sed -n 1p notes.txt", "cat -A notes.txt",
+      ]) {
+        assert.equal(safe(command), false, command);
+      }
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  await test("user rules files can include others, by absolute or ~/ paths", () => {
+    const home = mkdtempSync(join(tmpdir(), "omp-auto-approval-include-home-"));
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      mkdirSync(join(home, "rules"));
+      writeFileSync(join(home, "rules.jsonc"), '{ "include": ["~/rules/npm.jsonc"], "programs": { "cat": { "operands": "read-files" } } }');
+      writeFileSync(join(home, "rules", "npm.jsonc"), `{ "include": ["${join(home, "rules", "more.jsonc")}"], "programs": { "npm": { "subcommands": { "ls": { "options": "any", "operands": "none" } } } } }`);
+      writeFileSync(join(home, "rules", "more.jsonc"), '{ "disable": ["program:sed"] }');
+      const rules = loadCommandRules(join(home, "rules.jsonc"));
+      assert.equal(rules.problem, null);
+      assert.deepEqual(rules.files, [join(home, "rules.jsonc"), join(home, "rules", "npm.jsonc"), join(home, "rules", "more.jsonc")].map((path) => realpathSync(path)));
+      assert.equal(rules.programs.get("npm")?.source, "~/rules/npm.jsonc");
+      assert.equal(rules.programs.has("sed"), false);
+      assert.notEqual(planSafeCommand("npm ls", config(), { workspace: home, searchPath: TEST_PATH, rules }), null);
+
+      const broken: [Record<string, string>, RegExp][] = [
+        [{ "rules.jsonc": '{ "include": ["rules/npm.jsonc"] }' }, /^~\/rules\.jsonc: include: expected an absolute path or one starting with ~\//],
+        [{ "rules.jsonc": '{ "include": ["~/rules/missing.jsonc"] }' }, /^~\/rules\/missing\.jsonc: ENOENT/],
+        [{ "rules.jsonc": '{ "include": ["~/rules/a.jsonc"] }', "rules/a.jsonc": '{ "include": ["~/rules.jsonc"] }' }, /^~\/rules\.jsonc: includes itself through ~\/rules\.jsonc → ~\/rules\/a\.jsonc/],
+        [{ "rules.jsonc": '{ "include": ["~/rules/a.jsonc"] }', "rules/a.jsonc": "{ oops }" }, /^~\/rules\/a\.jsonc: expected a key in double quotes at line 1/],
+        [
+          { "rules.jsonc": '{ "include": ["~/rules/a.jsonc"], "programs": { "cat": { "operands": "none" } } }', "rules/a.jsonc": '{ "programs": { "cat": { "operands": "none" } } }' },
+          /^~\/rules\.jsonc: programs\["cat"\]: also defined in ~\/rules\/a\.jsonc/,
+        ],
+      ];
+      for (const [files, problem] of broken) {
+        for (const [name, text] of Object.entries(files)) {
+          writeFileSync(join(home, name), text);
+        }
+        const result = loadCommandRules(join(home, "rules.jsonc"));
+        assert.match(result.problem ?? "", problem, JSON.stringify(files));
+        assert.equal(result.programs.size, 0);
+      }
+    } finally {
+      process.env.HOME = previousHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  await test("a user rules file with any problem turns every bash fast path off", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-user-broken-"));
+    writeFileSync(join(workspace, "notes.txt"), "x\n");
+    const file = join(workspace, "rules.jsonc");
+    try {
+      const broken: [string, RegExp][] = [
+        ['{ "programs": {}, "rules": [] }', /rules\.jsonc: unknown key "rules"/],
+        ['{ "programs": { "sed": null } }', /to turn off a built-in program, list "program:sed" in "disable"/],
+        ['{ "programs": { "head": { "extends": "builtin" } } }', /programs\["head"\]\.extends: only "default"/],
+        ['{ "programs": { "kubectl": { "extends": "default" } } }', /programs\["kubectl"\]\.extends: only "default", for a program the defaults have$/],
+        ['{ "disable": ["program:sed"], "programs": { "sed": { "extends": "default" } } }', /\(this one is disabled\)/],
+        ['{ "disable": ["program:kubectl"] }', /disable: no built-in rule "program:kubectl"/],
+        ['{ "disable": ["program:git worktree"] }', /disable: no built-in rule "program:git worktree"/],
+        ['{ "disable": ["sed"] }', /disable: expected ids like "program:sed"/],
+        ['{ "programs": { "head": { "extends": "default", "options": { "-n": null } } } }', /options\["-n"\]: no such option in the default entry; it lists "-n --lines"/],
+        ['{ "programs": { "head": { "extends": "default", "options": { "-n": "number" } } } }', /"-n" is listed twice/],
+        ['{ "programs": { "head": { "extends": "default", "stopAtOperand": null } } }', /stopAtOperand: the default entry has none to delete/],
+        ['{ "programs": { "git": { "extends": "default", "subcommands": { "worktree": null } } } }', /no subcommand "worktree"/],
+        ['{ "programs": { "git": { "extends": "default", "subcommands": { "worktree": { "extends": "default" } } } } }', /subcommands\["worktree"\]\.extends: only "default", for a subcommand the default entry has/],
+        ['{ "programs": { "npm": { "subcommands": { "ls": { "extends": "default", "operands": "none" } } } } }', /extends: only "default", for a subcommand the defaults have/],
+        ['{ "programs": { "cat": { "options": { "-n": "flags" }, "operands": "read-files" } } }', /rules\.jsonc: programs\["cat"\]\.options\["-n"\]: unknown kind "flags"/],
+        ['{ "programs": { "later": { "options": { "-k": "string" }, "operands": "duration-then-command" } } }', /needs "stopAtOperand": true/],
+        ['{ "programs": { "git": { "extends": "default", "subcommands": { "run": { "options": "any", "stopAtOperand": true, "operands": "duration-then-command" } } } } }', /needs "stopAtOperand": true and an option table/],
+      ];
+      for (const [text, problem] of broken) {
+        writeFileSync(file, text);
+        const rules = loadCommandRules(file);
+        assert.match(rules.problem ?? "", problem, text);
+        assert.equal(rules.programs.size, 0, text);
+        assert.equal(planSafeCommand("git status", config({ safeCommandAllowlist: ["rg"] }), { workspace, searchPath: TEST_PATH, rules }), null, text);
+      }
+
+      // Through the decision itself: a broken file, and a rule that
+      // disables what was fast-pathed, both send `git status` to review.
+      for (const text of ['{ "programs": { "cat": {} } }', '{ "disable": ["program:git status"] }']) {
+        writeFileSync(file, text);
+        const rules = loadCommandRules(file);
+        const event = { toolName: "bash", input: { command: "git status" } as Record<string, unknown> };
+        const decision = await evaluateToolCall(event, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), { ...classifierDenyOptions(), rules });
+        assert.equal("block" in decision && decision.block, true, text);
+        assert.equal(event.input.command, "git status");
+      }
+      const event = { toolName: "bash", input: { command: "git status" } as Record<string, unknown> };
+      writeFileSync(file, '{ "programs": { "cat": { "operands": "read-files" } } }');
+      assert.deepEqual(await evaluateToolCall(event, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), { ...classifierDenyOptions(), rules: loadCommandRules(file) }), {});
+      assert.match(String(event.input.command), /^\/\S*\/git status$/);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  await test("the extension's config and rules files are never written by the write fast path", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-protect-"));
+    writeFileSync(join(workspace, "rules.jsonc"), "{}");
+    symlinkSync(join(workspace, "rules.jsonc"), join(workspace, "link.jsonc"));
+    const previousRules = process.env.PI_AUTO_APPROVAL_RULES_PATH;
+    const previousConfig = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+    try {
+      const write = (path: string) => ({ path, content: "{}" });
+      const protectedFiles = [join(workspace, "rules.jsonc"), join(workspace, "kube.jsonc")];
+      assert.equal(isWorkspaceWriteFastPath(write("notes.txt"), workspace, protectedFiles), true);
+      for (const path of ["rules.jsonc", "./rules.jsonc", "link.jsonc", "kube.jsonc", join(workspace, "rules.jsonc")]) {
+        assert.equal(isWorkspaceWriteFastPath(write(path), workspace, protectedFiles), false, path);
+      }
+      // selectFastPath protects config.jsonc and rules.jsonc even before they exist.
+      process.env.PI_AUTO_APPROVAL_RULES_PATH = join(workspace, "new-rules.jsonc");
+      process.env.PI_AUTO_APPROVAL_CONFIG_PATH = join(workspace, "config.jsonc");
+      const route = (path: string) => selectFastPath("write", write(path), { cwd: workspace, config: config(), tools: [], hasUI: false });
+      assert.equal(route("notes.txt"), "workspace_write");
+      assert.equal(route("new-rules.jsonc"), null);
+      assert.equal(route("config.jsonc"), null);
+      const rules: CommandRules = { ...defaultRules(), files: [join(workspace, "kube.jsonc")] };
+      assert.equal(selectFastPath("write", write("kube.jsonc"), { cwd: workspace, config: config(), tools: [], hasUI: false, rules }), null);
+    } finally {
+      process.env.PI_AUTO_APPROVAL_RULES_PATH = previousRules;
+      if (previousConfig === undefined) {
+        delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+      } else {
+        process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfig;
+      }
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   await test("an entry with subcommands reads its own options as whole words before the subcommand", () => {
     const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-subcommands-"));
     mkdirSync(join(workspace, "sub"));
@@ -657,6 +870,7 @@ async function run(): Promise<void> {
       // npm is a stub program here; the entry is made up.
       const rules = {
         problem: null,
+        files: [],
         programs: compileRules({
           programs: {
             npm: {

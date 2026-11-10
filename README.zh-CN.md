@@ -203,6 +203,19 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 - **`timeout`** 运行时长之后的命令，该命令本身必须安全；它的程序也会被固定为绝对路径。
 - **`find`** 只接受已知的测试（`-name`、`-type`、`-path`、`-maxdepth`、`-newer`、`-printf` 等）；表达式中任何位置的通配符都需要审批，因为匹配到的文件名可能变成一个动作。
 
+### 自定义命令规则
+
+`config.jsonc` 旁边的 `rules.jsonc`（或 `PI_AUTO_APPROVAL_RULES_PATH` 指定的文件）会叠加在内置规则之上，格式与 [`config/default-rules.jsonc`](config/default-rules.jsonc) 相同。[`config/rules.example.jsonc`](config/rules.example.jsonc) 是一个带注释的示例：它让 `kubectl get`、`describe` 和 `logs` 免审批（但 `kubectl get secrets` 除外），并修改了几个内置条目。
+
+- 你自己写的程序条目会**替换**内置条目。加上 `"extends": "default"` 则改为**合并**进内置条目：选项和子命令逐个键合并，`null` 删除一个内置键（必须与内置文件中的写法完全一致，例如 `"-n --lines"`）；`except` 列表会合并；其他键替换内置值。
+- `"disable": ["program:sed", "program:git blame"]` 移除内置条目。
+- `"include": ["~/…/kubectl.jsonc"]` 读取更多文件，路径须为绝对路径或以 `~/` 开头。每个程序只能在一个文件中定义。
+- 条目未列出的选项和子命令仍需审批，与内置规则相同；代码中的所有检查也照常生效：程序从 OMP 启动时的 PATH 中运行，文件只能在可读目录内读取，等等。
+- 只要其中任何一个文件有错误（未知的键、类型或检查、重复列出的选项、无效的 include），就不会使用任何规则，所有 bash 命令都需要审批，直到错误被修复。`/auto-approval status` 会显示正在使用的文件或错误，OMP 也会在会话开始时给出警告。
+- 这些文件在会话开始时以及执行任何 `/auto-approval` 命令时读取。写入快速通道永远不会写入它们或 `config.jsonc`，即使它们位于工作目录中。
+
+没有按项目区分的规则文件：克隆下来的仓库可能会自带一个。
+
 ### allowlist 中的命令
 
 `safeCommandAllowlist` 条目是前缀（`"rg *"`、`"find"`、`"npm test"`），单靠它会信任该程序的所有选项。即使条目匹配，以下命令仍需审批：

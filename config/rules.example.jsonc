@@ -1,0 +1,65 @@
+// An example user rules file. Copy it to rules.jsonc next to config.jsonc
+// (or set PI_AUTO_APPROVAL_RULES_PATH) and edit it. It is read at session
+// start and on any /auto-approval command; /auto-approval status shows
+// which files are in use, or what is wrong with them.
+//
+// Entries only say what may skip review. Everything they don't list is
+// reviewed as before, and the checks in code still apply to every command:
+// programs run from OMP's startup PATH, files are read only inside the
+// read roots, and so on (see the top of config/default-rules.jsonc, which
+// also explains option kinds and operand checks).
+//
+// If this file, or one it includes, has any error, no rules are used and
+// every bash command is reviewed until it is fixed.
+{
+  "$schema": "../schemas/rules.schema.json",
+
+  // More rules files, by absolute path or ~/.
+  // "include": ["~/.omp/agent/omp-auto-approval/kubectl.jsonc"],
+
+  "programs": {
+    // A program the built-in rules don't know. Its own options come before
+    // the subcommand, each a whole word; a subcommand not listed here, such
+    // as `kubectl delete`, is reviewed.
+    "kubectl": {
+      "options": { "--context": "string" },
+      "subcommands": {
+        "get describe": {
+          "options": {
+            "-n --namespace": "string",
+            "-o --output": "string",
+            "-l --selector": "string",
+            // Not -w/--watch, which never finishes.
+            "-A --all-namespaces": "flag"
+          },
+          // Resource names, but never secrets, in any case: their values
+          // would reach the model without review.
+          "operands": { "literals": { "pattern": "^(?!.*[Ss][Ee][Cc][Rr][Ee][Tt])[A-Za-z0-9.,/_-]+$" } }
+        },
+        "logs": {
+          "options": { "-n --namespace": "string", "-c --container": "string", "--tail": "number", "--since": "string" },
+          "operands": { "literals": { "min": 1, "max": 2 } }
+        }
+      }
+    },
+
+    // A built-in entry, changed: "extends": "default" merges into it. A key
+    // set to null deletes the built-in one; it must be written exactly as in
+    // config/default-rules.jsonc.
+    "git": {
+      "extends": "default",
+      "subcommands": {
+        "reflog": { "options": "any", "operands": "git-operands" },
+        "stash": null
+      }
+    },
+
+    // Without "extends", an entry replaces the built-in one: this cat takes
+    // only -n.
+    "cat": { "options": { "-n --number": "flag" }, "operands": "read-files" }
+  },
+
+  // Built-in entries to remove, by id: "program:<name>" or
+  // "program:<name> <subcommand>".
+  "disable": ["program:sed", "program:git blame"]
+}

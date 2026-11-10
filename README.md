@@ -207,6 +207,19 @@ Files a program reads, as operands or option values (`grep -f`, `diff --from-fil
 - **`timeout`** runs the command after its duration, which must be safe on its own; that program is pinned too.
 - **`find`** takes known tests only (`-name`, `-type`, `-path`, `-maxdepth`, `-newer`, `-printf`, …); a glob anywhere in its expression is reviewed, since a matching file name could become an action.
 
+### Your own command rules
+
+A `rules.jsonc` next to `config.jsonc` (or at `PI_AUTO_APPROVAL_RULES_PATH`) adds to the built-in rules, in the same format as [`config/default-rules.jsonc`](config/default-rules.jsonc). [`config/rules.example.jsonc`](config/rules.example.jsonc) is a commented example that fast-paths `kubectl get`, `describe` and `logs`, but not `kubectl get secrets`, and changes some built-in entries.
+
+- A program entry of your own **replaces** the built-in one. With `"extends": "default"` it is **merged** into it instead: option and subcommand keys one by one, where `null` deletes a built-in key (written exactly as the built-in file writes it, such as `"-n --lines"`); `except` lists are joined; other keys replace the built-in ones.
+- `"disable": ["program:sed", "program:git blame"]` removes built-in entries.
+- `"include": ["~/…/kubectl.jsonc"]` reads more files, by absolute path or `~/`. Each program may be defined in one file only.
+- Options and subcommands an entry does not list are reviewed, as with the built-in rules, and every check in code still applies: programs run from OMP's startup PATH, files are read only inside the read roots, and so on.
+- If any of these files has an error (an unknown key, kind or check, an option listed twice, a broken include), no rules are used and every bash command is reviewed until it is fixed. `/auto-approval status` shows the files in use or the error, and OMP warns at session start.
+- The files are read at session start and on any `/auto-approval` command. The write fast path never writes them, nor `config.jsonc`, even when they are inside the working directory.
+
+There are no per-project rules files: a cloned repository could ship one.
+
 ### Allowlisted commands
 
 A `safeCommandAllowlist` entry is a prefix (`"rg *"`, `"find"`, `"npm test"`), so on its own it would trust every option of the program. Even when an entry matches, a command is still reviewed if:

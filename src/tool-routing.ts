@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getString, relativePathWithin, resolvePathForCwd, sha256, stableStringify, toRecord, truncateInline, type ReadRoots } from "./common.js";
+import { canonicalPath, getString, relativePathWithin, resolvePathForCwd, sha256, stableStringify, toRecord, truncateInline, type ReadRoots } from "./common.js";
 
 export { resolveReadRoots, type ReadRoots } from "./common.js";
 import { isSensitivePath } from "./sensitive-paths.js";
@@ -279,12 +279,15 @@ function isExecutableFile(path: string, cwd: string): boolean {
  * a plain path inside the workspace, outside protected entries, and not a
  * credential file. Writes that create or change a program are reviewed: a
  * program in the workspace can shadow a command on the persistent shell's
- * PATH, so `git status` would run it.
+ * PATH, so `git status` would run it. So are writes to `protectedFiles`,
+ * the extension's own config and rules files, when they are in the
+ * workspace: changing them changes what is reviewed.
  */
-export function isWorkspaceWriteFastPath(input: unknown, cwd: string): boolean {
+export function isWorkspaceWriteFastPath(input: unknown, cwd: string, protectedFiles: string[] = []): boolean {
   if (writesProgram(input)) {
     return false;
   }
+  const protectedPaths = new Set(protectedFiles.map((path) => canonicalPath(path, cwd)));
   const destinations: unknown[] = [];
   collectWriteDestinations(input, destinations);
   return destinations.length > 0 && destinations.every((destination) => {
@@ -293,6 +296,7 @@ export function isWorkspaceWriteFastPath(input: unknown, cwd: string): boolean {
     }
     const relative = relativePathWithin(destination, cwd);
     return relative !== null
+      && !protectedPaths.has(canonicalPath(destination, cwd))
       && !isProtectedWorkspacePath(relative)
       && !isSensitivePath(relative)
       && !isExecutableFile(destination, cwd);

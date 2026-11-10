@@ -1,6 +1,6 @@
 import type { AutoReviewConfig, ExtensionContextLike, ToolCallEventLike } from "./src/types.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, saveConfig } from "./src/extension-config.js";
-import { defaultRules, defaultRulesPath } from "./src/command-rules.js";
+import { defaultRulesPath, loadCommandRules, userRulesPath, type CommandRules } from "./src/command-rules.js";
 import { evaluateToolCall, planBashCommand, selectFastPath, sessionKey, type FastPathRoute } from "./src/decision.js";
 import { toRecord } from "./src/common.js";
 import { findToolDefinition } from "./src/tool-routing.js";
@@ -68,8 +68,19 @@ function stateText(config: AutoReviewConfig): "off" | "fallback" | "auto" {
   return config.enabled ? config.mode : "off";
 }
 
-function rulesProblemText(): string {
-  return `command rules could not be loaded, so every bash command is reviewed: ${defaultRules().problem}`;
+function rulesProblemText(rules: CommandRules): string {
+  return `command rules could not be loaded, so every bash command is reviewed: ${rules.problem}`;
+}
+
+function rulesStatusText(rules: CommandRules): string[] {
+  if (rules.problem) {
+    return [rulesProblemText(rules)];
+  }
+  const [main, ...included] = rules.files;
+  return [
+    `command rules: ${defaultRulesPath()}`,
+    main ? `user rules: ${main}${included.length ? ` (including ${included.join(", ")})` : ""}` : `user rules: none (${userRulesPath()} does not exist)`,
+  ];
 }
 
 function notify(ctx: ExtensionContextLike, message: string, type: "info" | "warning" | "error" = "info"): void {
@@ -115,6 +126,9 @@ function getAutoReviewArgumentCompletions(argumentPrefix: string): Array<{ value
 export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
   let loadResult = loadConfig();
   let config = loadResult.config;
+  // The command rules for this session: re-read at session start and on any
+  // /auto-approval command.
+  let rules = loadCommandRules();
   const approvals = new SessionApprovalStore();
   let lastContext: ExtensionContextLike | null = null;
   // Latest assistant text in the current agent run, for the classifier.
@@ -126,6 +140,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
     }
     loadResult = loadConfig();
     config = loadResult.config;
+    rules = loadCommandRules();
     if (ctx) {
       setStatus(ctx, config);
       if (loadResult.warning) {
@@ -134,8 +149,8 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
       if (options.announce && loadResult.notice) {
         notify(ctx, loadResult.notice, "warning");
       }
-      if (options.announce && defaultRules().problem) {
-        notify(ctx, rulesProblemText(), "warning");
+      if (options.announce && rules.problem) {
+        notify(ctx, rulesProblemText(rules), "warning");
       }
     }
   }
@@ -162,8 +177,9 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
       tools,
       hasUI: ctx.hasUI === true,
       shellLatched: approvals.shellLatch(sessionKey(ctx)) !== null,
+      rules,
     });
-    const plan = route === "safe_command" ? planBashCommand(toolName, parsed.input, ctx.cwd || process.cwd(), config) : null;
+    const plan = route === "safe_command" ? planBashCommand(toolName, parsed.input, ctx.cwd || process.cwd(), config, rules) : null;
     const review = config.mode === "fallback"
       ? "classifier review; you decide if it denies or fails"
       : "classifier review; blocked if it denies or fails";
@@ -242,7 +258,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
             `approval classifier model: ${classifierModelText(config)}`,
             `config: ${configPath()}`,
             `audit log: ${logPath()}`,
-            defaultRules().problem ? rulesProblemText() : `command rules: ${defaultRulesPath()}`,
+            ...rulesStatusText(rules),
             ...(approvals.shellLatch(sessionKey(ctx)) ? [`bash fast path: off for this session (an approved command used ${approvals.shellLatch(sessionKey(ctx))})`] : []),
             ...(loadResult.notice ? [loadResult.notice] : []),
           ].join("\n"),
@@ -299,6 +315,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
     return evaluateToolCall(event, ctx, config, approvals, {
       tools: omp.getAllTools?.() ?? [],
       agentMessage,
+      rules,
     });
   });
 

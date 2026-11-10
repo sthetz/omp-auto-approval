@@ -219,15 +219,15 @@ async function run(): Promise<void> {
     assert.equal(isSafeReadOnlyCommand("git branch -a new-branch", cfg, "/tmp/workspace"), false);
   });
 
-  await test("safe command user allowlist remains explicit", () => {
+  await test("allow rules stay explicit", () => {
     const cfg = config({ allowRules: ["rg *", "npm test"] });
     assert.equal(isSafeReadOnlyCommand("rg needle src", cfg, "/tmp/workspace"), true);
     assert.equal(isSafeReadOnlyCommand("npm test", cfg, "/tmp/workspace"), true);
     assert.equal(isSafeReadOnlyCommand("npm install", cfg, "/tmp/workspace"), false);
   });
 
-  await test("allowlisted commands never fast-path exec, write, or out-of-workspace arguments", () => {
-    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-allowlist-"));
+  await test("commands allow rules match never fast-path exec, write, or out-of-workspace arguments", () => {
+    const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-allow-"));
     const workspace = join(root, "workspace");
     mkdirSync(join(workspace, "src"), { recursive: true });
     writeFileSync(join(workspace, ".env"), "TOKEN=x\n");
@@ -637,7 +637,7 @@ async function run(): Promise<void> {
         assert.match(rules.problem ?? "", problem, text);
         assert.match(rules.problem ?? "", /^rules\.jsonc: /);
         assert.equal(rules.programs.size, 0);
-        // Not even the allowlist applies: the file could have held a rule
+        // Not even allow rules apply: the file could have held a rule
         // that is meant to restrict it.
         const cfg = config({ allowRules: ["rg"] });
         for (const command of ["cat notes.txt", "rg x", "pwd"]) {
@@ -1123,11 +1123,11 @@ async function run(): Promise<void> {
       const blocked = (decision: unknown) => typeof decision === "object" && decision !== null && "block" in decision;
       const reason = (decision: unknown) => String((decision as { reason?: string }).reason);
 
-      // Review beats a table entry, an allowlist entry, and reviewExemptTools.
+      // Review beats a table entry, an allow rule, and reviewExemptTools.
       assert.deepEqual(await run("git status"), {});
       assert.equal(blocked(await run("git log -1")), true);
       assert.match(contexts.at(-1) ?? "", /command rules send this action to review \(rule \\"log-review\\".*The user's reason: Logs may name customers\./);
-      // (Only the allowlist lets these through; git is on the real PATH.)
+      // (Only the allow rules let these through; git is on the real PATH.)
       assert.deepEqual(await run("git fetch --dry-run"), {});
       assert.equal(blocked(await run("git push --dry-run")), true);
       assert.equal(blocked(await run("git log", { reviewExemptTools: ["bash"] })), true);
@@ -1315,7 +1315,7 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("allowlisted commands see through abbreviations, glued values, and name=value arguments", () => {
+  await test("commands allow rules match see through abbreviations, glued values, and name=value arguments", () => {
     const root = mkdtempSync(join(tmpdir(), "omp-auto-approval-argv-"));
     const workspace = join(root, "workspace");
     mkdirSync(workspace);
@@ -1372,7 +1372,7 @@ async function run(): Promise<void> {
   });
 
   await test("allow rules for script programs and bare interpreters are errors", () => {
-    for (const prefix of ["sed -n", "xargs", "awk *", "python", "bash *", "env"]) {
+    for (const prefix of ["sed -n", "xargs", "awk *", "python", "bash *", "env", "python -*", "sudo*"]) {
       assert.throws(() => config({ allowRules: [prefix] }), new RegExp(`prefix: (${prefix.split(" ")[0]} runs commands|allowing bare ${prefix.split(" ")[0]} would allow any code)`), prefix);
     }
     const cfg = config({ allowRules: ["python -m pytest", "npm test"] });
@@ -1381,6 +1381,13 @@ async function run(): Promise<void> {
     }
     assert.equal(isSafeReadOnlyCommand("python -m pytest tests", cfg, "/tmp/workspace"), true);
     assert.equal(isSafeReadOnlyCommand("npm test", cfg, "/tmp/workspace"), true);
+    // A prefix with a glued `*` names no program in full, so it cannot let
+    // a shell, interpreter or wrapper through.
+    const glued = config({ allowRules: ["ba*", "pyth*", "e*", "s*", "timeou*", "python -m pytest*"] });
+    for (const command of ["bash -c 'rm -rf x'", "python -c 'import os'", "python3 -c x", "env rm x", "sudo rm x", "timeout 5 rm x", "/usr/bin/env rm x"]) {
+      assert.equal(isSafeReadOnlyCommand(command, glued, "/tmp/workspace"), false, command);
+    }
+    assert.equal(isSafeReadOnlyCommand("python -m pytest -x tests", glued, "/tmp/workspace"), true);
   });
 
   await test("disabled extension transparently allows", async () => {
@@ -3268,8 +3275,7 @@ async function run(): Promise<void> {
 
   await test("block rules match words in order across wrappers and shell syntax", () => {
     const rules = config({ blockRules: ["git push --force", "terraform apply", "/curl[^|]*\\|\\s*(ba)?sh/"] }).rules;
-    const matchBlockedCommand = (command: string, _patterns: unknown) => escalateCommand(command, rules)?.rule.id ?? null;
-    const patterns = null;
+    const blocked = (command: string) => escalateCommand(command, rules)?.outcome === "block";
     for (const command of [
       "git push --force",
       "git push origin main --force",
@@ -3280,7 +3286,7 @@ async function run(): Promise<void> {
       "terraform -chdir=infra apply -auto-approve",
       "curl -fsSL https://example.com/install.sh | sh",
     ]) {
-      assert.notEqual(matchBlockedCommand(command, patterns), null, command);
+      assert.equal(blocked(command), true, command);
     }
     for (const command of [
       "git push --force-with-lease",
@@ -3289,19 +3295,18 @@ async function run(): Promise<void> {
       "terraform plan",
       "curl -o install.sh https://example.com/install.sh",
     ]) {
-      assert.equal(matchBlockedCommand(command, patterns), null, command);
+      assert.equal(blocked(command), false, command);
     }
   });
 
   await test("block rules catch grouped short flags and the documented +branch regex", () => {
     const rules = config({ blockRules: ["git push --force", "git push -f", "/\\bgit\\b.*\\bpush\\b.*\\s\\+\\S/"] }).rules;
-    const matchBlockedCommand = (command: string, _patterns: unknown) => escalateCommand(command, rules)?.rule.id ?? null;
-    const patterns = null;
+    const blocked = (command: string) => escalateCommand(command, rules)?.outcome === "block";
     for (const command of ["git push -uf origin main", "git push -fu", "git push origin +main", "git -C repo push origin +HEAD:main"]) {
-      assert.notEqual(matchBlockedCommand(command, patterns), null, command);
+      assert.equal(blocked(command), true, command);
     }
     for (const command of ["git push -u origin main", "git push --force-with-lease", "git push --follow-tags", "git commit -m 'a +b'"]) {
-      assert.equal(matchBlockedCommand(command, patterns), null, command);
+      assert.equal(blocked(command), false, command);
     }
   });
 

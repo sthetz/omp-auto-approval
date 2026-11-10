@@ -266,7 +266,7 @@ allow 规则的 `prefix` 是按原样书写的命令开头（包含引号，不�
 - 某个参数指向工作目录和 `readRoots` 之外的已有路径，或凭据类路径。这包括紧贴在选项后的值和 `name=value` 参数：`cat ~/.ssh/id_ed25519`、`cat .env`、`rg TOKEN --file=../x`、`grep -f/etc/x`、`dd if=../x`；
 - 某个参数会被 shell 展开，最终形式未知：未加引号的通配符或花括号、`~user`，或 `name=value` 中 `=` 或 `:` 之后的 `~`（bash 会展开它，例如 `dd if=~/key`）。`cat secrets*` 需要审批，`find . -name '*.ts'` 不需要。
 
-被程序条目拒绝的命令仍可以在这些检查下由规则放行。为参数是脚本或命令行的程序（`sed`、`awk`、`xargs`、`parallel`；只读的 `sed` 脚本由其条目覆盖），或为 shell、解释器和包装器本身（`bash`、`python`、`node`、`env`、`sudo`、`timeout` 等，会允许任意代码）写的前缀是错误。请写出具体的调用方式，例如 `"python -m pytest"` 或 `"npm test"`。除此之外，规则仍然信任该程序：`npm test` 会运行 `test` 脚本里写的任何内容。
+被程序条目拒绝的命令仍可以在这些检查下由规则放行。为参数是脚本或命令行的程序（`sed`、`awk`、`xargs`、`parallel`；只读的 `sed` 脚本由其条目覆盖），或为 shell、解释器和包装器本身（`bash`、`python`、`node`、`env`、`sudo`、`timeout` 等，会允许任意代码）写的前缀是错误。请写出具体的调用方式，例如 `"python -m pytest"` 或 `"npm test"`。紧贴在单词后的 `*` 表示该单词不完整，因此 `pyth*` 或 `e*` 永远不会放行 shell、解释器或包装器，而 `python -*` 相当于单独的 `python`。除此之外，规则仍然信任该程序：`npm test` 会运行 `test` 脚本里写的任何内容。
 
 ### 额外的可读目录
 

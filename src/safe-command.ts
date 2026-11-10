@@ -4,7 +4,7 @@ import { delimiter, isAbsolute, join } from "node:path";
 import { relativePathWithin, resolvePathForCwd, resolveReadRoots, type ReadRoots } from "./common.js";
 import { boundedGlobMatches, isTreeClean } from "./path-expansion.js";
 import { defaultRules, type CommandRules } from "./command-rules.js";
-import { allowPrefixProblem, SCRIPT_PROGRAMS } from "./allow-prefix.js";
+import { allowPrefixProblem, prefixAllowsProgram } from "./allow-prefix.js";
 import { safeByProgramRule, type RuleContext } from "./program-rules.js";
 import { isSensitivePath } from "./sensitive-paths.js";
 import { recognizeShell, type ShellCommand, type ShellRedirect, type ShellWord } from "./shell-syntax.js";
@@ -184,13 +184,12 @@ function isAllowedByRule(words: ShellWord[], check: Check): boolean {
   // Entries match the command as written, quotes included, without its
   // redirections.
   const written = normalizeCommand(words.map((word) => check.source.slice(word.start, word.end)).join(" "));
-  const entry = check.rules.rules.find((rule) => rule.outcome === "allow" && rule.prefix !== null && matchesAllowEntry(written, rule.prefix));
-  if (entry === undefined) {
-    return false;
-  }
   const [first, ...args] = words;
   const program = programName(first.text);
-  if (first.expands || SCRIPT_PROGRAMS.has(program) || hasUnsafeOption(program, args.map((word) => word.text))) {
+  const entry = check.rules.rules.find((rule) => (
+    rule.outcome === "allow" && rule.prefix !== null && matchesAllowEntry(written, rule.prefix) && prefixAllowsProgram(rule.prefix, program)
+  ));
+  if (entry === undefined || first.expands || hasUnsafeOption(program, args.map((word) => word.text))) {
     return false;
   }
   if (!args.every((word) => isAllowedArgumentSafe(word, check))) {

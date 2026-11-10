@@ -21,6 +21,17 @@ function programName(word: string): string {
 }
 
 /**
+ * The words of a prefix that are whole: a trailing `*` glued to a word
+ * (`pyth*`, `python -*`) leaves that word unfinished, so it can stand for
+ * any word that starts that way.
+ */
+function wholeWords(prefix: string): string[] {
+  const trimmed = prefix.trim();
+  const words = trimmed.replace(/\*$/, "").trim().split(/\s+/).filter(Boolean);
+  return trimmed.endsWith("*") && !/\s\*$/.test(trimmed) ? words.slice(0, -1) : words;
+}
+
+/**
  * Why an allow rule's prefix is refused, or null when it is accepted.
  */
 export function allowPrefixProblem(entry: string): string | null {
@@ -29,9 +40,25 @@ export function allowPrefixProblem(entry: string): string | null {
   if (SCRIPT_PROGRAMS.has(program)) {
     return `${program} runs commands or writes files from its arguments`;
   }
-  if (CODE_RUNNERS.has(program) && words.length < 2) {
+  if (CODE_RUNNERS.has(program) && wholeWords(entry).length < 2) {
     return `allowing bare ${program} would allow any code; list a specific invocation such as "python -m pytest" or "npm test"`;
   }
   return null;
 }
 
+/**
+ * Whether a prefix may let through a command run by `program`. The check
+ * at load time reads only the prefix, and a prefix such as `ba*` or `e*`
+ * matches `bash -c …` or `env rm …`: a shell, interpreter or wrapper must be
+ * named in full, followed by at least one more whole word.
+ */
+export function prefixAllowsProgram(prefix: string, program: string): boolean {
+  if (SCRIPT_PROGRAMS.has(program)) {
+    return false;
+  }
+  if (!CODE_RUNNERS.has(program)) {
+    return true;
+  }
+  const words = wholeWords(prefix);
+  return words.length >= 2 && programName(words[0]) === program;
+}

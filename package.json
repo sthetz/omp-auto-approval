@@ -28,6 +28,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx tests/run-tests.ts && node --import tsx tests/model-selector-width.ts && node --import tsx tests/classifier-headers.ts",
     "smoke:omp": "node --import tsx tests/omp-smoke.ts",
+    "e2e:omp": "node --import tsx tests/omp-e2e/run.ts",
+    "decisions:diff": "node --import tsx tests/decision-diff/run.ts",
     "oracle:corpus": "node --import tsx tests/shell-oracle/extract-corpus.ts",
     "oracle:shell": "node --import tsx tests/shell-oracle/run.ts",
     "oracle:programs": "node --import tsx tests/program-oracle/run.ts",
@@ -43,7 +45,7 @@
   ],
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.11"
   },
   "omp": {
     "extensions": [

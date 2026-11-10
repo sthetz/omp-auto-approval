@@ -197,7 +197,7 @@ A `shell_latch` event records when the bash fast path turned off for a session. 
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md): `npm run check` runs the type check, the tests, and a smoke test against OMP's extension API.
+`npm run check` runs the type check, the tests and a smoke test. [CONTRIBUTING.md](CONTRIBUTING.md#the-development-cycle) describes the full cycle a change goes through: a diff of every decision it changes, oracles that check the shell parser against bash and the program tables against the programs themselves, and end-to-end runs against the real OMP binary.
 
 ## Origins and license
 

@@ -1,4 +1,4 @@
-import type { AutoReviewConfig, ExtensionContextLike, ReviewDecision, ReviewSubject, RouteName } from "./types.js";
+import type { ClearanceConfig, ExtensionContextLike, ClassifierDecision, ReviewSubject, RouteName } from "./types.js";
 import { classifyAction, type ClassifierClient } from "./classifier.js";
 import { writeAudit } from "./logging.js";
 import { planSafeCommand, type SafeCommandPlan } from "./safe-command.js";
@@ -41,7 +41,7 @@ export interface StaticVerdict {
 }
 
 export type ClassifierVerdict =
-  | { evaluator: "classifier"; outcome: "allow" | "deny"; decision: ReviewDecision; cached: boolean }
+  | { evaluator: "classifier"; outcome: "allow" | "deny"; decision: ClassifierDecision; cached: boolean }
   | { evaluator: "classifier"; outcome: "failure"; reason: string; cached: false };
 
 export interface HumanVerdict {
@@ -51,7 +51,7 @@ export interface HumanVerdict {
 
 /** All session inputs to a decision. Evaluator verdicts are added by apply(). */
 export interface DecisionState {
-  config: AutoReviewConfig;
+  config: ClearanceConfig;
   cwd: string;
   tools: unknown[];
   hasUI: boolean;
@@ -97,7 +97,7 @@ interface ApplyOptions {
   started?: number;
 }
 
-function classifierDenyReason(decision: ReviewDecision): string {
+function classifierDenyReason(decision: ClassifierDecision): string {
   return [
     "The approval classifier rejected this action.",
     decision.rationale ? `Reason: ${decision.rationale}` : null,
@@ -340,7 +340,7 @@ export function decide(call: CanonicalToolCall, state: DecisionState): Decision 
 export function snapshotDecisionState(
   call: CanonicalToolCall,
   ctx: ExtensionContextLike,
-  config: AutoReviewConfig,
+  config: ClearanceConfig,
   store: SessionApprovalStore,
   options: DecisionOptions = {},
 ): DecisionState {
@@ -537,7 +537,7 @@ export function sessionKey(ctx: ExtensionContextLike): string {
 export async function runDecision(
   call: CanonicalToolCall,
   ctx: ExtensionContextLike,
-  config: AutoReviewConfig,
+  config: ClearanceConfig,
   store: SessionApprovalStore,
   options: DecisionOptions = {},
 ): Promise<Decision> {

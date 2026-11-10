@@ -8,7 +8,7 @@ import { allowPrefixProblem, prefixAllowsProgram } from "./allow-prefix.js";
 import { safeByProgramRule, type RuleContext } from "./program-rules.js";
 import { isSensitivePath } from "./sensitive-paths.js";
 import { recognizeShell, type ShellCommand, type ShellRedirect, type ShellWord } from "./shell-syntax.js";
-import type { AutoReviewConfig } from "./types.js";
+import type { ClearanceConfig } from "./types.js";
 
 // Allow rules are prefixes, so allowing a program would otherwise allow
 // every option it has. Options that execute other programs or
@@ -276,7 +276,7 @@ function directoryWithin(text: string, place: Place): string | null {
 /** A command being planned, and the rewrites its plan makes so far. */
 interface Check {
   source: string;
-  config: AutoReviewConfig;
+  config: ClearanceConfig;
   place: Place;
   searchPath: string;
   rules: CommandRules;
@@ -426,7 +426,7 @@ export interface SafeCommandPlan {
  */
 export function planSafeCommand(
   command: string,
-  config: AutoReviewConfig,
+  config: ClearanceConfig,
   options: { workspace: string; cwd?: string; searchPath?: string; rules?: CommandRules },
 ): SafeCommandPlan | null {
   const rules = options.rules ?? defaultRules();

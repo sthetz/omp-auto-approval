@@ -1,9 +1,9 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { logPath } from "./extension-config.js";
-import type { AuditEntry, AutoReviewConfig, ShellLatchEntry } from "./types.js";
+import type { AuditEntry, ClearanceConfig, ShellLatchEntry } from "./types.js";
 
-export async function writeAudit(config: AutoReviewConfig, entry: AuditEntry | ShellLatchEntry): Promise<void> {
+export async function writeAudit(config: ClearanceConfig, entry: AuditEntry | ShellLatchEntry): Promise<void> {
   if (!config.audit) {
     return;
   }

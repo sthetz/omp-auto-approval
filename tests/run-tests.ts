@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathS
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import ompClearanceExtension, { SYSTEM_PROMPT_NOTE } from "../index.js";
-import { applyDecisionPolicy, classifyAction, parseReviewDecision } from "../src/classifier.js";
+import { applyDecisionPolicy, classifyAction, parseClassifierDecision } from "../src/classifier.js";
 import { compileCommandPattern } from "../src/command-patterns.js";
 import { isWorkspaceWriteFastPath, resolveReadRoots } from "../src/tool-routing.js";
 import { buildProjectedContext } from "../src/context-projection.js";
@@ -21,7 +21,7 @@ import { recognizeShell } from "../src/shell-syntax.js";
 import { shellHook } from "../src/shell-hooks.js";
 import { compareRun, pipelinesRun, type ParsedScript } from "./shell-oracle/oracle.js";
 import { SessionApprovalStore } from "../src/session-approval-store.js";
-import type { AutoReviewConfig, ExtensionContextLike } from "../src/types.js";
+import type { ClearanceConfig, ExtensionContextLike } from "../src/types.js";
 
 // Fast-pathed commands are pinned to a program found on OMP's startup PATH.
 // Stub programs make the tests independent of what this machine has
@@ -63,7 +63,7 @@ function test(name: string, fn: () => void | Promise<void>): Promise<void> {
 
 // A config, and the command rules to use with it: the built-in ones, plus
 // allow rules for `allowRules` prefixes and block rules for `blockRules` patterns.
-type TestConfig = AutoReviewConfig & { rules: CommandRules };
+type TestConfig = ClearanceConfig & { rules: CommandRules };
 const RULES_DIR = mkdtempSync(join(tmpdir(), "omp-clearance-test-rules-"));
 process.on("exit", () => rmSync(RULES_DIR, { recursive: true, force: true }));
 let rulesFiles = 0;
@@ -86,7 +86,7 @@ function testRules(allowRules: string[] = [], blockRules: string[] = []): Comman
   return rules;
 }
 
-function config(overrides: Partial<AutoReviewConfig> & { allowRules?: string[]; blockRules?: string[] } = {}): TestConfig {
+function config(overrides: Partial<ClearanceConfig> & { allowRules?: string[]; blockRules?: string[] } = {}): TestConfig {
   const { allowRules, blockRules, ...rest } = overrides;
   return { ...DEFAULT_CONFIG, enabled: true, audit: false, ...rest, rules: testRules(allowRules, blockRules) };
 }
@@ -159,13 +159,13 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("parseReviewDecision supports strict and wrapped JSON", () => {
-    assert.deepEqual(parseReviewDecision('{"outcome":"allow"}'), { outcome: "allow" });
-    assert.deepEqual(parseReviewDecision('text {"outcome":"deny","rationale":"bad"} tail'), {
+  await test("parseClassifierDecision supports strict and wrapped JSON", () => {
+    assert.deepEqual(parseClassifierDecision('{"outcome":"allow"}'), { outcome: "allow" });
+    assert.deepEqual(parseClassifierDecision('text {"outcome":"deny","rationale":"bad"} tail'), {
       outcome: "deny",
       rationale: "bad",
     });
-    assert.throws(() => parseReviewDecision("{}"));
+    assert.throws(() => parseClassifierDecision("{}"));
   });
 
   await test("safe command fast path allows only narrow built-ins", () => {
@@ -1306,7 +1306,7 @@ async function run(): Promise<void> {
           return { content: [{ type: "text", text: '{"outcome":"deny","rationale":"needs review"}' }] };
         },
       };
-      const run = async (command: string, overrides: Partial<AutoReviewConfig> = {}, extra: Partial<ExtensionContextLike> = {}, store = new SessionApprovalStore(), with_ = rules) => {
+      const run = async (command: string, overrides: Partial<ClearanceConfig> = {}, extra: Partial<ExtensionContextLike> = {}, store = new SessionApprovalStore(), with_ = rules) => {
         const event = { toolName: "bash", input: { command } as Record<string, unknown> };
         return evaluateToolCall(event, ctx({ cwd: workspace, ...extra }), config({ mode: "auto", ...overrides }), store, { ...classifier, rules: with_ });
       };

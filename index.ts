@@ -1,4 +1,4 @@
-import type { AutoReviewConfig, ExtensionContextLike } from "./src/types.js";
+import type { ClearanceConfig, ExtensionContextLike } from "./src/types.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, saveConfig } from "./src/extension-config.js";
 import { defaultRulesPath, loadCommandRules, userRulesPath, type CommandRules } from "./src/command-rules.js";
 import { decide, sessionKey, snapshotDecisionState, type Decision } from "./src/decision.js";
@@ -78,14 +78,14 @@ function parseExplainInput(toolName: string, rest: string): { input: unknown } |
   return { input: rest ? { path: rest } : {} };
 }
 
-function statusText(config: AutoReviewConfig): string | undefined {
+function statusText(config: ClearanceConfig): string | undefined {
   if (!config.enabled) {
     return undefined;
   }
   return `clearance:${config.mode}`;
 }
 
-function stateText(config: AutoReviewConfig): "off" | "fallback" | "auto" {
+function stateText(config: ClearanceConfig): "off" | "fallback" | "auto" {
   return config.enabled ? config.mode : "off";
 }
 
@@ -108,7 +108,7 @@ function notify(ctx: ExtensionContextLike, message: string, type: "info" | "warn
   ctx.ui?.notify?.(message, type);
 }
 
-function setStatus(ctx: ExtensionContextLike, config: AutoReviewConfig): void {
+function setStatus(ctx: ExtensionContextLike, config: ClearanceConfig): void {
   ctx.ui?.setStatus?.(STATUS_KEY, statusText(config));
 }
 
@@ -122,7 +122,7 @@ function parseCommandRest(args: string): string {
   return firstSpace < 0 ? "" : trimmed.slice(firstSpace).trim();
 }
 
-function classifierModelText(config: AutoReviewConfig): string {
+function classifierModelText(config: ClearanceConfig): string {
   return config.classifierModel ?? "current";
 }
 
@@ -137,7 +137,7 @@ const COMMAND_ARGUMENTS = [
   { value: "explain", label: "explain", description: "Show how a tool call would be routed: explain <tool> <path | JSON | command>" },
 ];
 
-function getAutoReviewArgumentCompletions(argumentPrefix: string): Array<{ value: string; label: string; description: string }> | null {
+function getClearanceArgumentCompletions(argumentPrefix: string): Array<{ value: string; label: string; description: string }> | null {
   const normalized = argumentPrefix.trimStart().toLowerCase();
   const filtered = COMMAND_ARGUMENTS.filter((item) => (
     item.value.startsWith(normalized) || item.label.includes(normalized)
@@ -218,7 +218,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
     ].join("\n"));
   }
 
-  function persist(next: AutoReviewConfig, ctx: ExtensionContextLike): void {
+  function persist(next: ClearanceConfig, ctx: ExtensionContextLike): void {
     const saved = saveConfig(next);
     if (!saved.success) {
       notify(ctx, `Failed to save omp-clearance config: ${saved.error ?? "unknown error"}`, "error");
@@ -298,7 +298,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
 
   omp.registerCommand?.("clearance", {
     description: "args: status | off | fallback | auto | model | rules | explain",
-    getArgumentCompletions: (prefix) => getAutoReviewArgumentCompletions(typeof prefix === "string" ? prefix : ""),
+    getArgumentCompletions: (prefix) => getClearanceArgumentCompletions(typeof prefix === "string" ? prefix : ""),
     handler: async (args, context) => {
       const ctx = canonicalContext(context);
       if (!ctx) {

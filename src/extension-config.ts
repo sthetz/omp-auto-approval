@@ -1,12 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AutoReviewConfig, AutoReviewMode } from "./types.js";
+import type { ClearanceConfig, ClearanceMode } from "./types.js";
 import { toRecord } from "./common.js";
 
 export const EXTENSION_ID = "omp-clearance";
 
-export const DEFAULT_CONFIG: AutoReviewConfig = {
+export const DEFAULT_CONFIG: ClearanceConfig = {
   enabled: false,
   mode: "fallback",
   classifierModel: null,
@@ -26,7 +26,7 @@ export const DEFAULT_CONFIG: AutoReviewConfig = {
 const OMP_DEFAULT_HANDLER_TIMEOUT_SECONDS = 30;
 
 // Always written, so the file shows the current state at a glance.
-const ALWAYS_SAVED_KEYS: Array<keyof AutoReviewConfig> = ["enabled", "mode"];
+const ALWAYS_SAVED_KEYS: Array<keyof ClearanceConfig> = ["enabled", "mode"];
 
 export function extensionRoot(moduleUrl = import.meta.url): string {
   return join(dirname(fileURLToPath(moduleUrl)), "..");
@@ -60,11 +60,11 @@ function positiveNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-function normalizeMode(value: unknown): AutoReviewMode {
+function normalizeMode(value: unknown): ClearanceMode {
   return value === "auto" ? "auto" : "fallback";
 }
 
-export function normalizeConfig(raw: unknown): AutoReviewConfig {
+export function normalizeConfig(raw: unknown): ClearanceConfig {
   const record = toRecord(raw);
   return {
     enabled: record.enabled === true,
@@ -97,10 +97,10 @@ export function unknownConfigKeys(raw: unknown): string[] {
  * The config as written to disk: only values that differ from the defaults,
  * plus ALWAYS_SAVED_KEYS, so later default changes reach existing installs.
  */
-export function serializeConfig(config: AutoReviewConfig): string {
+export function serializeConfig(config: ClearanceConfig): string {
   const normalized = normalizeConfig(config);
-  const saved: Partial<Record<keyof AutoReviewConfig, unknown>> = {};
-  for (const key of Object.keys(DEFAULT_CONFIG) as Array<keyof AutoReviewConfig>) {
+  const saved: Partial<Record<keyof ClearanceConfig, unknown>> = {};
+  for (const key of Object.keys(DEFAULT_CONFIG) as Array<keyof ClearanceConfig>) {
     if (ALWAYS_SAVED_KEYS.includes(key) || JSON.stringify(normalized[key]) !== JSON.stringify(DEFAULT_CONFIG[key])) {
       saved[key] = normalized[key];
     }
@@ -108,7 +108,7 @@ export function serializeConfig(config: AutoReviewConfig): string {
   return `${JSON.stringify(saved, null, 2)}\n`;
 }
 
-function configNotices(path: string, raw: unknown, config: AutoReviewConfig): string[] {
+function configNotices(path: string, raw: unknown, config: ClearanceConfig): string[] {
   const notices: string[] = [];
   const unknownKeys = unknownConfigKeys(raw);
   if (unknownKeys.length > 0) {
@@ -129,7 +129,7 @@ function configNotices(path: string, raw: unknown, config: AutoReviewConfig): st
   return notices;
 }
 
-export function loadConfig(path = configPath()): { config: AutoReviewConfig; warning?: string; notice?: string; created: boolean } {
+export function loadConfig(path = configPath()): { config: ClearanceConfig; warning?: string; notice?: string; created: boolean } {
   let created = false;
   if (!existsSync(path)) {
     mkdirSync(dirname(path), { recursive: true });
@@ -156,7 +156,7 @@ export function loadConfig(path = configPath()): { config: AutoReviewConfig; war
   }
 }
 
-export function saveConfig(config: AutoReviewConfig, path = configPath()): { success: boolean; error?: string } {
+export function saveConfig(config: ClearanceConfig, path = configPath()): { success: boolean; error?: string } {
   const tmpPath = `${path}.tmp`;
   try {
     mkdirSync(dirname(path), { recursive: true });

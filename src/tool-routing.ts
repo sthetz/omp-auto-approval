@@ -96,8 +96,8 @@ export function isInteractiveUiOnlyTool(toolName: string, input: unknown, hasUI:
 }
 
 /**
- * Whether a tool name can be trusted to mean the host's own tool. OMP and Pi
- * report `sourceInfo.source` ("builtin", "mcp", "sdk", "extension") from
+ * Whether a tool name can be trusted to mean the host's own tool. OMP
+ * reports `sourceInfo.source` ("builtin", "mcp", "sdk", "extension") from
  * getAllTools(); only "builtin" qualifies. Hosts that expose no tool list, or
  * tool entries without source info, fall back to trusting the name.
  */

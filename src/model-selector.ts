@@ -1,4 +1,4 @@
-import type { AutoReviewConfig, ExtensionContextLike } from "./types.js";
+import type { ClearanceConfig, ExtensionContextLike } from "./types.js";
 
 const ANSI_SGR_PATTERN = /(\x1b\[[0-9;]*m)/g;
 
@@ -224,7 +224,7 @@ function normalizeModel(model: unknown): ModelItem | null {
   };
 }
 
-function selectedModelRef(config: AutoReviewConfig, currentModel: unknown): string | null {
+function selectedModelRef(config: ClearanceConfig, currentModel: unknown): string | null {
   return config.classifierModel ?? modelLabel(currentModel);
 }
 
@@ -244,7 +244,7 @@ function keyMatches(keybindings: KeybindingsLike, data: string, key: string, fal
   return keybindings.matches?.(data, key) ?? fallback.includes(data);
 }
 
-async function loadModelItems(ctx: ExtensionContextLike, config: AutoReviewConfig): Promise<ModelItem[]> {
+async function loadModelItems(ctx: ExtensionContextLike, config: ClearanceConfig): Promise<ModelItem[]> {
   await Promise.resolve(ctx.modelRegistry?.refresh?.());
   const available = await Promise.resolve(ctx.modelRegistry?.getAvailable?.() ?? []);
   const currentRef = selectedModelRef(config, ctx.model);
@@ -260,7 +260,7 @@ function createSelectorComponent(
   tui: TuiLike,
   items: ModelItem[],
   ctx: ExtensionContextLike,
-  config: AutoReviewConfig,
+  config: ClearanceConfig,
   theme: ThemeLike,
   keybindings: KeybindingsLike,
   textUtils: TuiTextUtils,
@@ -383,7 +383,7 @@ function createSelectorComponent(
 
 async function selectClassifierModelWithTextUtils(
   ctx: ExtensionContextLike,
-  config: AutoReviewConfig,
+  config: ClearanceConfig,
   textUtils: TuiTextUtils,
 ): Promise<string | null | undefined> {
   const items = await loadModelItems(ctx, config);
@@ -395,7 +395,7 @@ async function selectClassifierModelWithTextUtils(
   ));
 }
 
-export async function selectClassifierModel(ctx: ExtensionContextLike, config: AutoReviewConfig): Promise<string | null | undefined> {
+export async function selectClassifierModel(ctx: ExtensionContextLike, config: ClearanceConfig): Promise<string | null | undefined> {
   if (ctx.mode !== undefined && ctx.mode !== "tui") {
     return selectClassifierModelFallback(ctx, config);
   }
@@ -408,7 +408,7 @@ export async function selectClassifierModel(ctx: ExtensionContextLike, config: A
   return selectClassifierModelFallback(ctx, config);
 }
 
-async function selectClassifierModelFallback(ctx: ExtensionContextLike, config: AutoReviewConfig): Promise<string | null | undefined> {
+async function selectClassifierModelFallback(ctx: ExtensionContextLike, config: ClearanceConfig): Promise<string | null | undefined> {
   if (!ctx.ui?.select) {
     ctx.ui?.notify?.(`approval classifier model: ${config.classifierModel ?? "current"}`);
     return undefined;

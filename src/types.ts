@@ -1,4 +1,4 @@
-export type AutoReviewMode = "fallback" | "auto";
+export type ClearanceMode = "fallback" | "auto";
 
 export interface AuthResolution {
   ok: boolean;
@@ -8,9 +8,9 @@ export interface AuthResolution {
   error?: string;
 }
 
-export interface AutoReviewConfig {
+export interface ClearanceConfig {
   enabled: boolean;
-  mode: AutoReviewMode;
+  mode: ClearanceMode;
   classifierModel: string | null;
   approvalTimeoutSeconds: number;
   classifierTimeoutSeconds: number;
@@ -23,7 +23,7 @@ export interface AutoReviewConfig {
   audit: boolean;
 }
 
-export interface ReviewDecision {
+export interface ClassifierDecision {
   risk_level?: "low" | "medium" | "high" | "critical";
   user_authorization?: "unknown" | "low" | "medium" | "high";
   outcome: "allow" | "deny";
@@ -49,7 +49,7 @@ export interface ExtensionContextLike {
     notify?: (message: string, type?: "info" | "warning" | "error") => void;
     setStatus?: (key: string, value: string | undefined) => void;
   };
-  // Ends the current agent turn (OMP and Pi extension contexts).
+  // Ends the current OMP agent turn.
   abort?: () => void;
   model?: unknown;
   modelRegistry?: {
@@ -102,12 +102,12 @@ export type RouteName =
 export interface AuditEntry {
   event: string;
   route: RouteName;
-  mode: AutoReviewMode;
+  mode: ClearanceMode;
   toolName: string;
   actionSummary: string;
   actionHash: string;
   outcome: "allow" | "deny";
-  classifierDecision?: ReviewDecision;
+  classifierDecision?: ClassifierDecision;
   humanDecision?: string;
   reason?: string;
   // The command that ran instead, for a bash command pinned to its program's path.
@@ -125,7 +125,7 @@ export interface AuditEntry {
 /** An approved bash command turned the session's bash fast path off (see shellHook). */
 export interface ShellLatchEntry {
   event: "shell_latch";
-  mode: AutoReviewMode;
+  mode: ClearanceMode;
   toolName: string;
   actionSummary: string;
   actionHash: string;

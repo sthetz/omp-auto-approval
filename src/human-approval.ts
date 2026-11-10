@@ -1,4 +1,4 @@
-import type { ExtensionContextLike, ReviewDecision, ReviewSubject } from "./types.js";
+import type { ExtensionContextLike, ClassifierDecision, ReviewSubject } from "./types.js";
 import { RULES_PROBLEM_ID, type CommandRule } from "./command-rules.js";
 
 export type HumanDecision =
@@ -11,7 +11,7 @@ const REJECT = "Reject";
 const REJECT_WITH_REASON = "Reject With Reason";
 const REJECT_AND_STOP = "Reject and Stop the Turn";
 
-function formatDecision(decision?: ReviewDecision): string {
+function formatDecision(decision?: ClassifierDecision): string {
   if (!decision) {
     return "";
   }
@@ -27,7 +27,7 @@ export async function requestHumanApproval(
   subject: ReviewSubject,
   options: {
     title?: string;
-    classifierDecision?: ReviewDecision;
+    classifierDecision?: ClassifierDecision;
     failureReason?: string;
     // The command rule that sent this action here.
     rule?: CommandRule;

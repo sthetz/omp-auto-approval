@@ -1,4 +1,4 @@
-import type { AuthResolution, AutoReviewConfig, ExtensionContextLike } from "./types.js";
+import type { AuthResolution, ClearanceConfig, ExtensionContextLike } from "./types.js";
 import type { ClassifierClient } from "./classifier.js";
 import type { CommandRules } from "./command-rules.js";
 import { getString, toRecord } from "./common.js";
@@ -171,7 +171,7 @@ export function ompToolCallResponse(decision: Decision): ToolCallDecision {
 export async function evaluateToolCall(
   event: unknown,
   ctx: ExtensionContextLike,
-  config: AutoReviewConfig,
+  config: ClearanceConfig,
   store: SessionApprovalStore,
   options: {
     tools?: unknown[];

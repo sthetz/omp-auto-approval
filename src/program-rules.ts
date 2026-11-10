@@ -648,10 +648,10 @@ function isSafeByEntry(entry: ProgramEntry, words: ShellWord[], context: RuleCon
   if (!OPERAND_CHECK_FUNCTIONS[rule.check](command, context, rule, args)) {
     return false;
   }
-  // Whatever the entry says each word is, none may name an unreadable file.
-  // `"options": "any"` entries (git) keep every operand inside the workspace
-  // instead, as git-operands does.
-  return entry.anyOptions || entry.opensNoFiles || args.every((word) => word.expands || context.namesNoUnreadableFile(word.text));
+  // Whatever the entry says each word is, none may name an unreadable file:
+  // with `"options": "any"` (git), an option's glued value is never checked
+  // otherwise (`git diff -O/path` reads an order file).
+  return entry.opensNoFiles || args.every((word) => word.expands || context.namesNoUnreadableFile(word.text));
 }
 
 /**

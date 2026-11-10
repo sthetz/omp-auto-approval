@@ -654,6 +654,21 @@ async function run(): Promise<void> {
     }
   });
 
+  await test("a git option naming a file outside the workspace is reviewed", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-git-files-"));
+    writeFileSync(join(workspace, "order.txt"), "*.ts\n");
+    try {
+      for (const command of ["git diff -O/etc/passwd", "git log --format=x=/etc/passwd", "git -C . show -O/etc/passwd HEAD"]) {
+        assert.equal(isSafeReadOnlyCommand(command, config(), workspace), false, command);
+      }
+      for (const command of ["git diff -Oorder.txt", "git log --format=%H", "git diff -O order.txt"]) {
+        assert.equal(isSafeReadOnlyCommand(command, config(), workspace), true, command);
+      }
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   await test("long options named like Object.prototype members are unknown options", () => {
     const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-proto-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");

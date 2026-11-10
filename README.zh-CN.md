@@ -180,6 +180,7 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
   - 使用 `--output`、`--ext-diff`、`--no-index`，或 `grep -O`/`--open-files-in-pager`；
   - 指定工作目录之外的路径（即使不加 `--no-index`，git 也会比较工作树之外的文件，因此 `git diff /etc/passwd /dev/null` 会输出该文件）；
   - 指定凭据类路径，包括 `git show HEAD:.env` 这类 `rev:path` 对象；
+  - 某个选项指向工作目录和 `readRoots` 之外的已有文件，例如紧贴在 `-O` 后的排序文件（`git diff -O/path/order`）；
   - 包含未加引号的通配符（`git diff -- secrets*`）。
 
   OMP 在每个会话中用同一个持久 shell 运行所有 bash 调用，因此之前的调用可能留下别名、函数，或把工作区目录加入 PATH，让 `git status` 变成别的东西。因此走 fast path 的命令会被改写为按绝对路径运行其中的每个程序：在 OMP 启动时的 PATH 中查找，并跳过工作区内的目录，例如 `git status` 以 `/run/current-system/sw/bin/git status` 运行。开头的 `~` 也会被写成 OMP 的主目录，因为 bash 从 shell 的 `HOME` 展开它，而之前的调用可以修改 `HOME`。如果在那里找不到某个程序，命令需要审批。改写后的命令会出现在对话记录中，并以 `pinnedCommand` 写入审计日志；如果开头的 `cd` 改变了目录，还会写入 `pinnedCwd`。用 `bash -lc` 包装的命令需要审批，因为包装层自己的 `bash` 会在那个 PATH 上查找。`cwd` 位于工作目录之外的 bash 调用需要审批；位于其内的调用会从该目录检查路径。之前调用导出的变量（`GIT_EXTERNAL_DIFF`、`LD_PRELOAD` 等）仍会传给固定路径的程序，但设置它们需要一次经过审批的调用。

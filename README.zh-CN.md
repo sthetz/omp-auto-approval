@@ -242,7 +242,7 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 - `ask`：由你决定，不经过分类器。在 `auto` 模式下或没有交互界面时，命令会被拒绝。选择“Allow Always This Exact Action”后，本会话内完全相同的命令不再询问。
 - `block`：在任何模式下直接拒绝，既不询问分类器，也不询问你。`deny` 只是给分类器的指导，而 block 无法被说服。
 
-在命令匹配到的规则中，最严格的一项生效：block，其次 ask，再次 review。任何一项都优先于程序条目、allow 规则和 `reviewExemptTools`，因此宽泛的允许永远不会掩盖例外。ask 和 block 的拒绝计入 `maxConsecutiveDenials`。`why` 会显示在拒绝原因和审批提示中，并作为你的理由提供给分类器。`id` 必须唯一；`disable` 可按 id 移除内置规则（目前还没有）。
+在命令匹配到的规则中，最严格的一项生效：block，其次 ask，再次 review。任何一项都优先于程序条目、allow 规则和 `reviewExemptTools`，因此宽泛的允许永远不会掩盖例外。ask 和 block 的拒绝计入 `maxConsecutiveDenials`。`why` 会显示在拒绝原因和审批提示中，并作为你的理由提供给分类器。`id` 必须唯一；`disable` 可按 id 移除内置规则（见[内置规则](#内置规则)）。
 
 `/auto-approval rules` 列出正在使用的程序和规则及其来源文件；`/auto-approval rules <程序 | 规则 id>` 显示其中一项。`explain` 会给出起决定作用的规则，审计日志将其记录为 `ruleId` 和 `ruleSource`（对于走快速通道的命令，放行它的条目记录为 `ruleIds`）。
 
@@ -256,7 +256,31 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 
 在分支前加 `+`（`git push origin +main`）同样会强制推送，单词列表无法表达这种形式，上例中的正则表达式可以捕获它。程序按名称匹配，因此请写 `git` 而不是 `/usr/bin/git`。
 
-匹配倾向于找到命令：这些单词作为其他命令的参数出现时（`echo git push --force`）、在循环、`$(…)` 和 `sh -c '…'` 中（快速通道从不读取这些内容）也会匹配；引号中的 `;` 或 `|`（`git -c 'x=a;b' push --force`）以及反斜杠换行也无法隐藏命令。由变量或命令替换指定的程序（`$k delete --all`、`$(command -v kubectl) delete --all`）可能是任何程序，因此在多于一个单词的模式中，只要其余部分匹配就算匹配；`rm` 这类单个单词的模式则不会这样匹配，否则任何含变量的命令都会匹配。正则模式按原文匹配。规则只是尽力而为的绊线，而不是沙箱：别名、函数或脚本仍然可以绕过规则，此时它照常交给分类器审批。
+单词按 bash 的方式读取：引号会把单词保持在一起，因此引号中的 `;` 或 `|`（`git -c 'x=a;b' push --force`）以及反斜杠换行都无法隐藏命令，而提到 `git push --force` 的提交信息只是一个单词，不是一次推送。循环、`$(…)` 以及交给 shell 执行的脚本（`bash -lc '…'`、`eval '…'`、输入给 `bash` 的 heredoc）中的命令也会被读取。多单词模式中的程序可以出现在命令的任何位置（`sudo`、`docker exec c`、`ssh host` 之后）；`sudo` 或 `mkfs*` 这类单个单词的模式只在程序运行的位置匹配，因此 `which sudo` 不会匹配。
+
+只有忽略引号时才匹配的模式（`ssh host "git reset --hard"`，但也包括 `echo "git reset --hard"`）无法区分命令和普通文字，因此该命令会被审查，而不是被阻止或询问。正则表达式按原文读取整条命令并保留其结果，因此内置的 block 规则不使用正则。
+
+由变量或命令替换指定的程序（`$k delete --all`、`$(command -v kubectl) delete --all`）可能是任何程序：在程序运行的位置，它会匹配多单词模式，只要其余单词随后出现。同一条命令中设为纯文本的变量会按该文本读取，因此 `X=helm; $X delete --all` 不会匹配 `kubectl delete --all`。规则只是尽力而为的绊线，而不是沙箱：别名、函数或脚本仍然可以绕过规则，此时它照常交给分类器审批。
+
+#### 内置规则
+
+[`config/default-rules.jsonc`](config/default-rules.jsonc) 自带一些规则，针对在任何终端工作中都很少适合由代理独自运行的命令：
+
+| id | 结果 | 匹配 |
+| --- | --- | --- |
+| `force-push` | block | `git push --force`、`-f`、`+branch` |
+| `rm-root-or-home` | block | 对 `/`、`/*`、`~` 或 `$HOME` 的 `rm -r`；`rm --no-preserve-root` |
+| `format-disk` | block | `mkfs*`、`wipefs`、`dd of=/dev/sd*` 及其他磁盘设备 |
+| `pipe-to-shell` | ask | 把 `curl …` 或 `wget …` 管道给 shell |
+| `git-discard` | ask | `git reset --hard`、`git clean -f`、`git checkout .`、`git restore .`、`git stash drop`/`clear` |
+| `git-overwrite-remote` | ask | `git push --force-with-lease`、`--delete`、`:branch`；`git branch -D` |
+| `privilege` | ask | `sudo`、`doas`、`su`、`pkexec` |
+| `publish` | ask | `npm`/`pnpm`/`yarn`/`bun publish`、`cargo publish`、`twine upload`、`poetry`/`uv publish`、`gem push`、`docker`/`podman push`、`gh release create` 等 |
+| `power` | ask | `shutdown`、`reboot`、`poweroff`、`halt`、`systemctl reboot` 等 |
+| `database-drop` | ask | 通过 `psql`、`mysql`、`sqlite3` 等 `DROP` 或 `TRUNCATE` 数据库、schema 或表 |
+| `infrastructure` | review | `terraform`/`tofu apply`/`destroy`、`pulumi up`/`destroy`、`kubectl delete`/`drain`、`helm uninstall` |
+
+`infrastructure` 采用审查而不是询问：基础设施工作中经常运行这些命令，分类器可以根据对话（以及规则给出的理由）作出判断。若要修改内置规则，请禁用它并添加自己的规则：`"disable": ["infrastructure"], "rules": [{ "id": "infrastructure-ask", "match": "kubectl delete|drain", "outcome": "ask" }]`。
 
 ### allow 规则
 

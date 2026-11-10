@@ -214,7 +214,7 @@ export async function classifyAction(
   config: AutoReviewConfig,
   subject: ReviewSubject,
   client?: ClassifierClient,
-  context: { agentMessage?: string; rule?: CommandRule } = {},
+  context: { agentMessage?: string; rule?: CommandRule; ruleTextOnly?: boolean } = {},
 ): Promise<ReviewDecision> {
   let completeSimple = client;
   let codingAgentPackage: string | undefined;

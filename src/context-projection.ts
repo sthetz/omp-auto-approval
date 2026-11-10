@@ -229,7 +229,7 @@ function agentText(entry: unknown): string | null {
 export function buildProjectedContext(
   ctx: ExtensionContextLike,
   subject: ReviewSubject,
-  options: { agentMessage?: string; rule?: CommandRule } = {},
+  options: { agentMessage?: string; rule?: CommandRule; ruleTextOnly?: boolean } = {},
 ): string {
   const allEntries = ctx.sessionManager?.getBranch?.() ?? ctx.sessionManager?.getEntries?.() ?? [];
   const entries = allEntries.slice(-RETAINED_ENTRIES);
@@ -261,7 +261,9 @@ export function buildProjectedContext(
     "",
     ...(options.rule
       ? [
-        `The user's command rules send this action to review (rule "${options.rule.id}", from the user's own configuration).${options.rule.why ? ` The user's reason: ${truncateInline(options.rule.why, MAX_EARLIER_USER_CHARS)}` : ""}`,
+        options.ruleTextOnly
+          ? `The command rule "${options.rule.id}" (${options.rule.outcome}) matched only text in the command, such as a quoted string, which may or may not be run (\`ssh host "…"\` runs it, a commit message does not); decide whether the command does what the rule is about.${options.rule.why ? ` The rule's reason: ${truncateInline(options.rule.why, MAX_EARLIER_USER_CHARS)}` : ""}`
+          : `The user's command rules send this action to review (rule "${options.rule.id}", from ${options.rule.source === "default" ? "the built-in rules" : "the user's own configuration"}).${options.rule.why ? ` The rule's reason: ${truncateInline(options.rule.why, MAX_EARLIER_USER_CHARS)}` : ""}`,
         "",
       ]
       : []),

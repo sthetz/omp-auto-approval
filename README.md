@@ -246,7 +246,7 @@ Program entries say what may skip review by reading options and operands. A `rul
 - `ask`: you decide, without the classifier. In `auto` mode, or without an interactive UI, the command is denied. An "Allow Always This Exact Action" answer stands for that exact command for the rest of the session.
 - `block`: denied in every mode without asking the classifier or you. Unlike `deny`, which is only guidance for the classifier, a block cannot be argued with.
 
-Among the rules a command matches, the most restrictive decides: block, then ask, then review. Any of them overrides program entries, allow rules and `reviewExemptTools`, so a broad allow can never hide an exception. Ask and block denials count toward `maxConsecutiveDenials`. `why` is shown in the denial, in the approval prompt, and to the classifier as your reason. `id`s are unique; `disable` removes a built-in rule by its id (there are none yet).
+Among the rules a command matches, the most restrictive decides: block, then ask, then review. Any of them overrides program entries, allow rules and `reviewExemptTools`, so a broad allow can never hide an exception. Ask and block denials count toward `maxConsecutiveDenials`. `why` is shown in the denial, in the approval prompt, and to the classifier as your reason. `id`s are unique; `disable` removes a built-in rule by its id (see [Built-in rules](#built-in-rules)).
 
 `/auto-approval rules` lists the programs and rules in use and the file each comes from; `/auto-approval rules <program | rule id>` shows one. `explain` names the rule that decided, and the audit log records it as `ruleId` and `ruleSource` (and, for a fast-pathed command, the entries that let it through as `ruleIds`).
 
@@ -260,7 +260,31 @@ Among the rules a command matches, the most restrictive decides: block, then ask
 
 Git also forces a push when a branch is prefixed with `+` (`git push origin +main`), which no word list can express; the regex above catches it. The program is matched by name, so write `git`, not `/usr/bin/git`.
 
-Matching errs toward finding the command: the words also match when they are arguments to another command (`echo git push --force`), inside loops, `$(…)` and `sh -c '…'`, which the fast path never reads, and quotes around `;` or `|` (`git -c 'x=a;b' push --force`) or a backslash-newline do not hide a command. A program named by a variable or a substitution (`$k delete --all`, `$(command -v kubectl) delete --all`) may be any program, so in a pattern of more than one word it matches whatever the rest of the pattern matches; a one-word pattern such as `rm` does not, or every command with a variable in it would match. Regex patterns read the text as written. Rules are a best-effort tripwire, not a sandbox: an alias, a function or a script still gets past them, and is then reviewed by the classifier as usual.
+Words are read as bash reads them: quotes keep a word together, so `;` or `|` inside quotes (`git -c 'x=a;b' push --force`) or a backslash-newline does not hide a command, and a commit message that mentions `git push --force` is one word, not a push. Commands inside loops, `$(…)`, and scripts handed to a shell (`bash -lc '…'`, `eval '…'`, a heredoc fed to `bash`) are read too. The program of a pattern with more words may appear anywhere in a command (after `sudo`, `docker exec c`, `ssh host`); a one-word pattern such as `sudo` or `mkfs*` matches only where a program runs, so `which sudo` does not match it.
+
+A pattern that matches only when quotes are ignored (`ssh host "git reset --hard"`, but also `echo "git reset --hard"`) cannot tell a command from words, so the command is reviewed instead of blocked or asked about. Regexes read the whole text as written and keep their outcome, so built-in block rules avoid them.
+
+A program named by a variable or a substitution (`$k delete --all`, `$(command -v kubectl) delete --all`) may be any program: where a program runs, it matches a pattern of more than one word whose other words follow. Variables the same command sets to plain text are read as that text, so `X=helm; $X delete --all` does not match `kubectl delete --all`. Rules are a best-effort tripwire, not a sandbox: an alias, a function or a script still gets past them, and is then reviewed by the classifier as usual.
+
+#### Built-in rules
+
+[`config/default-rules.jsonc`](config/default-rules.jsonc) ships rules for commands that are rarely right for an agent to run on its own, in any kind of terminal work:
+
+| id | outcome | matches |
+| --- | --- | --- |
+| `force-push` | block | `git push --force`, `-f`, `+branch` |
+| `rm-root-or-home` | block | `rm -r` of `/`, `/*`, `~` or `$HOME`; `rm --no-preserve-root` |
+| `format-disk` | block | `mkfs*`, `wipefs`, `dd of=/dev/sd*` and other disk devices |
+| `pipe-to-shell` | ask | `curl …` or `wget …` piped to a shell |
+| `git-discard` | ask | `git reset --hard`, `git clean -f`, `git checkout .`, `git restore .`, `git stash drop`/`clear` |
+| `git-overwrite-remote` | ask | `git push --force-with-lease`, `--delete`, `:branch`; `git branch -D` |
+| `privilege` | ask | `sudo`, `doas`, `su`, `pkexec` |
+| `publish` | ask | `npm`/`pnpm`/`yarn`/`bun publish`, `cargo publish`, `twine upload`, `poetry`/`uv publish`, `gem push`, `docker`/`podman push`, `gh release create`, … |
+| `power` | ask | `shutdown`, `reboot`, `poweroff`, `halt`, `systemctl reboot` and the like |
+| `database-drop` | ask | `DROP` or `TRUNCATE` of a database, schema or table through `psql`, `mysql`, `sqlite3`, … |
+| `infrastructure` | review | `terraform`/`tofu apply`/`destroy`, `pulumi up`/`destroy`, `kubectl delete`/`drain`, `helm uninstall` |
+
+`infrastructure` is reviewed rather than asked about: infrastructure work runs these often, and the classifier can judge them from the conversation, now with the rule's reason. To change a built-in rule, disable it and add your own: `"disable": ["infrastructure"], "rules": [{ "id": "infrastructure-ask", "match": "kubectl delete|drain", "outcome": "ask" }]`.
 
 ### Allow rules
 

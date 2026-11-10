@@ -449,7 +449,7 @@ async function decideToolCall(
 
   let classifierDecision: ReviewDecision;
   try {
-    classifierDecision = await classifyAction(ctx, config, subject, options.classifierClient, { agentMessage: options.agentMessage, rule });
+    classifierDecision = await classifyAction(ctx, config, subject, options.classifierClient, { agentMessage: options.agentMessage, rule, ruleTextOnly: escalation?.textOnly });
     store.cacheDecision(subject.actionHash, classifierDecision);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);

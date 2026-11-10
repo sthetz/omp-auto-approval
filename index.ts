@@ -205,7 +205,10 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
       ...(plan?.rules.some((used) => used.source !== "default" && used.source !== "config.jsonc")
         ? ["note: entries from your rules files are not checked by the program oracle, as the built-in ones are"]
         : []),
-      ...(escalation ? [`rule: ${escalation.rule.id} (${escalation.rule.outcome}, ${escalation.rule.source})`, ...(escalation.rule.why ? [`why: ${escalation.rule.why}`] : [])] : []),
+      ...(escalation ? [
+        `rule: ${escalation.rule.id} (${escalation.rule.outcome}, ${escalation.rule.source})${escalation.textOnly ? `; matched only quoted text, so reviewed instead` : ""}`,
+        ...(escalation.rule.why ? [`why: ${escalation.rule.why}`] : []),
+      ] : []),
       ...(toolName === "bash" && rules.problem ? [rulesProblemText(rules)] : []),
       ...(toolName === "bash" && approvals.shellLatch(sessionKey(ctx)) ? [`note: the bash fast path is off for this session: an approved command used ${approvals.shellLatch(sessionKey(ctx))}`] : []),
     ].join("\n"));

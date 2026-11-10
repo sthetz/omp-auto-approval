@@ -693,6 +693,89 @@
     }
   },
 
-  // None built in yet; the user's rules.jsonc holds them.
-  "rules": []
+  // Built-in rules for commands that are rarely right for an agent to run
+  // on its own, in any kind of terminal work. Remove one with "disable" in
+  // rules.jsonc (for example "disable": ["privilege"]), and add your own.
+  // Only a match in the command as bash reads it blocks or asks; a match
+  // only in quoted text (a commit message, `ssh host "…"`) is reviewed.
+  "rules": [
+    // Rewrites history others have pulled. `--force-with-lease` asks
+    // instead (git-overwrite-remote).
+    {
+      "id": "force-push",
+      "match": ["git push --force|-f", "git push +*"],
+      "outcome": "block",
+      "why": "A force push rewrites history on the remote; run it yourself if it is intended."
+    },
+    {
+      "id": "rm-root-or-home",
+      "match": ["rm -r|-R|--recursive /|/[*]|~|~/|~/[*]|$HOME|$HOME/|${HOME}|${HOME}/", "rm --no-preserve-root"],
+      "outcome": "block",
+      "why": "Deletes the whole filesystem or home directory."
+    },
+    // Not `dd of=/dev/null` and the like: only disk devices.
+    {
+      "id": "format-disk",
+      "match": ["mkfs*", "wipefs", "dd of=/dev/sd*|of=/dev/nvme*|of=/dev/disk*|of=/dev/mmcblk*|of=/dev/vd*|of=/dev/xvd*|of=/dev/hd*"],
+      "outcome": "block",
+      "why": "Formats or overwrites a disk."
+    },
+    // A regex, so it also matches in quoted text.
+    {
+      "id": "pipe-to-shell",
+      "match": "/\\b(curl|wget)\\b[^|;&]*\\|\\s*(sudo\\s+)?(ba|z|da|k)?sh\\b/",
+      "outcome": "ask",
+      "why": "Runs a script from the network without reading it first."
+    },
+    // `git restore --staged .` only unstages, but asks too.
+    {
+      "id": "git-discard",
+      "match": ["git reset --hard", "git clean -f|--force", "git checkout .", "git restore .", "git stash drop|clear"],
+      "outcome": "ask",
+      "why": "Discards uncommitted work that cannot be recovered."
+    },
+    {
+      "id": "git-overwrite-remote",
+      "match": ["git push --force-with-lease*|--delete|-d", "git push :*", "git branch -D"],
+      "outcome": "ask",
+      "why": "Overwrites or deletes branches."
+    },
+    // Only where a program runs: `which sudo` is not matched.
+    {
+      "id": "privilege",
+      "match": ["sudo", "doas", "su", "pkexec"],
+      "outcome": "ask",
+      "why": "Runs a command as another user, usually root."
+    },
+    {
+      "id": "publish",
+      "match": [
+        "npm|pnpm|yarn|bun publish", "cargo publish", "twine upload", "poetry|uv|hatch|flit publish", "gem push",
+        "docker|podman push", "gh release create", "dotnet nuget push"
+      ],
+      "outcome": "ask",
+      "why": "Publishes a package or image for others to download."
+    },
+    {
+      "id": "power",
+      "match": ["shutdown", "reboot", "poweroff", "halt", "systemctl reboot|poweroff|halt|suspend|hibernate"],
+      "outcome": "ask",
+      "why": "Shuts down or restarts the machine."
+    },
+    // A regex, since the SQL is a quoted argument.
+    {
+      "id": "database-drop",
+      "match": "/\\b(psql|mysql|mariadb|sqlite3|mongosh|duckdb|clickhouse-client)\\b[^|;&]*\\b(drop|truncate)\\s+(database|table|schema|collection)\\b/i",
+      "outcome": "ask",
+      "why": "Deletes a database, schema or table."
+    },
+    // Reviewed rather than asked: common in infrastructure work, where the
+    // classifier can judge it from the conversation.
+    {
+      "id": "infrastructure",
+      "match": ["terraform|tofu apply|destroy", "pulumi up|destroy", "kubectl delete|drain", "helm uninstall|delete"],
+      "outcome": "review",
+      "why": "Changes or deletes shared infrastructure."
+    }
+  ]
 }

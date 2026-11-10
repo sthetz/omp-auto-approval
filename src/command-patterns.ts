@@ -5,23 +5,66 @@ import { recognizeShell } from "./shell-syntax.js";
 // subshells, and command substitution.
 const COMMAND_BOUNDARY = /\$\(|[\n\r;&|()`{}]/;
 
+/** The words of every command in a bash command, read two ways (see commandSegments). */
+export interface CommandSegments {
+  // As bash reads them: quotes keep words together (`git -c 'x=a;b' push`),
+  // and scripts the command hands to a shell are read too (`sh -c '…'`,
+  // `eval '…'`, a heredoc fed to `bash`).
+  structural: string[][];
+  // Split at every operator character with quotes dropped, so text inside
+  // quotes counts too (`ssh host "git push --force"`, but also a commit
+  // message that mentions a command).
+  text: string[][];
+}
+
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish"]);
+const MAX_NESTED_SCRIPTS = 3;
+const unquote = (word: string) => word.replace(/[\\"']/g, "");
+
 /**
- * The words of every command in `command`, read three ways, so that matching
- * errs toward finding a command:
- * - split at every operator character with quotes and backslashes dropped,
- *   so a command hidden in a quoted string (`bash -lc "git push --force"`)
- *   still splits into words;
- * - split as the shell would, quotes kept together (`git -c 'x=a;b' push`);
- * - the recognizer's simple commands, when it reads the command exactly.
- * A backslash-newline is removed first, as bash does.
+ * The script a command line hands to a shell to run, or null: the argument
+ * of `-c` for a shell (`bash -lc '…'`) or `su`, or the words after `eval`.
  */
-export function commandSegments(command: string): string[][] {
+function nestedScript(line: string[]): string | null {
+  const start = commandStart(line);
+  // eval is also a wrapper, so commandStart steps over it.
+  const evaluated = line.slice(0, start).findIndex((word) => programName(word) === "eval");
+  if (evaluated >= 0) {
+    return line.slice(evaluated + 1).join(" ");
+  }
+  const program = programName(line[start] ?? "");
+  if (SHELLS.has(program) || program === "su") {
+    const option = line.findIndex((word, index) => index > start && /^-[A-Za-z]*c[A-Za-z]*$/.test(word));
+    return option >= 0 ? line[option + 1] ?? null : null;
+  }
+  return null;
+}
+
+/**
+ * The words of every command in `command`, as CommandSegments describes. A
+ * backslash-newline is removed first, as bash does.
+ */
+export function commandSegments(command: string, depth = 0): CommandSegments {
   const text = command.replace(/\\\r?\n/g, "");
-  const unquote = (word: string) => word.replace(/[\\"']/g, "");
-  const naive = text.split(COMMAND_BOUNDARY).map((segment) => unquote(segment).split(/\s+/).filter(Boolean));
-  const quoted = commandLines(text).map((words) => words.map(unquote).filter(Boolean));
+  const bodies: string[] = [];
+  const lines = commandLines(text, bodies).map((words) => words.map(unquote).filter(Boolean)).filter((line) => line.length > 0);
   const recognized = recognizeShell(text)?.pipelines.flat().map((simple) => simple.words.map((word) => word.text)) ?? [];
-  return [...resolveExpansions(naive), ...resolveExpansions(quoted), ...recognized].filter((segment) => segment.length > 0);
+  const structural = [...resolveExpansions(lines), ...recognized];
+  const naive = text.split(COMMAND_BOUNDARY).map((segment) => unquote(segment).split(/\s+/).filter(Boolean)).filter((segment) => segment.length > 0);
+  const textual = resolveExpansions(naive);
+  if (depth < MAX_NESTED_SCRIPTS) {
+    const scripts = lines.map(nestedScript).filter((script): script is string => script !== null);
+    // A heredoc's body is a script when a shell reads it from stdin.
+    if (lines.some((line) => SHELLS.has(programName(line[commandStart(line)] ?? "")) && nestedScript(line) === null)) {
+      scripts.push(...bodies);
+    }
+    for (const script of scripts) {
+      const nested = commandSegments(script, depth + 1);
+      structural.push(...nested.structural);
+      textual.push(...nested.text);
+    }
+  }
+  return { structural, text: textual };
 }
 
 // Marks a word the shell expands to something unknown (see resolveExpansions).
@@ -63,16 +106,60 @@ function programName(word: string): string {
   return word.slice(word.lastIndexOf("/") + 1);
 }
 
-// Words that run the command that follows them.
-const WRAPPERS = new Set(["sudo", "doas", "env", "command", "builtin", "exec", "eval", "time", "nohup", "nice", "xargs", "stdbuf", "setsid", "then", "do", "else", "!"]);
+// Words that run the command that follows them, and their options that take
+// the next word as a value.
+const WRAPPERS = new Map<string, string[]>([
+  ["sudo", ["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T"]], ["doas", ["-u", "-C"]], ["env", ["-u", "-C", "-S"]],
+  ["command", []], ["builtin", []], ["exec", ["-a"]], ["eval", []], ["time", ["-f", "-o"]], ["nohup", []], ["nice", ["-n"]],
+  ["xargs", ["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s"]], ["stdbuf", ["-i", "-o", "-e"]], ["setsid", []], ["watch", ["-n", "-d"]],
+  ["then", []], ["do", []], ["else", []], ["if", []], ["elif", []], ["while", []], ["until", []], ["!", []], ["{", []],
+]);
+// find runs the command after these.
+const EXEC_OPTIONS = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+// A redirection: `2>/dev/null`, or `>` followed by its target.
+const REDIRECTION = /^\d*(>>?|<|&>|>&)/;
 
 /**
- * Whether the word at `index` is where a program would be: the first word,
- * or one after only assignments, wrappers and their options. Elsewhere an
- * expansion is an argument (`grep $pattern -i`).
+ * Where programs run in a line: the first word after assignments and
+ * redirections, and, while that is a wrapper (`sudo`, `env`, `xargs`), the
+ * word after it and its options. The last is the command that does the work.
+ */
+function commandPositions(line: string[]): number[] {
+  const positions: number[] = [];
+  let index = 0;
+  while (index < line.length) {
+    const word = line[index];
+    if (ASSIGNMENT.test(word)) {
+      index += 1;
+    } else if (REDIRECTION.test(word)) {
+      index += /^\d*(>>?|<|&>|>&)$/.test(word) ? 2 : 1;
+    } else {
+      positions.push(index);
+      const values = WRAPPERS.get(programName(word));
+      if (!values) {
+        break;
+      }
+      index += 1;
+      while (index < line.length && line[index].startsWith("-")) {
+        index += values.includes(line[index]) ? 2 : 1;
+      }
+    }
+  }
+  return positions;
+}
+
+/** Where the command that does the work starts: after assignments, redirections, wrappers and their options. */
+function commandStart(line: string[]): number {
+  return commandPositions(line).at(-1) ?? line.length;
+}
+
+/**
+ * Whether the word at `index` is where a program runs (see
+ * commandPositions), or follows `find -exec`. Elsewhere it is an argument
+ * (`grep $pattern -i`, `which sudo`).
  */
 function atCommandPosition(segment: string[], index: number): boolean {
-  return segment.slice(0, index).every((word) => ASSIGNMENT.test(word) || WRAPPERS.has(programName(word)) || word.startsWith("-"));
+  return commandPositions(segment).includes(index) || (index > 0 && EXEC_OPTIONS.has(segment[index - 1]));
 }
 
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/;
@@ -154,8 +241,12 @@ function wordTest(wanted: string): WordTest {
   return (word) => alternatives.some((test) => test(word));
 }
 
-/** A compiled pattern: true when a command matches it. */
-export type CommandPattern = (command: string, segments: string[][]) => boolean;
+/**
+ * A compiled pattern: how a command matches it. "structural" when it matches
+ * the command as bash reads it (and for a regex, any match); "text" when only
+ * the quote-blind reading matches; null when it does not match.
+ */
+export type CommandPattern = (command: string, segments: CommandSegments) => "structural" | "text" | null;
 
 /**
  * Compile a pattern: `/regex/flags`, tested against the whole command, or
@@ -172,22 +263,27 @@ export function compileCommandPattern(raw: string): CommandPattern {
   if (regex) {
     // Without g and y, test() keeps no state between commands.
     const compiled = new RegExp(regex[1], regex[2].replace(/[gy]/g, ""));
-    return (command) => compiled.test(command);
+    return (command) => (compiled.test(command) ? "structural" : null);
   }
   const words = pattern.split(/\s+/);
   if (words[0].includes("/")) {
     throw new Error(`programs are matched by name, so "${words[0]}" never matches; write "${words[0].slice(words[0].lastIndexOf("/") + 1)}"`);
   }
   const [program, ...rest] = words.map(wordTest);
-  // A word the shell expands (`$k`, `${KUBECTL}`, `$(command -v kubectl)`)
-  // where a program would be could be the program: agents often name one
-  // through a variable. Only when the pattern has more words, which must
-  // still follow, or every command run by a variable would match a one-word
-  // pattern.
-  const expansionIsProgram = rest.length > 0;
-  return (_command, segments) => segments.some((segment) => segment.some((word, start) => {
+  // A one-word pattern (`sudo`, `mkfs*`) matches only where a program runs,
+  // not an argument (`which sudo`), and never in the quote-blind reading. A
+  // longer pattern matches its program anywhere, since a wrapper it does not
+  // know (`docker exec c`, `ssh host`) may run it, and its other words must
+  // follow.
+  const oneWord = rest.length === 0;
+  const matches = (segments: string[][]) => segments.some((segment) => segment.some((word, start) => {
     const expanded = word.startsWith(EXPANDED);
-    if (!program(programName(expanded ? word.slice(1) : word)) && !(expansionIsProgram && expanded && atCommandPosition(segment, start))) {
+    // A word the shell expands (`$k`, `${KUBECTL}`, `$(command -v kubectl)`)
+    // where a program runs could be any program: agents often name one
+    // through a variable. Not for a one-word pattern, or every command run
+    // by a variable would match.
+    const named = program(programName(expanded ? word.slice(1) : word));
+    if (oneWord ? !named || !atCommandPosition(segment, start) : !named && !(expanded && atCommandPosition(segment, start))) {
       return false;
     }
     let next = start + 1;
@@ -199,4 +295,5 @@ export function compileCommandPattern(raw: string): CommandPattern {
       return next <= segment.length;
     });
   }));
+  return (_command, segments) => (matches(segments.structural) ? "structural" : !oneWord && matches(segments.text) ? "text" : null);
 }

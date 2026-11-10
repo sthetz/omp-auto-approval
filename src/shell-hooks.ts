@@ -42,9 +42,9 @@ function unquote(word: string): string {
  * escapes the next character, and a `#` starting a word comments out the
  * rest of the line. Heredoc bodies are skipped: they are a command's input,
  * and run in this shell only through `source /dev/stdin` or `eval`, which
- * count on their own.
+ * count on their own. `heredocBodies`, when given, receives each body.
  */
-export function commandLines(text: string): string[][] {
+export function commandLines(text: string, heredocBodies?: string[]): string[][] {
   const lines: string[][] = [];
   let words: string[] = [];
   let word = "";
@@ -141,6 +141,7 @@ export function commandLines(text: string): string[][] {
       // Skip each body, up to the line that is its delimiter.
       let position = index + 1;
       for (const { delimiter, stripTabs } of heredocs.splice(0)) {
+        const body: string[] = [];
         while (position <= text.length) {
           const end = text.indexOf("\n", position);
           const line = text.slice(position, end < 0 ? text.length : end);
@@ -148,7 +149,9 @@ export function commandLines(text: string): string[][] {
           if ((stripTabs ? line.replace(/^\t+/, "") : line) === delimiter) {
             break;
           }
+          body.push(line);
         }
+        heredocBodies?.push(body.join("\n"));
       }
       index = position - 2;
       continue;

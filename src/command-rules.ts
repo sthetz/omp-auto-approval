@@ -809,6 +809,9 @@ export interface Escalation {
   outcome: RuleOutcome;
   // The deciding rule: the most restrictive that matched, the first of those.
   rule: CommandRule;
+  // The rule matched only text inside quotes or the like (see
+  // CommandSegments), so its outcome is "review" whatever the rule says.
+  textOnly: boolean;
 }
 
 /**
@@ -832,17 +835,27 @@ export function escalateCommand(command: string, rules: CommandRules): Escalatio
         why: rules.problem,
         source: rules.files[0] ?? "config/default-rules.jsonc",
       },
+      textOnly: false,
     };
   }
   const segments = commandSegments(command);
-  let deciding: CommandRule | null = null;
+  let deciding: Escalation | null = null;
   for (const rule of rules.rules) {
     if (rule.outcome === "allow") {
       continue;
     }
-    if ((!deciding || RESTRICTION[rule.outcome] > RESTRICTION[deciding.outcome as RuleOutcome]) && rule.patterns.some((pattern) => pattern(command, segments))) {
-      deciding = rule;
+    const matches = rule.patterns.map((pattern) => pattern(command, segments));
+    // Text inside quotes may be a command run elsewhere (`ssh host "…"`) or
+    // just words (a commit message): enough to rule out a fast path, never
+    // to block or ask.
+    const textOnly = !matches.includes("structural");
+    if (!matches.includes("structural") && !matches.includes("text")) {
+      continue;
+    }
+    const outcome: RuleOutcome = textOnly ? "review" : rule.outcome;
+    if (!deciding || RESTRICTION[outcome] > RESTRICTION[deciding.outcome]) {
+      deciding = { outcome, rule, textOnly };
     }
   }
-  return deciding && { outcome: deciding.outcome as RuleOutcome, rule: deciding };
+  return deciding;
 }

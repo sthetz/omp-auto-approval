@@ -190,7 +190,7 @@ Fast path 不经分类器审批直接放行，因此范围刻意保持狭窄：
 
 ### 内置只读程序
 
-以下程序无需任何配置即可免审批：`cat`、`head`、`tail`、`wc`、`ls`、`grep`、`sed`、`cut`、`sort`、`uniq`、`tr`、`tac`、`paste`、`base64`、`diff`、`du`、`stat`、`file`、`readlink`、`realpath`、`jq`、`find`、`timeout`、`echo`、`printf`、`true`、`false`、`pwd`、`basename`、`dirname`、`date`、`sleep`、`seq`、`which`、`uname`、`whoami`、`id`、`hostname` 和 `nproc`。每个程序都有一张允许使用的选项表。表中列出的是已知只读的选项，而不是已知危险的选项：表外的任何选项，包括 `--incl` 这类缩写的长选项，都会让命令进入审批。选项按 GNU getopt 的方式解析（组合短选项、紧贴的值、操作数之后的选项）。由于 PATH 可能解析到任何一种实现，选项的挑选标准是在 GNU、BSD 和 busybox 中都只读，`grep` 的选项在 GNU grep 和 ugrep 中也只读；`CONTRIBUTING.md` 中的 oracle 会用本地安装的实现检查它们。例如以下内容不在表中：
+以下程序无需任何配置即可免审批：`cat`、`head`、`tail`、`wc`、`ls`、`grep`、`sed`、`cut`、`sort`、`uniq`、`tr`、`tac`、`paste`、`base64`、`diff`、`du`、`stat`、`file`、`readlink`、`realpath`、`jq`、`find`、`timeout`、`echo`、`printf`、`true`、`false`、`pwd`、`basename`、`dirname`、`date`、`sleep`、`seq`、`which`、`uname`、`whoami`、`id`、`hostname` 和 `nproc`。每个程序都有一张允许使用的选项表，git 还有一份子命令列表；它们都在 [`config/default-rules.jsonc`](config/default-rules.jsonc) 中，刻意排除的选项附有注释。表中列出的是已知只读的选项，而不是已知危险的选项：表外的任何选项，包括 `--incl` 这类缩写的长选项，都会让命令进入审批。选项按 GNU getopt 的方式解析（组合短选项、紧贴的值、操作数之后的选项）。由于 PATH 可能解析到任何一种实现，选项的挑选标准是在 GNU、BSD 和 busybox 中都只读，`grep` 的选项在 GNU grep 和 ugrep 中也只读；`CONTRIBUTING.md` 中的 oracle 会用本地安装的实现检查它们。例如以下内容不在表中：
 - 写文件或运行程序的选项：`sort -o/-T/--compress-program`、`sed -i/-f`、`diff -l`、`file -z`、`jq -f/-L`、`find -exec/-delete/-fprint`、`date -s`、`hostname` 的操作数、`uniq` 的第二个操作数（它的输出文件）；
 - 永不结束或沿符号链接离开目录树的选项：`tail -f`、`ls -L`、`du -L`、`grep -R`、`find -L`；
 - `egrep` 和 `fgrep`：它们是从 shell 当前的 PATH 中运行 `grep` 的脚本。

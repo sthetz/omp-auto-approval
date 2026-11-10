@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "omp-auto-approval command rules",
+  "description": "Programs, options and operands the bash fast path runs without review. See the comments at the top of config/default-rules.jsonc; src/command-rules.ts validates files more strictly than this schema can.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "programs": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_][A-Za-z0-9._+-]*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/program"
+      }
+    }
+  },
+  "$defs": {
+    "kind": {
+      "type": "string",
+      "enum": ["flag", "number", "string", "read-file", "optional", "pair", "workspace-directory"]
+    },
+    "options": {
+      "description": "Option names to kinds. A key may list an option and its aliases, separated by spaces; \"-NUM\" accepts -20.",
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^(-NUM|(-[A-Za-z0-9]|--[A-Za-z0-9][A-Za-z0-9-]*)( +(-[A-Za-z0-9]|--[A-Za-z0-9][A-Za-z0-9-]*))*)$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/kind"
+      }
+    },
+    "except": {
+      "description": "Options never accepted: a long one also by abbreviation or extension, a short one anywhere in a group.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(-[A-Za-z0-9]|--[A-Za-z0-9][A-Za-z0-9-]*)$"
+      }
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "operandCheck": {
+      "type": "string",
+      "enum": [
+        "read-files", "literals", "none", "any", "printf-format", "grep-operands", "diff-operands", "sed-script", "jq-filter",
+        "duration-then-command", "git-operands", "git-branch-list", "git-tag-list", "git-remote", "git-stash-list"
+      ]
+    },
+    "operands": {
+      "oneOf": [
+        { "$ref": "#/$defs/operandCheck" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "maxProperties": 1,
+          "properties": {
+            "read-files": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": { "min": { "$ref": "#/$defs/count" }, "max": { "$ref": "#/$defs/count" } }
+            },
+            "literals": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "min": { "$ref": "#/$defs/count" },
+                "max": { "$ref": "#/$defs/count" },
+                "pattern": { "type": "string", "format": "regex" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "entry": {
+      "type": "object",
+      "properties": {
+        "arguments": {
+          "type": "string",
+          "enum": ["options", "find-expression", "literal-words"],
+          "default": "options"
+        },
+        "operands": { "$ref": "#/$defs/operands" },
+        "stopAtOperand": { "type": "boolean", "default": false },
+        "opensNoFiles": { "type": "boolean", "default": false }
+      }
+    },
+    "program": {
+      "type": "object",
+      "oneOf": [
+        {
+          "description": "A program without subcommands.",
+          "$ref": "#/$defs/entry",
+          "required": ["operands"],
+          "unevaluatedProperties": false,
+          "properties": {
+            "options": { "$ref": "#/$defs/options" }
+          }
+        },
+        {
+          "description": "A program with subcommands, such as git. Its options are whole words before the subcommand.",
+          "required": ["subcommands"],
+          "additionalProperties": false,
+          "properties": {
+            "options": { "$ref": "#/$defs/options" },
+            "except": { "$ref": "#/$defs/except" },
+            "opensNoFiles": { "type": "boolean" },
+            "subcommands": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*( +[A-Za-z0-9][A-Za-z0-9._:-]*)*$"
+              },
+              "additionalProperties": { "$ref": "#/$defs/subcommand" }
+            }
+          }
+        }
+      ]
+    },
+    "subcommand": {
+      "$ref": "#/$defs/entry",
+      "required": ["operands"],
+      "unevaluatedProperties": false,
+      "properties": {
+        "options": {
+          "oneOf": [{ "const": "any" }, { "$ref": "#/$defs/options" }]
+        },
+        "except": { "$ref": "#/$defs/except" }
+      }
+    }
+  }
+}

@@ -86,12 +86,13 @@ function generate(rng: ReturnType<typeof random>): string {
   const program = rng.pick(Object.keys(tables));
   const spec = tables[program];
   const args: string[] = [];
-  const value = (name: string, kind: string): string => {
-    const known = VALUES[`${program}:${name}`] ?? VALUES[`${program.replace(/^[ef]grep$/, "grep")}:${name}`];
+  // Values by the option as written, else by the name it is reported as.
+  const value = (name: string, kind: string, alias?: string): string => {
+    const known = VALUES[`${program}:${name}`] ?? (alias ? VALUES[`${program}:${alias}`] : undefined);
     if (known) {
       return rng.pick(known);
     }
-    return kind === "number" ? rng.pick(["1", "2", "10"]) : kind === "path" ? rng.pick(FILES) : "x";
+    return kind === "number" ? rng.pick(["1", "2", "10"]) : kind === "read-file" ? rng.pick(FILES) : "x";
   };
   for (let count = Math.floor(rng.next() * 4); count > 0; count -= 1) {
     const choices: (() => void)[] = [];
@@ -99,8 +100,8 @@ function generate(rng: ReturnType<typeof random>): string {
       choices.push(() => args.push(`-${letter}`));
     }
     for (const [letter, kind] of Object.entries(spec.values ?? {})) {
-      const name = spec.aliases?.[letter] ?? letter;
-      choices.push(() => (kind === "optional" ? args.push(rng.chance(0.5) ? `-${letter}${value(name, kind)}` : `-${letter}`) : args.push(`-${letter}`, value(name, kind))));
+      const alias = spec.aliases[letter];
+      choices.push(() => (kind === "optional" ? args.push(rng.chance(0.5) ? `-${letter}${value(letter, kind, alias)}` : `-${letter}`) : args.push(`-${letter}`, value(letter, kind, alias))));
     }
     for (const name of spec.long ?? []) {
       choices.push(() => args.push(`--${name}`));
@@ -129,7 +130,7 @@ function generate(rng: ReturnType<typeof random>): string {
   }
   const files = () => Array.from({ length: Math.floor(rng.next() * 3) }, () => rng.pick(FILES));
   switch (program) {
-    case "grep": case "egrep": case "fgrep":
+    case "grep":
       return [program, ...args, rng.pick(["alpha", "a", "export"]), ...(rng.chance(0.5) ? files() : [rng.pick(["src", "dir", "."])])].map(quote).join(" ");
     case "sed": return [program, ...args, rng.pick(SED_SCRIPTS), rng.pick(FILES)].map(quote).join(" ");
     case "jq": return [program, ...args, rng.pick(JQ_FILTERS), "data.json"].map(quote).join(" ");

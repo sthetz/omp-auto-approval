@@ -13,6 +13,8 @@ import { evaluateToolCall, selectFastPath } from "../src/decision.js";
 import { columnWidth, truncateVisible } from "../src/model-selector.js";
 import { planSafeCommand } from "../src/safe-command.js";
 import { isSafeSedScript } from "../src/program-rules.js";
+import { ARGUMENT_PARSERS, compileRules, defaultRules, loadRulesFile, OPERAND_CHECKS } from "../src/command-rules.js";
+import { parseJsonc } from "../src/jsonc.js";
 import { recognizeShell } from "../src/shell-syntax.js";
 import { shellHook } from "../src/shell-hooks.js";
 import { compareRun, pipelinesRun, type ParsedScript } from "./shell-oracle/oracle.js";
@@ -541,6 +543,143 @@ async function run(): Promise<void> {
     }
     for (const script of ["w x", "s/a/b/w x", "s/a/b/gw x", "s/a/b/e", "e", "e ls", "r x", "1r x", "R x", "W x", "a text", "1i\\", "y/ab/cd/", "s/a/b", "#n", "s/[/]/x/", "p\nw x", "1{p}", ":a", "b", "s/a/b/\nw x", "1,", "/a"]) {
       assert.equal(isSafeSedScript(script), false, script);
+    }
+  });
+
+  await test("the built-in command rules load from config/default-rules.jsonc", () => {
+    const rules = defaultRules();
+    assert.equal(rules.problem, null);
+    assert.equal(rules.programs.get("grep")?.operands?.check, "grep-operands");
+    assert.equal(rules.programs.get("git")?.subcommands?.get("grep")?.except.includes("-O"), true);
+  });
+
+  await test("the rules schema names the same kinds, checks and parsers as the code", () => {
+    const schema = JSON.parse(readFileSync(new URL("../schemas/rules.schema.json", import.meta.url), "utf8"));
+    assert.deepEqual([...schema.$defs.operandCheck.enum].sort(), Object.keys(OPERAND_CHECKS).sort());
+    assert.deepEqual(schema.$defs.entry.properties.arguments.enum, [...ARGUMENT_PARSERS]);
+    const kinds = new Set<string>();
+    for (const entry of defaultRules().programs.values()) {
+      for (const sub of [entry, ...(entry.subcommands?.values() ?? [])]) {
+        Object.values(sub.values).forEach((kind) => kinds.add(kind));
+        Object.values(sub.longValues).forEach((kind) => kinds.add(kind));
+      }
+    }
+    for (const kind of kinds) {
+      assert.ok(schema.$defs.kind.enum.includes(kind), kind);
+    }
+    // Every kind the schema allows compiles somewhere.
+    for (const kind of schema.$defs.kind.enum) {
+      const entry = kind === "workspace-directory"
+        ? { options: { "--long": kind }, subcommands: { list: { options: "any", operands: "none" } } }
+        : { options: { "--long": kind }, operands: "none" };
+      assert.equal(compileRules({ programs: { x: entry } }).size, 1, kind);
+    }
+  });
+
+  await test("a rules file with any problem is not used, and every bash command is reviewed", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-rules-"));
+    writeFileSync(join(workspace, "notes.txt"), "x\n");
+    const file = join(workspace, "rules.jsonc");
+    try {
+      const broken: [string, RegExp][] = [
+        ['{ "programs": { "cat": { "operands": "read-files", "bogus": 1 } } }', /unknown key "bogus"/],
+        ['{ "rules": [] }', /unknown key "rules"/],
+        ['{ "programs": { "cat": { "options": { "-n": "flag", "-n --number": "flag" }, "operands": "read-files" } } }', /"-n" is listed twice/],
+        ['{ "programs": { "cat": { "options": { "-n": "flags" }, "operands": "read-files" } } }', /unknown kind "flags"/],
+        ['{ "programs": { "cat": { "operands": "read-everything" } } }', /unknown check "read-everything"/],
+        ['{ "programs": { "cat": { "operands": { "read-files": { "pattern": "x" } } } } }', /unknown key "pattern"/],
+        ['{ "programs": { "cat": { "operands": "read-files" }, "cat": { "operands": "none" } } }', /duplicate key "cat" at line 1/],
+        ['{ "programs": { "seq": { "operands": { "literals": { "min": 2, "max": 1 } } } } }', /min is more than max/],
+        ['{ "programs": { "seq": { "operands": { "literals": { "pattern": "(" } } } } }', /pattern/],
+        ['{ "programs": { "cat": { "options": "any", "operands": "read-files" } } }', /only supported for subcommands/],
+        ['{ "programs": { "cat": { "options": { "--x": "workspace-directory" }, "operands": "none" } } }', /not supported here/],
+        ['{ "programs": { "cat": {} } }', /missing "operands"/],
+        ['{ "programs": { "../cat": { "operands": "none" } } }', /invalid name/],
+        ['{ "programs": { "cat": { "operands": "read-files" } }', /expected ',' or '}'/],
+        ['{ "programs": { "git": { "subcommands": { "log": { "subcommands": {} } } } } }', /cannot have subcommands/],
+      ];
+      for (const [text, problem] of broken) {
+        writeFileSync(file, text);
+        const rules = loadRulesFile(file, "rules.jsonc");
+        assert.match(rules.problem ?? "", problem, text);
+        assert.match(rules.problem ?? "", /^rules\.jsonc: /);
+        assert.equal(rules.programs.size, 0);
+        // Not even the allowlist applies: the file could have held a rule
+        // that is meant to restrict it.
+        const cfg = config({ safeCommandAllowlist: ["rg"] });
+        for (const command of ["cat notes.txt", "rg x", "pwd"]) {
+          assert.equal(planSafeCommand(command, cfg, { workspace, searchPath: TEST_PATH, rules }), null, `${text}: ${command}`);
+        }
+      }
+      writeFileSync(file, '{ "programs": { "cat": { "operands": "read-files" } } }');
+      const rules = loadRulesFile(file);
+      assert.equal(rules.problem, null);
+      assert.notEqual(planSafeCommand("cat notes.txt", config(), { workspace, searchPath: TEST_PATH, rules }), null);
+      assert.equal(planSafeCommand("cat -n notes.txt", config(), { workspace, searchPath: TEST_PATH, rules }), null);
+      assert.equal(planSafeCommand("pwd", config(), { workspace, searchPath: TEST_PATH, rules }), null);
+      assert.match(loadRulesFile(join(workspace, "missing.jsonc"), "missing.jsonc").problem ?? "", /^missing\.jsonc: ENOENT/);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  await test("rules files take comments and trailing commas, but not comment markers inside strings", () => {
+    const parsed = parseJsonc('// a comment\n{ "a": "x // y /* z */", /* another */ "b": [1, 2,], "c": { "d": null, }, }') as Record<string, unknown>;
+    assert.equal(JSON.stringify(parsed), '{"a":"x // y /* z */","b":[1,2],"c":{"d":null}}');
+    assert.throws(() => parseJsonc('{\n  "a": 1\n  "b": 2\n}'), /expected ',' or '}' at line 3, column 3/);
+    assert.throws(() => parseJsonc('{ "a": 1 } x'), /unexpected 'x'/);
+    assert.throws(() => parseJsonc('{ "a": "x\n" }'), /line break in a string/);
+    assert.throws(() => parseJsonc('{ "a": 1 /* open'), /unterminated comment/);
+    const programs = compileRules(parseJsonc('{ "programs": { "seq": { "operands": { "literals": { "pattern": "^https?://x" } } } } }'));
+    assert.equal(programs.get("seq")?.operands?.pattern?.source, "^https?:\\/\\/x");
+  });
+
+  await test("long options named like Object.prototype members are unknown options", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-proto-"));
+    writeFileSync(join(workspace, "notes.txt"), "x\n");
+    try {
+      for (const command of [
+        "sort --constructor x notes.txt", "grep --valueOf=1 x notes.txt", "cat --__proto__ notes.txt", "head --hasOwnProperty 1 notes.txt",
+        "git --constructor status", "git constructor", "git __proto__", "find . -constructor x", "constructor", "toString x",
+      ]) {
+        assert.equal(isSafeReadOnlyCommand(command, config(), workspace), false, command);
+      }
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  await test("an entry with subcommands reads its own options as whole words before the subcommand", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-auto-approval-subcommands-"));
+    mkdirSync(join(workspace, "sub"));
+    writeFileSync(join(workspace, "notes.txt"), "x\n");
+    try {
+      // npm is a stub program here; the entry is made up.
+      const rules = {
+        problem: null,
+        programs: compileRules({
+          programs: {
+            npm: {
+              options: { "-q --quiet": "flag", "-C": "workspace-directory", "--depth": "number" },
+              except: ["--write"],
+              subcommands: { "list show": { options: "any", operands: "git-operands" }, view: { options: "any", except: ["-x"], operands: "none" } },
+            },
+          },
+        }),
+      };
+      const safe = (command: string) => planSafeCommand(command, config(), { workspace, searchPath: TEST_PATH, rules }) !== null;
+      for (const command of ["npm list", "npm -q list notes.txt", "npm --quiet -C sub show", "npm --depth 2 list", "npm view -a", "npm list -- notes.txt"]) {
+        assert.equal(safe(command), true, command);
+      }
+      for (const command of [
+        "npm", "npm -q", "npm publish", "npm -qC sub list", "npm -Csub list", "npm -C /etc list", "npm -C missing list", "npm -C",
+        "npm --depth x list", "npm --depth=2 list", "npm list --write", "npm list --wr", "npm list --write-all", "npm view -ax",
+        "npm view x", "npm list /etc/passwd", "npm list ../x", "npm list $X", "npm $SUB", "npm -C sub list ../../x",
+      ]) {
+        assert.equal(safe(command), false, command);
+      }
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
     }
   });
 

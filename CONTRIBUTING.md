@@ -35,14 +35,16 @@ Real agent commands make the best test input. `npm run oracle:corpus` collects t
 
 ### Program table oracle
 
-The built-in program tables (`src/program-rules.ts`) claim that every option they list is read-only. `tests/program-oracle/` checks that claim: it builds random commands from the tables, and runs each one the fast path accepts, pinned, under `strace` in a bubblewrap sandbox with a read-only workspace. Starting a program the plan did not pin, opening a file for writing, changing the filesystem, or reading outside the workspace and system directories is reported. It needs `bwrap`, `strace` and `bash` on `PATH`, and checks the implementations installed locally (GNU on most Linux systems).
+The built-in command rules (`config/default-rules.jsonc`, applied by `src/program-rules.ts`) claim that every option they list is read-only. `tests/program-oracle/` checks that claim: it builds random commands from the tables, and runs each one the fast path accepts, pinned, under `strace` in a bubblewrap sandbox with a read-only workspace. Starting a program the plan did not pin, opening a file for writing, changing the filesystem, or reading outside the workspace and system directories is reported. It needs `bwrap`, `strace` and `bash` on `PATH`, and checks the implementations installed locally (GNU on most Linux systems).
 
 ```bash
 npm run oracle:programs -- --self-test          # each planted side effect must be caught
 npm run oracle:programs -- --count 4000 --seed 2
 ```
 
-When adding an option, also check it against the program's `--help` and, where it differs, against BSD and busybox: the tables must hold for whichever implementation is on `PATH`.
+When adding an option, also check it against the program's `--help` and, where it differs, against BSD and busybox: the tables must hold for whichever implementation is on `PATH`. `npm run oracle:help` compares every table with the local programs' `--help`: options the help does not mention, values the help shows differently, and short and long options paired in one entry that the help does not pair. A few reports are expected, where the help text is written loosely (`ls --sort`, `sort --check`, `du --time`, `jq --indent`).
+
+`config/default-rules.jsonc` is validated strictly when it loads: an unknown key, kind or check name, or an option listed twice, is an error, and then every bash command is reviewed and `/auto-approval status` says why. `npm test` loads it, and checks `schemas/rules.schema.json` against the code.
 
 ## Pull Requests
 

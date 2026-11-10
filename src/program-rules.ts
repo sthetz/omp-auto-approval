@@ -1,38 +1,25 @@
+import { defaultRules, type CommandRules, type OperandCheckName, type OperandRule, type OptionKind, type ProgramEntry } from "./command-rules.js";
 import type { FileFilter } from "./path-expansion.js";
+import { isSensitivePath } from "./sensitive-paths.js";
 import type { ShellWord } from "./shell-syntax.js";
 
 /**
- * Built-in knowledge of common read-only programs (layer 2 of the bash fast
- * path). Each table lists the options a program may be given without review;
- * anything else, including an option that is merely unknown, sends the
- * command to review. Options are chosen to be read-only in GNU coreutils,
- * BSD and busybox alike, and for grep in GNU grep and ugrep, since the PATH
- * may resolve to any of them. Options that run programs, write files, follow
- * symbolic links out of a tree, or behave differently between
- * implementations are left out. tests/program-oracle/ runs the tables
- * against the implementations installed locally.
+ * Applies the command rules (layer 2 of the bash fast path): whether one
+ * simple command is read-only by its program's entry in
+ * config/default-rules.jsonc. Each entry lists the options a program may be
+ * given without review; anything else, including an option that is merely
+ * unknown, sends the command to review. The checks an entry names for its
+ * operands are here, in OPERAND_CHECK_FUNCTIONS.
  *
- * The tables describe options and operands. Where operands are files, the
- * caller decides whether they may be read (see RuleContext).
+ * Where operands are files, the caller decides whether they may be read
+ * (see RuleContext).
  */
 
-type ValueKind =
-  // Any text, never opened as a file.
-  | "string"
-  // A count or size: digits, an optional sign and unit suffix.
-  | "number"
-  // A file the program reads.
-  | "path"
-  // A value only when glued to the option (`--color=auto`, `-Iseconds`).
-  | "optional"
-  // Two following words (`jq --arg name value`).
-  | "pair";
-
 export interface ParsedOption {
-  // The long name without dashes, or the short letter; short letters with a
-  // long equivalent that a check needs are named by the long one.
+  // The long name without dashes, or the short letter; a short letter that
+  // shares an entry with a long name is reported by the long one.
   name: string;
-  kind: ValueKind | "flag";
+  kind: OptionKind;
   value?: string;
   // The word holding the option, which bash may rewrite if it expands.
   word: ShellWord;
@@ -58,31 +45,23 @@ export interface RuleContext {
   // Whether reading the tree under an absolute path recursively surely
   // reads nothing credential-like.
   treeIsClean(path: string, filter?: FileFilter): boolean;
+  // Whether a word that may name a file, in any part a program could open
+  // (`--opt=path`, `-fpath`), names nothing it may not read.
+  namesNoUnreadableFile(text: string): boolean;
+  // Whether a path, from the directory, stays inside the workspace and away
+  // from credential-like files.
+  workspacePath(text: string): boolean;
+  // The existing workspace directory a path names, or null.
+  workspaceDirectory(text: string): string | null;
+  // The same context, for a command that runs in another directory.
+  within(directory: string): RuleContext;
   // Whether a command that this one runs (`timeout 5 git status`) is safe
   // on its own; its program is then pinned like the outer one.
   command(words: ShellWord[]): boolean;
 }
 
-interface ProgramSpec {
-  // Short options without a value.
-  flags?: string;
-  // Short options with one.
-  values?: Record<string, ValueKind>;
-  // Long options without a value, and with one.
-  long?: string[];
-  longValues?: Record<string, ValueKind>;
-  // Short letters reported by their long name.
-  aliases?: Record<string, string>;
-  // Accepts `-20` as an option (head, tail, grep context).
-  numeric?: boolean;
-  // Option parsing stops at the first operand (getopt's leading `+`).
-  stopAtOperand?: boolean;
-  // Never opens a file named by its arguments.
-  opensNoFiles?: boolean;
-  // Parse the arguments itself instead of by the tables above.
-  parse?: (words: ShellWord[]) => ParsedCommand | null;
-  check: (command: ParsedCommand, context: RuleContext) => boolean;
-}
+// The parts of an entry that option parsing reads.
+type OptionTable = Pick<ProgramEntry, "flags" | "values" | "long" | "longValues" | "aliases" | "numeric" | "stopAtOperand">;
 
 const NUMBER = /^[+-]?\d+(\.\d+)?[A-Za-z]{0,3}$/;
 const DURATION = /^\d+(\.\d+)?[smhd]?$/;
@@ -97,7 +76,7 @@ function words(list: string): string[] {
  * value is glued or the next word, and long options are exact (an
  * abbreviation could resolve to an option missing from the table).
  */
-export function parseOptions(spec: ProgramSpec, words: ShellWord[]): ParsedCommand | null {
+export function parseOptions(spec: OptionTable, words: ShellWord[]): ParsedCommand | null {
   const options: ParsedOption[] = [];
   const operands: ShellWord[] = [];
   let endOfOptions = false;
@@ -214,20 +193,6 @@ function readsFiles(command: ParsedCommand, context: RuleContext, operands = com
     paths.push(...named);
   }
   return paths;
-}
-
-// Checks for programs whose operands are all files they read.
-function files(max = Infinity) {
-  return (command: ParsedCommand, context: RuleContext) => command.operands.length <= max && readsFiles(command, context) !== null;
-}
-
-function literals(min: number, max: number, pattern?: RegExp) {
-  return (command: ParsedCommand) => command.operands.length >= min && command.operands.length <= max
-    && command.operands.every((word) => !word.expands && (!pattern || pattern.test(word.text)));
-}
-
-function noOperands(command: ParsedCommand): boolean {
-  return command.operands.length === 0;
 }
 
 /**
@@ -478,7 +443,7 @@ function parseFind(words: ShellWord[]): ParsedCommand | null {
       index += 1;
       continue;
     }
-    const kind = FIND_TESTS_WITH_VALUE.has(word.text) ? "string" : FIND_TESTS_WITH_PATH.has(word.text) ? "path" : null;
+    const kind = FIND_TESTS_WITH_VALUE.has(word.text) ? "string" : FIND_TESTS_WITH_PATH.has(word.text) ? "read-file" : null;
     const value = words[index + 1];
     if (!kind || !value || value.expands) {
       return null;
@@ -489,7 +454,7 @@ function parseFind(words: ShellWord[]): ParsedCommand | null {
   return { options, operands };
 }
 
-function parseEcho(words: ShellWord[]): ParsedCommand | null {
+function parseLiteralWords(words: ShellWord[]): ParsedCommand | null {
   return words.some((word) => word.expands) ? null : { options: [], operands: words.slice(1) };
 }
 
@@ -498,249 +463,172 @@ function checkPrintf(command: ParsedCommand): boolean {
   return format !== undefined && !format.text.startsWith("-");
 }
 
-const GREP: ProgramSpec = {
-  flags: "EFGPivwxclLoqsnhHbaIrTU",
-  values: { e: "string", f: "path", m: "number", A: "number", B: "number", C: "number" },
-  aliases: { r: "recursive", e: "regexp", f: "file" },
-  numeric: true,
-  long: words(`
-    extended-regexp fixed-strings basic-regexp perl-regexp ignore-case no-ignore-case invert-match word-regexp
-    line-regexp count files-with-matches files-without-match only-matching quiet silent no-messages line-number
-    with-filename no-filename byte-offset text recursive initial-tab line-buffered
-  `),
-  longValues: {
-    regexp: "string", file: "path", "max-count": "number", "after-context": "number", "before-context": "number",
-    context: "number", label: "string", include: "string", exclude: "string", "exclude-dir": "string",
-    "exclude-from": "path", "binary-files": "string", color: "optional", colour: "optional",
-  },
-  check: checkGrep,
-};
-
-const PROGRAMS: Record<string, ProgramSpec> = {
-  cat: {
-    flags: "AbeEnstTuv",
-    long: words("show-all number-nonblank show-ends number squeeze-blank show-tabs show-nonprinting"),
-    check: files(),
-  },
-  head: {
-    flags: "qvz",
-    values: { n: "number", c: "number" },
-    numeric: true,
-    long: words("quiet silent verbose zero-terminated"),
-    longValues: { lines: "number", bytes: "number" },
-    check: files(),
-  },
-  // Not -f/-F/--follow, which never finish.
-  tail: {
-    flags: "qvz",
-    values: { n: "number", c: "number" },
-    numeric: true,
-    long: words("quiet silent verbose zero-terminated"),
-    longValues: { lines: "number", bytes: "number" },
-    check: files(),
-  },
-  wc: {
-    flags: "clwmL",
-    long: words("bytes chars lines words max-line-length"),
-    longValues: { total: "string" },
-    check: files(),
-  },
-  // Not -L (follows symbolic links out of the tree).
-  ls: {
-    flags: "aAbBcCdfFgGhHiklmnNopqQrRsStuUvxXZ1",
-    values: { I: "string", T: "number", w: "number" },
-    long: words(`
-      all almost-all author escape ignore-backups directory file-type full-time group-directories-first no-group
-      human-readable si inode literal numeric-uid-gid hide-control-chars show-control-chars quote-name recursive
-      reverse size kibibytes dereference-command-line dereference-command-line-symlink-to-dir context zero
-    `),
-    longValues: {
-      "block-size": "string", format: "string", hide: "string", ignore: "string", "indicator-style": "string",
-      "quoting-style": "string", sort: "string", time: "string", "time-style": "string", tabsize: "number",
-      width: "number", color: "optional", classify: "optional", hyperlink: "optional",
-    },
-    check: files(),
-  },
-  // Not egrep or fgrep: scripts that run `grep` from whatever PATH the shell has.
-  grep: GREP,
-  // Not -i (in place) or -f (script file); the script itself is checked.
-  sed: {
-    flags: "nErsuz",
-    values: { e: "string", l: "number" },
-    aliases: { e: "expression" },
-    long: words("quiet silent regexp-extended separate unbuffered null-data posix debug sandbox"),
-    longValues: { expression: "string", "line-length": "number" },
-    check: checkSed,
-  },
-  cut: {
-    flags: "snz",
-    values: { b: "string", c: "string", f: "string", d: "string" },
-    long: words("complement only-delimited zero-terminated"),
-    longValues: { bytes: "string", characters: "string", fields: "string", delimiter: "string", "output-delimiter": "string" },
-    check: files(),
-  },
-  // Not -o (output file), -T (temporary directory), --compress-program or --files0-from.
-  sort: {
-    flags: "bdfghiMnRrVuszcCm",
-    values: { k: "string", t: "string", S: "string" },
-    long: words(`
-      ignore-leading-blanks dictionary-order ignore-case general-numeric-sort human-numeric-sort ignore-nonprinting
-      month-sort numeric-sort random-sort reverse version-sort unique stable zero-terminated merge
-    `),
-    longValues: { key: "string", "field-separator": "string", "buffer-size": "string", sort: "string", parallel: "number", check: "optional", "random-source": "path" },
-    check: files(),
-  },
-  // A second operand is uniq's output file.
-  uniq: {
-    flags: "cdDuiz",
-    values: { f: "number", s: "number", w: "number" },
-    long: words("count repeated unique ignore-case zero-terminated"),
-    longValues: { "all-repeated": "optional", group: "optional", "skip-fields": "number", "skip-chars": "number", "check-chars": "number" },
-    check: files(1),
-  },
-  tr: {
-    flags: "cCdst",
-    long: words("complement delete squeeze-repeats truncate-set1"),
-    opensNoFiles: true,
-    check: literals(1, 2),
-  },
-  tac: { flags: "br", values: { s: "string" }, long: words("before regex"), longValues: { separator: "string" }, check: files() },
-  paste: { flags: "sz", values: { d: "string" }, long: words("serial zero-terminated"), longValues: { delimiters: "string" }, check: files() },
-  base64: { flags: "di", values: { w: "number" }, long: words("decode ignore-garbage"), longValues: { wrap: "number" }, check: files(1) },
-  // Not -l (pipes through pr).
-  diff: {
-    flags: "qrNucwbBiaystTEZpd",
-    values: { U: "number", C: "number", W: "number", x: "string", X: "path", I: "string", F: "string" },
-    long: words(`
-      brief recursive new-file unidirectional-new-file ignore-case ignore-all-space ignore-space-change
-      ignore-blank-lines text side-by-side report-identical-files expand-tabs initial-tab ignore-tab-expansion
-      ignore-trailing-space show-c-function minimal strip-trailing-cr suppress-common-lines left-column
-      speed-large-files ignore-file-name-case no-ignore-file-name-case
-    `),
-    longValues: {
-      unified: "optional", context: "optional", label: "string", exclude: "string", "ignore-matching-lines": "string",
-      palette: "string", "exclude-from": "path", "from-file": "path", "to-file": "path", width: "number",
-      "horizon-lines": "number", color: "optional",
-    },
-    check: checkDiff,
-  },
-  // Not -L (follows symbolic links out of the tree).
-  du: {
-    flags: "abcDhHklmsSx0",
-    values: { d: "number", B: "string", t: "string" },
-    long: words("all apparent-size bytes total dereference-args human-readable si summarize separate-dirs one-file-system null"),
-    longValues: { "max-depth": "number", "block-size": "string", threshold: "string", exclude: "string", time: "optional", "time-style": "string" },
-    check: files(),
-  },
-  stat: {
-    flags: "Lft",
-    values: { c: "string" },
-    long: words("dereference file-system terse"),
-    longValues: { format: "string", printf: "string" },
-    check: (command, context) => command.operands.length > 0 && files()(command, context),
-  },
-  // Not -z/-Z (looks inside compressed files) or -m (magic file).
-  file: {
-    flags: "bhiLkNnr0",
-    long: words("brief mime mime-type mime-encoding dereference no-dereference keep-going raw no-pad print0"),
-    check: (command, context) => command.operands.length > 0 && files()(command, context),
-  },
-  readlink: { flags: "femnqsvz", long: words("canonicalize canonicalize-existing canonicalize-missing no-newline quiet silent verbose zero"), check: files() },
-  realpath: {
-    flags: "emLPqsz",
-    long: words("canonicalize-existing canonicalize-missing logical physical quiet strip no-symlinks zero"),
-    longValues: { "relative-to": "path", "relative-base": "path" },
-    check: files(),
-  },
-  // jq can neither write files nor run programs; filters that read the
-  // environment or load modules are reviewed. Not -f, -L, --rawfile or --slurpfile.
-  jq: {
-    flags: "rcesSnRjaCM",
-    long: words(`
-      raw-output raw-output0 compact-output exit-status slurp sort-keys null-input raw-input join-output ascii-output
-      color-output monochrome-output tab seq stream stream-errors
-    `),
-    longValues: { indent: "number", arg: "pair", argjson: "pair" },
-    check: checkJq,
-  },
-  find: { parse: parseFind, check: files() },
-  // GNU timeout runs the rest of its arguments as a command, found on PATH.
-  timeout: {
-    flags: "v",
-    values: { s: "string", k: "string" },
-    long: words("preserve-status foreground verbose"),
-    longValues: { signal: "string", "kill-after": "string" },
-    stopAtOperand: true,
-    check: (command, context) => {
-      const [duration, ...inner] = command.operands;
-      return duration !== undefined && DURATION.test(duration.text) && !duration.expands && inner.length > 0 && context.command(inner);
-    },
-  },
-  echo: { parse: parseEcho, opensNoFiles: true, check: () => true },
-  printf: { parse: parseEcho, opensNoFiles: true, check: checkPrintf },
-  true: { parse: parseEcho, opensNoFiles: true, check: () => true },
-  false: { parse: parseEcho, opensNoFiles: true, check: () => true },
-  pwd: { flags: "LP", check: noOperands },
-  basename: { flags: "az", values: { s: "string" }, long: words("multiple zero"), longValues: { suffix: "string" }, opensNoFiles: true, check: literals(1, Infinity) },
-  dirname: { flags: "z", long: words("zero"), opensNoFiles: true, check: literals(1, Infinity) },
-  // Not -s (sets the clock) or -f (reads dates from a file).
-  date: {
-    flags: "uR",
-    values: { d: "string", r: "path", I: "optional" },
-    long: words("utc universal rfc-email"),
-    longValues: { date: "string", reference: "path", "iso-8601": "optional", "rfc-3339": "string" },
-    opensNoFiles: true,
-    check: literals(0, 1, /^\+/),
-  },
-  sleep: { opensNoFiles: true, check: literals(1, Infinity, DURATION) },
-  seq: {
-    flags: "w",
-    values: { s: "string", f: "string" },
-    long: words("equal-width"),
-    longValues: { separator: "string", format: "string" },
-    opensNoFiles: true,
-    check: literals(1, 3, /^\d+(\.\d+)?$/),
-  },
-  which: { flags: "a", long: words("all"), opensNoFiles: true, check: literals(1, Infinity) },
-  uname: {
-    flags: "asnrvmpio",
-    long: words("all kernel-name nodename kernel-release kernel-version machine processor hardware-platform operating-system"),
-    opensNoFiles: true,
-    check: noOperands,
-  },
-  whoami: { opensNoFiles: true, check: noOperands },
-  id: { flags: "ugGnrz", long: words("user group groups name real zero"), opensNoFiles: true, check: literals(0, 1) },
-  // Not with an operand or -F, which set the host name.
-  hostname: { flags: "sfiId", long: words("short fqdn long ip-address all-ip-addresses domain"), opensNoFiles: true, check: noOperands },
-  nproc: { long: words("all"), longValues: { ignore: "number" }, opensNoFiles: true, check: noOperands },
-};
-
-/** The tables, for tooling that checks them against the programs' own help. */
-export function programTables(): Readonly<Record<string, Readonly<ProgramSpec>>> {
-  return PROGRAMS;
-}
-
-/** Whether `name` has a table, so that its safety is decided here. */
-export function hasProgramRule(name: string): boolean {
-  return Object.hasOwn(PROGRAMS, name);
-}
-
-/** Whether the program never opens a file named by its arguments. */
-export function opensNoFiles(name: string): boolean {
-  return PROGRAMS[name]?.opensNoFiles === true;
+function checkTimeout(command: ParsedCommand, context: RuleContext): boolean {
+  const [duration, ...inner] = command.operands;
+  return duration !== undefined && DURATION.test(duration.text) && !duration.expands && inner.length > 0 && context.command(inner);
 }
 
 /**
- * Whether a command run by the bare program name `words[0]` is read-only by
- * that program's table. Option values that name files are checked with the
- * context, operands by the program's own check.
+ * A git operand (revision, `rev:path`, or path) that stays inside the
+ * workspace and away from credential-like files. Git compares files outside
+ * the work tree even without `--no-index` (`git diff /etc/passwd /dev/null`),
+ * so any operand that resolves outside the workspace is reviewed.
  */
-export function isSafeByProgramRule(words: ShellWord[], context: RuleContext): boolean {
-  const spec = Object.hasOwn(PROGRAMS, words[0].text) ? PROGRAMS[words[0].text] : undefined;
-  if (!spec) {
+function isWorkspaceGitOperand(operand: string, context: RuleContext): boolean {
+  const colon = operand.indexOf(":");
+  if (colon >= 0) {
+    // `HEAD:path` or `:path` reads a blob; `path` is relative to the repo root.
+    const blobPath = operand.slice(colon + 1);
+    return !blobPath.startsWith("/") && !blobPath.split(/[\\/]/).includes("..") && !isSensitivePath(blobPath);
+  }
+  if (operand.startsWith("/") || operand.startsWith("~")) {
     return false;
   }
-  const command = spec.parse ? spec.parse(words) : parseOptions(spec, words);
+  return context.workspacePath(operand);
+}
+
+function gitOperands(command: ParsedCommand, context: RuleContext): boolean {
+  return command.operands.every((operand) => isWorkspaceGitOperand(operand.text, context));
+}
+
+const GIT_BRANCH_LIST_FLAGS = new Set(["--show-current", "--list", "--all", "--merged", "--no-merged", "-a", "-r", "-v", "-vv"]);
+// Positional arguments are branch-name patterns only in list mode; otherwise
+// `git branch <name>` creates a branch.
+const GIT_BRANCH_LIST_MODE_FLAGS = new Set(["--list", "--merged", "--no-merged"]);
+
+function gitBranchList(args: string[]): boolean {
+  const flags = args.filter((arg) => arg.startsWith("-"));
+  return flags.every((flag) => GIT_BRANCH_LIST_FLAGS.has(flag))
+    && (flags.length === args.length || flags.some((flag) => GIT_BRANCH_LIST_MODE_FLAGS.has(flag)));
+}
+
+// `git tag <name>` creates a tag; patterns are listed only with -l.
+function gitTagList(args: string[]): boolean {
+  const flags = args.filter((arg) => arg.startsWith("-"));
+  return flags.every((flag) => ["-l", "--list"].includes(flag) || /^-n\d*$/.test(flag) || /^--(sort|format)=/.test(flag))
+    && (flags.length === args.length || flags.some((flag) => flag === "-l" || flag === "--list"));
+}
+
+type OperandCheck = (command: ParsedCommand, context: RuleContext, rule: OperandRule, args: ShellWord[]) => boolean;
+
+const texts = (args: ShellWord[]) => args.map((word) => word.text);
+const counted = (command: ParsedCommand, rule: OperandRule) => command.operands.length >= rule.min && command.operands.length <= rule.max;
+
+/** The checks an entry's `operands` can name (see OPERAND_CHECKS). */
+const OPERAND_CHECK_FUNCTIONS: Record<OperandCheckName, OperandCheck> = {
+  "read-files": (command, context, rule) => counted(command, rule) && readsFiles(command, context) !== null,
+  "literals": (command, _context, rule) => counted(command, rule)
+    && command.operands.every((word) => !word.expands && (!rule.pattern || rule.pattern.test(word.text))),
+  "none": (command) => command.operands.length === 0,
+  "any": () => true,
+  "printf-format": checkPrintf,
+  "grep-operands": checkGrep,
+  "diff-operands": checkDiff,
+  "sed-script": checkSed,
+  "jq-filter": checkJq,
+  "duration-then-command": checkTimeout,
+  "git-operands": gitOperands,
+  "git-branch-list": (command, context, _rule, args) => gitOperands(command, context) && gitBranchList(texts(args)),
+  "git-tag-list": (command, context, _rule, args) => gitOperands(command, context) && gitTagList(texts(args)),
+  "git-remote": (command, context, _rule, args) => gitOperands(command, context)
+    && (args.every((arg) => arg.text === "-v" || arg.text === "--verbose") || args[0]?.text === "get-url"),
+  "git-stash-list": (command, context, _rule, args) => gitOperands(command, context) && ["list", "show"].includes(args[0]?.text ?? ""),
+};
+
+/**
+ * Whether `text` is an option in `except`: a long one also by any
+ * abbreviation or extension of its name, since git (like getopt_long)
+ * accepts unambiguous abbreviations; a short letter anywhere in a group.
+ */
+function isExcepted(text: string, except: string[]): boolean {
+  if (text.startsWith("--")) {
+    const name = text.split("=", 1)[0];
+    return except.some((option) => option.startsWith("--") && (name.startsWith(option) || (name.length > 2 && option.startsWith(name))));
+  }
+  return text.startsWith("-") && except.some((option) => !option.startsWith("--") && text.slice(1).includes(option[1]));
+}
+
+/**
+ * `"options": "any"`: every word starting with `-` before `--` is an option
+ * and every other word an operand, so an option's value given as the next
+ * word is checked as an operand too. No word may expand.
+ */
+function parseAnyOptions(entry: ProgramEntry, args: ShellWord[]): ParsedCommand | null {
+  if (args.some((word) => word.expands || isExcepted(word.text, entry.except))) {
+    return null;
+  }
+  const end = args.findIndex((word) => word.text === "--");
+  const options: ParsedOption[] = [];
+  const operands: ShellWord[] = [];
+  args.forEach((word, index) => {
+    if (end >= 0 && index > end) {
+      operands.push(word);
+    } else if (word.text !== "--") {
+      if (word.text.startsWith("-")) {
+        options.push({ name: word.text, kind: "flag", word });
+      } else {
+        operands.push(word);
+      }
+    }
+  });
+  return { options, operands };
+}
+
+function globalOptionKind(entry: ProgramEntry, text: string): OptionKind | null {
+  if (/^-[A-Za-z0-9]$/.test(text)) {
+    return entry.flags.includes(text[1]) ? "flag" : entry.values[text[1]] ?? null;
+  }
+  if (text.startsWith("--")) {
+    const name = text.slice(2);
+    return entry.long.includes(name) ? "flag" : entry.longValues[name] ?? null;
+  }
+  return null;
+}
+
+/**
+ * A program with subcommands, read as git reads its own options: global
+ * options are whole words before the subcommand, a value is the next word,
+ * and no word may expand. `-C dir` style options move the rest of the
+ * command to that directory.
+ */
+function isSafeWithSubcommand(entry: ProgramEntry, words: ShellWord[], context: RuleContext): boolean {
+  if (words.some((word) => word.expands)) {
+    return false;
+  }
+  let index = 1;
+  let place = context;
+  for (let kind = globalOptionKind(entry, words[index]?.text ?? ""); kind; kind = globalOptionKind(entry, words[index]?.text ?? "")) {
+    if (kind !== "flag") {
+      const value = words[index + 1]?.text;
+      if (value === undefined) {
+        return false;
+      }
+      if (kind === "workspace-directory") {
+        const directory = place.workspaceDirectory(value);
+        if (!directory) {
+          return false;
+        }
+        place = place.within(directory);
+      } else if ((kind === "number" && !NUMBER.test(value)) || (kind === "read-file" && !place.readablePath(value))) {
+        return false;
+      }
+      index += 1;
+    }
+    index += 1;
+  }
+  const subcommand = entry.subcommands!.get(words[index]?.text ?? "");
+  return subcommand !== undefined && isSafeByEntry(subcommand, words.slice(index), place);
+}
+
+function isSafeByEntry(entry: ProgramEntry, words: ShellWord[], context: RuleContext): boolean {
+  if (entry.subcommands) {
+    return isSafeWithSubcommand(entry, words, context);
+  }
+  const args = words.slice(1);
+  const command = entry.anyOptions ? parseAnyOptions(entry, args)
+    : entry.arguments === "find-expression" ? parseFind(words)
+    : entry.arguments === "literal-words" ? parseLiteralWords(words)
+    : parseOptions(entry, words);
   if (!command) {
     return false;
   }
@@ -748,13 +636,38 @@ export function isSafeByProgramRule(words: ShellWord[], context: RuleContext): b
     if (option.kind === "number" && !NUMBER.test(option.value ?? "")) {
       return false;
     }
-    if (option.kind === "path" && !context.readablePath(option.value ?? "")) {
+    if (option.kind === "read-file" && !context.readablePath(option.value ?? "")) {
       return false;
     }
     // `--include=*.ts` stays as written unless a file matches it.
-    if (option.word.expands && (option.kind === "path" || !context.matchesNothing(option.word))) {
+    if (option.word.expands && (option.kind === "read-file" || !context.matchesNothing(option.word))) {
       return false;
     }
   }
-  return spec.check(command, context);
+  const rule = entry.operands!;
+  if (!OPERAND_CHECK_FUNCTIONS[rule.check](command, context, rule, args)) {
+    return false;
+  }
+  // Whatever the entry says each word is, none may name an unreadable file.
+  // `"options": "any"` entries (git) keep every operand inside the workspace
+  // instead, as git-operands does.
+  return entry.anyOptions || entry.opensNoFiles || args.every((word) => word.expands || context.namesNoUnreadableFile(word.text));
+}
+
+/**
+ * Whether a command run by the bare program name `words[0]` is read-only by
+ * that program's entry in the rules. Option values that name files are
+ * checked with the context, operands by the entry's operand check.
+ */
+export function isSafeByProgramRule(words: ShellWord[], context: RuleContext, rules: CommandRules): boolean {
+  const entry = rules.programs.get(words[0].text);
+  return entry !== undefined && isSafeByEntry(entry, words, context);
+}
+
+/**
+ * The entries of programs without subcommands, for tooling that checks them
+ * against the programs themselves (tests/program-oracle/).
+ */
+export function programTables(rules: CommandRules = defaultRules()): Readonly<Record<string, Readonly<ProgramEntry>>> {
+  return Object.fromEntries([...rules.programs].filter(([, entry]) => !entry.subcommands));
 }

@@ -1,5 +1,6 @@
 import type { AutoReviewConfig, ExtensionContextLike, ToolCallEventLike } from "./src/types.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, saveConfig } from "./src/extension-config.js";
+import { defaultRules, defaultRulesPath } from "./src/command-rules.js";
 import { evaluateToolCall, planBashCommand, selectFastPath, sessionKey, type FastPathRoute } from "./src/decision.js";
 import { toRecord } from "./src/common.js";
 import { findToolDefinition } from "./src/tool-routing.js";
@@ -67,6 +68,10 @@ function stateText(config: AutoReviewConfig): "off" | "fallback" | "auto" {
   return config.enabled ? config.mode : "off";
 }
 
+function rulesProblemText(): string {
+  return `command rules could not be loaded, so every bash command is reviewed: ${defaultRules().problem}`;
+}
+
 function notify(ctx: ExtensionContextLike, message: string, type: "info" | "warning" | "error" = "info"): void {
   ctx.ui?.notify?.(message, type);
 }
@@ -128,6 +133,9 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
       }
       if (options.announce && loadResult.notice) {
         notify(ctx, loadResult.notice, "warning");
+      }
+      if (options.announce && defaultRules().problem) {
+        notify(ctx, rulesProblemText(), "warning");
       }
     }
   }
@@ -234,6 +242,7 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
             `approval classifier model: ${classifierModelText(config)}`,
             `config: ${configPath()}`,
             `audit log: ${logPath()}`,
+            defaultRules().problem ? rulesProblemText() : `command rules: ${defaultRulesPath()}`,
             ...(approvals.shellLatch(sessionKey(ctx)) ? [`bash fast path: off for this session (an approved command used ${approvals.shellLatch(sessionKey(ctx))})`] : []),
             ...(loadResult.notice ? [loadResult.notice] : []),
           ].join("\n"),

@@ -1,0 +1,681 @@
+// Built-in command rules: the programs, options and operands that the bash
+// fast path runs without review. Anything not listed here, including an
+// option that is merely unknown, goes to review.
+//
+// Listing a program never bypasses the checks in code, which apply to every
+// command: only the shell syntax the recognizer reads exactly; programs run
+// by their absolute path on OMP's startup PATH, never from the workspace;
+// `~` pinned to OMP's home; files read only inside the read roots and never
+// credential-like; redirections only to /dev/null, between standard streams,
+// or from readable files.
+//
+// Options are chosen to be read-only in GNU coreutils, BSD and busybox alike,
+// and for grep in GNU grep and ugrep, since the PATH may resolve to any of
+// them. Options that run programs, write files, follow symbolic links out of
+// a tree, or behave differently between implementations are left out, each
+// with a comment. tests/program-oracle/ runs these tables against the
+// implementations installed locally.
+//
+// The format:
+//
+//   "programs": { "<name>": <entry> }
+//
+//   An entry has:
+//     "options"     An object from option names to kinds. A key may list an
+//                   option and its aliases, separated by spaces; a short
+//                   letter is then reported by the long name. "-NUM" accepts
+//                   `-20`. Long options must be written in full.
+//     "operands"    The check for the words that are not options: a name, or
+//                   { "<name>": { parameters } }. See below.
+//     "arguments"   "options" (the default), "find-expression" or
+//                   "literal-words": how arguments are split.
+//     "stopAtOperand"  Options end at the first operand (timeout).
+//     "opensNoFiles"   The program never opens a file named by its arguments,
+//                   so words are not checked as paths.
+//     "subcommands" { "<name> <name>…": <entry> } for programs like git. The
+//                   program's own "options" are then whole words before the
+//                   subcommand. A subcommand that is not listed is reviewed.
+//     "except"      With "options": "any" in a subcommand: options never
+//                   accepted. A long one also excludes its abbreviations and
+//                   longer names, a short one the letter in any group.
+//                   On a program, it applies to every subcommand.
+//
+//   Option kinds:
+//     "flag"        No value.
+//     "number"      Digits, with an optional sign and unit suffix.
+//     "string"      Any text, never opened as a file.
+//     "read-file"   A file the program reads, checked like an operand.
+//     "optional"    A value only when glued: `--color=auto`, `-Iseconds`.
+//     "pair"        Two following words: `jq --arg name value`.
+//     "workspace-directory"  A directory inside the workspace that the rest
+//                   of the command runs from (`git -C dir`).
+//
+//   Operand checks:
+//     "read-files"  Files the program reads ({ "min", "max" } count them).
+//     "literals"    Words the shell does not expand ({ "min", "max",
+//                   "pattern" }), never opened as files.
+//     "none", "any"
+//     "printf-format", "grep-operands", "diff-operands", "sed-script",
+//     "jq-filter", "duration-then-command"
+//     "git-operands", "git-branch-list", "git-tag-list", "git-remote",
+//     "git-stash-list"
+//   Each is described in src/command-rules.ts and implemented in
+//   src/program-rules.ts.
+{
+  "$schema": "../schemas/rules.schema.json",
+  "programs": {
+    "cat": {
+      "options": {
+        "-A --show-all": "flag",
+        "-b --number-nonblank": "flag",
+        "-e": "flag",
+        "-E --show-ends": "flag",
+        "-n --number": "flag",
+        "-s --squeeze-blank": "flag",
+        "-t": "flag",
+        "-T --show-tabs": "flag",
+        "-u": "flag",
+        "-v --show-nonprinting": "flag"
+      },
+      "operands": "read-files"
+    },
+
+    "head": {
+      "options": {
+        "-n --lines": "number",
+        "-c --bytes": "number",
+        "-NUM": "number",
+        "-q --quiet --silent": "flag",
+        "-v --verbose": "flag",
+        "-z --zero-terminated": "flag"
+      },
+      "operands": "read-files"
+    },
+
+    // Not -f, -F or --follow, which never finish.
+    "tail": {
+      "options": {
+        "-n --lines": "number",
+        "-c --bytes": "number",
+        "-NUM": "number",
+        "-q --quiet --silent": "flag",
+        "-v --verbose": "flag",
+        "-z --zero-terminated": "flag"
+      },
+      "operands": "read-files"
+    },
+
+    "wc": {
+      "options": {
+        "-c --bytes": "flag",
+        "-l --lines": "flag",
+        "-w --words": "flag",
+        "-m --chars": "flag",
+        "-L --max-line-length": "flag",
+        "--total": "string"
+      },
+      "operands": "read-files"
+    },
+
+    // Not -L (follows symbolic links out of the tree).
+    "ls": {
+      "options": {
+        "-a --all": "flag",
+        "-A --almost-all": "flag",
+        "-b --escape": "flag",
+        "-B --ignore-backups": "flag",
+        "-c": "flag",
+        "-C": "flag",
+        "-d --directory": "flag",
+        "-f": "flag",
+        "-F": "flag",
+        "-g": "flag",
+        "-G --no-group": "flag",
+        "-h --human-readable": "flag",
+        "-H --dereference-command-line": "flag",
+        "-i --inode": "flag",
+        "-k --kibibytes": "flag",
+        "-l": "flag",
+        "-m": "flag",
+        "-n --numeric-uid-gid": "flag",
+        "-N --literal": "flag",
+        "-o": "flag",
+        "-p": "flag",
+        "-q --hide-control-chars": "flag",
+        "-Q --quote-name": "flag",
+        "-r --reverse": "flag",
+        "-R --recursive": "flag",
+        "-s --size": "flag",
+        "-S": "flag",
+        "-t": "flag",
+        "-u": "flag",
+        "-U": "flag",
+        "-v": "flag",
+        "-x": "flag",
+        "-X": "flag",
+        "-Z --context": "flag",
+        "-1": "flag",
+        "-I --ignore": "string",
+        "-T --tabsize": "number",
+        "-w --width": "number",
+        "--author": "flag",
+        "--file-type": "flag",
+        "--full-time": "flag",
+        "--group-directories-first": "flag",
+        "--si": "flag",
+        "--show-control-chars": "flag",
+        "--dereference-command-line-symlink-to-dir": "flag",
+        "--zero": "flag",
+        "--block-size": "string",
+        "--format": "string",
+        "--hide": "string",
+        "--indicator-style": "string",
+        "--quoting-style": "string",
+        "--sort": "string",
+        "--time": "string",
+        "--time-style": "string",
+        "--color": "optional",
+        "--classify": "optional",
+        "--hyperlink": "optional"
+      },
+      "operands": "read-files"
+    },
+
+    // Not -R or --dereference-recursive (follow symbolic links out of the
+    // tree). Not egrep or fgrep: scripts that run `grep` from whatever PATH
+    // the shell has. ugrep searches a directory operand recursively even without
+    // -r, so grep-operands walks every directory named.
+    "grep": {
+      "options": {
+        "-E --extended-regexp": "flag",
+        "-F --fixed-strings": "flag",
+        "-G --basic-regexp": "flag",
+        "-P --perl-regexp": "flag",
+        "-i --ignore-case": "flag",
+        "--no-ignore-case": "flag",
+        "-v --invert-match": "flag",
+        "-w --word-regexp": "flag",
+        "-x --line-regexp": "flag",
+        "-c --count": "flag",
+        "-l --files-with-matches": "flag",
+        "-L --files-without-match": "flag",
+        "-o --only-matching": "flag",
+        "-q --quiet --silent": "flag",
+        "-s --no-messages": "flag",
+        "-n --line-number": "flag",
+        "-h --no-filename": "flag",
+        "-H --with-filename": "flag",
+        "-b --byte-offset": "flag",
+        "-a --text": "flag",
+        "-I": "flag",
+        "-r --recursive": "flag",
+        "-T --initial-tab": "flag",
+        "-U": "flag",
+        "--line-buffered": "flag",
+        "-e --regexp": "string",
+        "-f --file": "read-file",
+        "-m --max-count": "number",
+        "-A --after-context": "number",
+        "-B --before-context": "number",
+        "-C --context": "number",
+        "-NUM": "number",
+        "--label": "string",
+        "--include": "string",
+        "--exclude": "string",
+        "--exclude-dir": "string",
+        "--exclude-from": "read-file",
+        "--binary-files": "string",
+        "--color --colour": "optional"
+      },
+      "operands": "grep-operands"
+    },
+
+    // Not -i (edits in place) or -f (script file); the script itself is
+    // checked by sed-script.
+    "sed": {
+      "options": {
+        "-n --quiet --silent": "flag",
+        "-E -r --regexp-extended": "flag",
+        "-s --separate": "flag",
+        "-u --unbuffered": "flag",
+        "-z --null-data": "flag",
+        "--posix": "flag",
+        "--debug": "flag",
+        "--sandbox": "flag",
+        "-e --expression": "string",
+        "-l --line-length": "number"
+      },
+      "operands": "sed-script"
+    },
+
+    "cut": {
+      "options": {
+        "-s --only-delimited": "flag",
+        "-n": "flag",
+        "-z --zero-terminated": "flag",
+        "--complement": "flag",
+        "-b --bytes": "string",
+        "-c --characters": "string",
+        "-f --fields": "string",
+        "-d --delimiter": "string",
+        "--output-delimiter": "string"
+      },
+      "operands": "read-files"
+    },
+
+    // Not -o (output file), -T (temporary directory), --compress-program or
+    // --files0-from.
+    "sort": {
+      "options": {
+        "-b --ignore-leading-blanks": "flag",
+        "-d --dictionary-order": "flag",
+        "-f --ignore-case": "flag",
+        "-g --general-numeric-sort": "flag",
+        "-h --human-numeric-sort": "flag",
+        "-i --ignore-nonprinting": "flag",
+        "-M --month-sort": "flag",
+        "-n --numeric-sort": "flag",
+        "-R --random-sort": "flag",
+        "-r --reverse": "flag",
+        "-V --version-sort": "flag",
+        "-u --unique": "flag",
+        "-s --stable": "flag",
+        "-z --zero-terminated": "flag",
+        "-m --merge": "flag",
+        "-c": "flag",
+        "-C": "flag",
+        "--check": "optional",
+        "-k --key": "string",
+        "-t --field-separator": "string",
+        "-S --buffer-size": "string",
+        "--sort": "string",
+        "--parallel": "number",
+        "--random-source": "read-file"
+      },
+      "operands": "read-files"
+    },
+
+    // A second operand is uniq's output file.
+    "uniq": {
+      "options": {
+        "-c --count": "flag",
+        "-d --repeated": "flag",
+        "-D": "flag",
+        "--all-repeated": "optional",
+        "--group": "optional",
+        "-u --unique": "flag",
+        "-i --ignore-case": "flag",
+        "-z --zero-terminated": "flag",
+        "-f --skip-fields": "number",
+        "-s --skip-chars": "number",
+        "-w --check-chars": "number"
+      },
+      "operands": { "read-files": { "max": 1 } }
+    },
+
+    "tr": {
+      "opensNoFiles": true,
+      "options": {
+        "-c -C --complement": "flag",
+        "-d --delete": "flag",
+        "-s --squeeze-repeats": "flag",
+        "-t --truncate-set1": "flag"
+      },
+      "operands": { "literals": { "min": 1, "max": 2 } }
+    },
+
+    "tac": {
+      "options": {
+        "-b --before": "flag",
+        "-r --regex": "flag",
+        "-s --separator": "string"
+      },
+      "operands": "read-files"
+    },
+
+    "paste": {
+      "options": {
+        "-s --serial": "flag",
+        "-z --zero-terminated": "flag",
+        "-d --delimiters": "string"
+      },
+      "operands": "read-files"
+    },
+
+    "base64": {
+      "options": {
+        "-d --decode": "flag",
+        "-i --ignore-garbage": "flag",
+        "-w --wrap": "number"
+      },
+      "operands": { "read-files": { "max": 1 } }
+    },
+
+    // Not -l (pipes through pr). diff reads the files directly inside two
+    // directories even without -r, so diff-operands walks them.
+    "diff": {
+      "options": {
+        "-q --brief": "flag",
+        "-r --recursive": "flag",
+        "-N --new-file": "flag",
+        "--unidirectional-new-file": "flag",
+        "-u": "flag",
+        "-U": "number",
+        "--unified": "optional",
+        "-c": "flag",
+        "-C": "number",
+        "--context": "optional",
+        "-w --ignore-all-space": "flag",
+        "-b --ignore-space-change": "flag",
+        "-B --ignore-blank-lines": "flag",
+        "-Z --ignore-trailing-space": "flag",
+        "-E --ignore-tab-expansion": "flag",
+        "-i --ignore-case": "flag",
+        "--ignore-file-name-case": "flag",
+        "--no-ignore-file-name-case": "flag",
+        "-a --text": "flag",
+        "-y --side-by-side": "flag",
+        "--suppress-common-lines": "flag",
+        "--left-column": "flag",
+        "-W --width": "number",
+        "-s --report-identical-files": "flag",
+        "-t --expand-tabs": "flag",
+        "-T --initial-tab": "flag",
+        "-p --show-c-function": "flag",
+        "-F": "string",
+        "-d --minimal": "flag",
+        "--speed-large-files": "flag",
+        "--strip-trailing-cr": "flag",
+        "--horizon-lines": "number",
+        "-x --exclude": "string",
+        "-X --exclude-from": "read-file",
+        "-I --ignore-matching-lines": "string",
+        "--label": "string",
+        "--palette": "string",
+        "--color": "optional",
+        "--from-file": "read-file",
+        "--to-file": "read-file"
+      },
+      "operands": "diff-operands"
+    },
+
+    // Not -L (follows symbolic links out of the tree).
+    "du": {
+      "options": {
+        "-a --all": "flag",
+        "-b --bytes": "flag",
+        "--apparent-size": "flag",
+        "-c --total": "flag",
+        "-D --dereference-args": "flag",
+        "-H": "flag",
+        "-h --human-readable": "flag",
+        "--si": "flag",
+        "-k": "flag",
+        "-l": "flag",
+        "-m": "flag",
+        "-s --summarize": "flag",
+        "-S --separate-dirs": "flag",
+        "-x --one-file-system": "flag",
+        "-0 --null": "flag",
+        "-d --max-depth": "number",
+        "-B --block-size": "string",
+        "-t --threshold": "string",
+        "--exclude": "string",
+        "--time": "optional",
+        "--time-style": "string"
+      },
+      "operands": "read-files"
+    },
+
+    "stat": {
+      "options": {
+        "-L --dereference": "flag",
+        "-f --file-system": "flag",
+        "-t --terse": "flag",
+        "-c --format": "string",
+        "--printf": "string"
+      },
+      "operands": { "read-files": { "min": 1 } }
+    },
+
+    // Not -z or -Z (looks inside compressed files) or -m (magic file).
+    "file": {
+      "options": {
+        "-b --brief": "flag",
+        "-h --no-dereference": "flag",
+        "-L --dereference": "flag",
+        "-i --mime": "flag",
+        "--mime-type": "flag",
+        "--mime-encoding": "flag",
+        "-k --keep-going": "flag",
+        "-N --no-pad": "flag",
+        "-n": "flag",
+        "-r --raw": "flag",
+        "-0 --print0": "flag"
+      },
+      "operands": { "read-files": { "min": 1 } }
+    },
+
+    "readlink": {
+      "options": {
+        "-f --canonicalize": "flag",
+        "-e --canonicalize-existing": "flag",
+        "-m --canonicalize-missing": "flag",
+        "-n --no-newline": "flag",
+        "-q --quiet": "flag",
+        "-s --silent": "flag",
+        "-v --verbose": "flag",
+        "-z --zero": "flag"
+      },
+      "operands": "read-files"
+    },
+
+    "realpath": {
+      "options": {
+        "-e --canonicalize-existing": "flag",
+        "-m --canonicalize-missing": "flag",
+        "-L --logical": "flag",
+        "-P --physical": "flag",
+        "-q --quiet": "flag",
+        "-s --strip --no-symlinks": "flag",
+        "-z --zero": "flag",
+        "--relative-to": "read-file",
+        "--relative-base": "read-file"
+      },
+      "operands": "read-files"
+    },
+
+    // jq can neither write files nor run programs; jq-filter reviews filters
+    // that read the environment or load modules. Not -f, -L, --rawfile or
+    // --slurpfile.
+    "jq": {
+      "options": {
+        "-r --raw-output": "flag",
+        "--raw-output0": "flag",
+        "-j --join-output": "flag",
+        "-a --ascii-output": "flag",
+        "-c --compact-output": "flag",
+        "-C --color-output": "flag",
+        "-M --monochrome-output": "flag",
+        "--tab": "flag",
+        "--indent": "number",
+        "-e --exit-status": "flag",
+        "-s --slurp": "flag",
+        "-S --sort-keys": "flag",
+        "-n --null-input": "flag",
+        "-R --raw-input": "flag",
+        "--seq": "flag",
+        "--stream": "flag",
+        "--stream-errors": "flag",
+        "--arg": "pair",
+        "--argjson": "pair"
+      },
+      "operands": "jq-filter"
+    },
+
+    // -H, -P and -O<level>, starting points, then an expression of known
+    // tests only: no -exec, -execdir, -ok, -delete or -fprint*. Not -L
+    // (follows symbolic links out of the tree).
+    "find": {
+      "arguments": "find-expression",
+      "operands": "read-files"
+    },
+
+    // GNU timeout runs the rest of its arguments as a command, found on
+    // PATH; duration-then-command checks that command on its own, and pins
+    // its program too.
+    "timeout": {
+      "stopAtOperand": true,
+      "options": {
+        "-v --verbose": "flag",
+        "--preserve-status": "flag",
+        "--foreground": "flag",
+        "-s --signal": "string",
+        "-k --kill-after": "string"
+      },
+      "operands": "duration-then-command"
+    },
+
+    "echo": { "arguments": "literal-words", "opensNoFiles": true, "operands": "any" },
+    // Not -v (assigns a shell variable).
+    "printf": { "arguments": "literal-words", "opensNoFiles": true, "operands": "printf-format" },
+    "true": { "arguments": "literal-words", "opensNoFiles": true, "operands": "any" },
+    "false": { "arguments": "literal-words", "opensNoFiles": true, "operands": "any" },
+
+    "pwd": {
+      "options": { "-L": "flag", "-P": "flag" },
+      "operands": "none"
+    },
+
+    "basename": {
+      "opensNoFiles": true,
+      "options": {
+        "-a --multiple": "flag",
+        "-z --zero": "flag",
+        "-s --suffix": "string"
+      },
+      "operands": { "literals": { "min": 1 } }
+    },
+
+    "dirname": {
+      "opensNoFiles": true,
+      "options": { "-z --zero": "flag" },
+      "operands": { "literals": { "min": 1 } }
+    },
+
+    // Not -s (sets the clock) or -f (reads dates from a file). The only
+    // operand is an output format.
+    "date": {
+      "opensNoFiles": true,
+      "options": {
+        "-u --utc --universal": "flag",
+        "-R --rfc-email": "flag",
+        "-d --date": "string",
+        "-r --reference": "read-file",
+        "-I --iso-8601": "optional",
+        "--rfc-3339": "string"
+      },
+      "operands": { "literals": { "max": 1, "pattern": "^\\+" } }
+    },
+
+    "sleep": {
+      "opensNoFiles": true,
+      "operands": { "literals": { "min": 1, "pattern": "^\\d+(\\.\\d+)?[smhd]?$" } }
+    },
+
+    "seq": {
+      "opensNoFiles": true,
+      "options": {
+        "-w --equal-width": "flag",
+        "-s --separator": "string",
+        "-f --format": "string"
+      },
+      "operands": { "literals": { "min": 1, "max": 3, "pattern": "^\\d+(\\.\\d+)?$" } }
+    },
+
+    "which": {
+      "opensNoFiles": true,
+      "options": { "-a --all": "flag" },
+      "operands": { "literals": { "min": 1 } }
+    },
+
+    "uname": {
+      "opensNoFiles": true,
+      "options": {
+        "-a --all": "flag",
+        "-s --kernel-name": "flag",
+        "-n --nodename": "flag",
+        "-r --kernel-release": "flag",
+        "-v --kernel-version": "flag",
+        "-m --machine": "flag",
+        "-p --processor": "flag",
+        "-i --hardware-platform": "flag",
+        "-o --operating-system": "flag"
+      },
+      "operands": "none"
+    },
+
+    "whoami": { "opensNoFiles": true, "operands": "none" },
+
+    "id": {
+      "opensNoFiles": true,
+      "options": {
+        "-u --user": "flag",
+        "-g --group": "flag",
+        "-G --groups": "flag",
+        "-n --name": "flag",
+        "-r --real": "flag",
+        "-z --zero": "flag"
+      },
+      "operands": { "literals": { "max": 1 } }
+    },
+
+    // Not with an operand or -F, which set the host name.
+    "hostname": {
+      "opensNoFiles": true,
+      "options": {
+        "-s --short": "flag",
+        "-f --fqdn --long": "flag",
+        "-i --ip-address": "flag",
+        "-I --all-ip-addresses": "flag",
+        "-d --domain": "flag"
+      },
+      "operands": "none"
+    },
+
+    "nproc": {
+      "opensNoFiles": true,
+      "options": { "--all": "flag", "--ignore": "number" },
+      "operands": "none"
+    },
+
+    "git": {
+      // Before the subcommand. Not -c (sets any configuration, such as a
+      // pager or an external diff program), --git-dir, --work-tree or
+      // --exec-path.
+      "options": {
+        "--no-pager -P": "flag",
+        "-C": "workspace-directory"
+      },
+      // Options that make read-only subcommands write files, run external
+      // programs, or compare files outside the repository.
+      "except": ["--output", "--ext-diff", "--no-index", "--open-files-in-pager"],
+      "subcommands": {
+        "status log diff show rev-parse ls-files ls-tree rev-list blame shortlog describe merge-base show-ref cat-file check-ignore check-attr name-rev count-objects": {
+          "options": "any",
+          "operands": "git-operands"
+        },
+        // `git grep -O<pager>` opens the matching files in a program.
+        "grep": { "options": "any", "except": ["-O"], "operands": "git-operands" },
+        // Listing only: `git branch <name>` creates a branch, `git tag <name>`
+        // a tag.
+        "branch": { "options": "any", "operands": "git-branch-list" },
+        "tag": { "options": "any", "operands": "git-tag-list" },
+        // `remote`, `remote -v`, `remote get-url <name>`.
+        "remote": { "options": "any", "operands": "git-remote" },
+        // `stash list`, `stash show`.
+        "stash": { "options": "any", "operands": "git-stash-list" }
+      }
+    }
+  }
+}

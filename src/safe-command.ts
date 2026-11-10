@@ -3,23 +3,11 @@ import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { relativePathWithin, resolvePathForCwd, resolveReadRoots, type ReadRoots } from "./common.js";
 import { boundedGlobMatches, isTreeClean } from "./path-expansion.js";
-import { hasProgramRule, isSafeByProgramRule, opensNoFiles, type RuleContext } from "./program-rules.js";
+import { defaultRules, type CommandRules } from "./command-rules.js";
+import { isSafeByProgramRule, type RuleContext } from "./program-rules.js";
 import { isSensitivePath } from "./sensitive-paths.js";
 import { recognizeShell, type ShellCommand, type ShellRedirect, type ShellWord } from "./shell-syntax.js";
 import type { AutoReviewConfig } from "./types.js";
-
-const SAFE_GIT_SUBCOMMANDS = new Set([
-  "status", "log", "diff", "show", "rev-parse", "grep", "ls-files", "ls-tree", "rev-list", "blame", "shortlog", "describe",
-  "merge-base", "show-ref", "cat-file", "check-ignore", "check-attr", "name-rev", "count-objects",
-]);
-const SAFE_GIT_BRANCH_FLAGS = new Set(["--show-current", "--list", "--all", "--merged", "--no-merged", "-a", "-r", "-v", "-vv"]);
-// Positional arguments are branch-name patterns only in list mode; otherwise
-// `git branch <name>` creates a branch.
-const GIT_BRANCH_LIST_MODE_FLAGS = new Set(["--list", "--merged", "--no-merged"]);
-// Long options that make otherwise read-only git commands write files, run
-// external programs, or compare arbitrary files outside the repository. Git
-// accepts unambiguous abbreviations, so prefixes match too.
-const UNSAFE_GIT_LONG_OPTIONS = ["--output", "--ext-diff", "--no-index", "--open-files-in-pager"];
 
 // safeCommandAllowlist entries are prefixes, so allowlisting a program would
 // otherwise allow every option it has. Options that execute other programs or
@@ -81,36 +69,6 @@ interface Place {
   workspace: string;
   directory: string;
   roots: ReadRoots;
-}
-
-function isUnsafeGitOption(arg: string): boolean {
-  if (!arg.startsWith("--")) {
-    return false;
-  }
-  const name = arg.split("=", 1)[0];
-  return UNSAFE_GIT_LONG_OPTIONS.some((option) => (
-    name.startsWith(option) || (name.length > 2 && option.startsWith(name))
-  ));
-}
-
-/**
- * A git operand (revision, `rev:path`, or path) that stays inside the
- * workspace and away from credential-like files. Git compares files outside
- * the work tree even without `--no-index` (`git diff /etc/passwd /dev/null`),
- * so any operand that resolves outside the workspace is reviewed.
- */
-function isWorkspaceGitOperand(operand: string, place: Place): boolean {
-  const colon = operand.indexOf(":");
-  if (colon >= 0) {
-    // `HEAD:path` or `:path` reads a blob; `path` is relative to the repo root.
-    const blobPath = operand.slice(colon + 1);
-    return !blobPath.startsWith("/") && !blobPath.split(/[\\/]/).includes("..") && !isSensitivePath(blobPath);
-  }
-  if (operand.startsWith("/") || operand.startsWith("~")) {
-    return false;
-  }
-  const relative = relativePathWithin(resolvePathForCwd(operand, place.directory), place.workspace);
-  return relative !== null && !isSensitivePath(relative);
 }
 
 function programName(word: string): string {
@@ -230,66 +188,6 @@ export function allowlistEntryProblem(entry: string): string | null {
   return null;
 }
 
-/**
- * A read-only git command: `--no-pager` and `-C <dir>` (a workspace
- * directory) before one of SAFE_GIT_SUBCOMMANDS, a listing-only `branch` or
- * `tag`, `remote [-v]`, `remote get-url`, or `stash list/show`. Every operand
- * must stay inside the workspace (see isWorkspaceGitOperand).
- */
-function isBuiltinSafeCommand(words: ShellWord[], place: Place): boolean {
-  // `git diff -- secrets*` names whatever the glob matches.
-  if (words.some((word) => word.expands) || words[0].text !== "git") {
-    return false;
-  }
-  const tokens = words.map((word) => word.text);
-  let index = 1;
-  let gitPlace = place;
-  while (tokens[index] === "--no-pager" || tokens[index] === "-P" || tokens[index] === "-C") {
-    if (tokens[index] === "-C") {
-      const directory = directoryWithin(tokens[index + 1] ?? "", gitPlace);
-      if (!directory) {
-        return false;
-      }
-      gitPlace = { ...gitPlace, directory };
-      index += 1;
-    }
-    index += 1;
-  }
-  const [subcommand, ...rest] = tokens.slice(index);
-  if (!subcommand) {
-    return false;
-  }
-  // `git grep -O<pager>` opens the matching files in a program.
-  if (rest.some(isUnsafeGitOption) || (subcommand === "grep" && rest.some((arg) => /^-[^-]*O/.test(arg)))) {
-    return false;
-  }
-  const endOfOptions = rest.indexOf("--");
-  const operands = rest.filter((arg, index) => (endOfOptions >= 0 && index > endOfOptions) || (arg !== "--" && !arg.startsWith("-")));
-  if (!operands.every((operand) => isWorkspaceGitOperand(operand, gitPlace))) {
-    return false;
-  }
-  if (SAFE_GIT_SUBCOMMANDS.has(subcommand)) {
-    return true;
-  }
-  const flags = rest.filter((arg) => arg.startsWith("-"));
-  const hasPositional = flags.length < rest.length;
-  switch (subcommand) {
-    case "branch":
-      return flags.every((flag) => SAFE_GIT_BRANCH_FLAGS.has(flag))
-        && (!hasPositional || flags.some((flag) => GIT_BRANCH_LIST_MODE_FLAGS.has(flag)));
-    case "tag":
-      // `git tag <name>` creates a tag; patterns are listed only with -l.
-      return flags.every((flag) => ["-l", "--list"].includes(flag) || /^-n\d*$/.test(flag) || /^--(sort|format)=/.test(flag))
-        && (!hasPositional || flags.some((flag) => flag === "-l" || flag === "--list"));
-    case "remote":
-      return rest.every((arg) => arg === "-v" || arg === "--verbose") || rest[0] === "get-url";
-    case "stash":
-      return rest[0] === "list" || rest[0] === "show";
-    default:
-      return false;
-  }
-}
-
 function matchesAllowlistEntry(command: string, entry: string): boolean {
   const trimmed = entry.trim();
   if (!trimmed || allowlistEntryProblem(trimmed)) {
@@ -396,13 +294,13 @@ interface Check {
   config: AutoReviewConfig;
   place: Place;
   searchPath: string;
+  rules: CommandRules;
   // Text to put in place of `source.slice(start, end)`.
   pins: { start: number; end: number; text: string }[];
 }
 
 /** What a program table may ask about the place a command runs in (see RuleContext). */
-function ruleContext(check: Check): RuleContext {
-  const { place } = check;
+function ruleContext(check: Check, place = check.place): RuleContext {
   const readable = (absolute: string) => isInsideReadRoots(absolute, place.roots);
   return {
     directory: place.directory,
@@ -445,13 +343,20 @@ function ruleContext(check: Check): RuleContext {
     readablePath: (text) => readable(resolvePathForCwd(text, place.directory)),
     matchesNothing: (word) => boundedGlobMatches(word.text, place.directory)?.length === 0,
     treeIsClean: (path, filter) => isTreeClean(path, filter),
+    namesNoUnreadableFile: (text) => namesNoUnreadableFile(text, place),
+    workspacePath(text) {
+      const relative = relativePathWithin(resolvePathForCwd(text, place.directory), place.workspace);
+      return relative !== null && !isSensitivePath(relative);
+    },
+    workspaceDirectory: (text) => directoryWithin(text, place),
+    within: (directory) => ruleContext(check, { ...place, directory }),
     command: (words) => isSafeCommand(words, check),
   };
 }
 
 /**
- * Whether one simple command is safe on its own, by the built-in git rules,
- * a program table, or a safeCommandAllowlist entry; its program is then
+ * Whether one simple command is safe on its own, by its program's entry in
+ * the command rules or by a safeCommandAllowlist entry; its program is then
  * pinned (see planSafeCommand).
  */
 function isSafeCommand(words: ShellWord[], check: Check): boolean {
@@ -468,11 +373,7 @@ function isSafeCommand(words: ShellWord[], check: Check): boolean {
     check.pins.length = pins;
     return false;
   };
-  const byTable = () => isSafeByProgramRule(words, ruleContext(check))
-    // Whatever the table says each word is, none may name an unreadable file.
-    && (opensNoFiles(program.text) || words.slice(1).every((word) => word.expands || namesNoUnreadableFile(word.text, check.place)));
-  const safe = attempt(() => isBuiltinSafeCommand(words, check.place))
-    || (!program.text.includes("/") && hasProgramRule(program.text) && attempt(byTable))
+  const safe = (!program.text.includes("/") && attempt(() => isSafeByProgramRule(words, ruleContext(check), check.rules)))
     || attempt(() => isUserAllowlisted(words, check));
   return safe && pinProgram(program, check);
 }
@@ -507,9 +408,10 @@ export interface SafeCommandPlan {
  * reviewed.
  *
  * The command must be in the subset recognizeShell reads exactly, and every
- * simple command in it must be safe on its own: a built-in read-only git
- * command, `pwd`, or a safeCommandAllowlist entry whose arguments stay inside
- * the read roots, with only safe redirections (see isSafeRedirect). `&&`,
+ * simple command in it must be safe on its own: by its program's entry in the
+ * command rules (config/default-rules.jsonc), or a safeCommandAllowlist entry
+ * whose arguments stay inside the read roots, with only safe redirections
+ * (see isSafeRedirect). Rules that failed to load review everything. `&&`,
  * `||`, `;`, newlines, and pipes between them add nothing a command could not
  * do alone.
  *
@@ -525,9 +427,10 @@ export interface SafeCommandPlan {
 export function planSafeCommand(
   command: string,
   config: AutoReviewConfig,
-  options: { workspace: string; cwd?: string; searchPath?: string },
+  options: { workspace: string; cwd?: string; searchPath?: string; rules?: CommandRules },
 ): SafeCommandPlan | null {
-  const script = recognizeShell(command);
+  const rules = options.rules ?? defaultRules();
+  const script = rules.problem ? null : recognizeShell(command);
   if (!script) {
     return null;
   }
@@ -548,7 +451,7 @@ export function planSafeCommand(
     first += 1;
   }
   const commands = script.pipelines.slice(first).flat();
-  const check: Check = { source: command, config, place, searchPath: options.searchPath ?? STARTUP_PATH, pins: [] };
+  const check: Check = { source: command, config, place, searchPath: options.searchPath ?? STARTUP_PATH, rules, pins: [] };
   for (const shellCommand of commands) {
     if (!shellCommand.redirects.every((redirect) => isSafeRedirect(redirect, place))) {
       return null;

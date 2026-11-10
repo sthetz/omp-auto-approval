@@ -54,6 +54,7 @@ This fork registers the same `/auto-approval` command as the original Pi package
 | `/auto-approval auto` | Enable AI review only. Classifier denial or failure blocks the tool call. |
 | `/auto-approval model` | Open the model selector for the approval classifier model. |
 | `/auto-approval model current` | Use the active OMP session model for approval classification. |
+| `/auto-approval rules [program \| rule id]` | List the command rules in use and the file each comes from, or show one program's entry or one rule. See [Your own command rules](#your-own-command-rules). |
 | `/auto-approval explain <tool> [args]` | Show how a tool call would be routed, without running it. `args` is a path, a JSON object, or (for `bash`) a command, e.g. `/auto-approval explain read ~/.ssh/id_ed25519`. If the first word isn't a tool in the session, the whole input is explained as a bash command: `/auto-approval explain ls -la`. |
 
 ## Screenshot
@@ -91,9 +92,13 @@ sequenceDiagram
 
     alt state is off
         Ext-->>OMP: No decision, use normal OMP behavior
-    else bash command matches blockCommands
+    else bash command matches blockCommands or a block rule
         Ext-->>OMP: Block, without review or prompt
-    else workspace read, workspace-internal write, or safe read-only bash command
+    else bash command matches an ask rule
+        Ext->>Human: Ask directly, without the classifier (denied in auto mode)
+        Human-->>Ext: Approve or reject
+        Ext-->>OMP: Allow or block
+    else workspace read, workspace-internal write, or safe read-only bash command (no review rule matches)
         Ext-->>OMP: Allow
         OMP->>Tool: Execute tool call
     else exact action already approved in this session

@@ -202,6 +202,9 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
       ...(plan && plan.command !== toRecord(parsed.input).command ? [`runs as: ${plan.command}`] : []),
       ...(plan?.cwd ? [`runs in: ${plan.cwd}`] : []),
       ...(plan ? [`allowed by: ${plan.rules.map((used) => `${used.id} (${used.source})`).join(", ")}`] : []),
+      ...(plan?.rules.some((used) => used.source !== "default" && used.source !== "config.jsonc")
+        ? ["note: entries from your rules files are not checked by the program oracle, as the built-in ones are"]
+        : []),
       ...(escalation?.rule ? [`rule: ${escalation.rule.id} (${escalation.rule.outcome}, ${escalation.rule.source})`, ...(escalation.rule.why ? [`why: ${escalation.rule.why}`] : [])] : []),
       ...(escalation?.blockPattern ? [`rule: blockCommands "${escalation.blockPattern}" (block, config.jsonc)`] : []),
       ...(toolName === "bash" && rules.problem ? [rulesProblemText(rules)] : []),
@@ -259,8 +262,10 @@ export default function ompAutoApprovalExtension(omp: ExtensionAPI): void {
         explain(rest, ctx);
         break;
       case "rules":
-        if (rest) {
-          notify(ctx, describeRule(rules, rest) ?? `No program or rule named "${rest}". /auto-approval rules lists them.`, rules.programs.size ? "info" : "warning");
+        if (rules.problem) {
+          notify(ctx, rulesProblemText(rules), "warning");
+        } else if (rest) {
+          notify(ctx, describeRule(rules, rest) ?? `No program or rule named "${rest}". /auto-approval rules lists them.`, "info");
         } else {
           notify(ctx, rulesOverview(rules, config.blockCommands));
         }

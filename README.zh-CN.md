@@ -50,6 +50,7 @@ OMP 自带审批设置 `tools.approvalMode`，它在本扩展放行调用之后�
 | `/auto-approval auto` | 只使用 AI 审批。分类器拒绝或失败时直接阻止工具调用。 |
 | `/auto-approval model` | 打开审批分类器模型选择器。 |
 | `/auto-approval model current` | 使用当前 OMP 会话模型作为审批分类器模型。 |
+| `/auto-approval rules [程序 \| 规则 id]` | 列出正在使用的命令规则及其来源文件，或显示某个程序的条目或某条规则。见[自定义命令规则](#自定义命令规则)。 |
 | `/auto-approval explain <tool> [args]` | 显示某个工具调用会走哪条审批路由，但不执行它。`args` 可以是路径、JSON 对象，或（对 `bash`）命令，例如 `/auto-approval explain read ~/.ssh/id_ed25519`。如果第一个单词不是当前会话中的工具，整段输入会被当作 bash 命令解释：`/auto-approval explain ls -la`。 |
 
 ## 截图
@@ -87,9 +88,13 @@ sequenceDiagram
 
     alt 状态为 off
         Ext-->>OMP: 不做决策，使用 OMP 默认行为
-    else bash 命令匹配 blockCommands
+    else bash 命令匹配 blockCommands 或 block 规则
         Ext-->>OMP: 直接阻止，不审批也不询问
-    else 工作区读取、工作区内部写入或安全只读 bash 命令
+    else bash 命令匹配 ask 规则
+        Ext->>Human: 直接询问，不经过分类器（auto 模式下拒绝）
+        Human-->>Ext: 批准或拒绝
+        Ext-->>OMP: 放行或阻止
+    else 工作区读取、工作区内部写入或安全只读 bash 命令（未匹配 review 规则）
         Ext-->>OMP: 放行
         OMP->>Tool: 执行工具调用
     else 当前会话已精确批准同一动作

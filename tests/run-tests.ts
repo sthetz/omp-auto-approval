@@ -1013,6 +1013,11 @@ async function run(): Promise<void> {
     assert.equal(matches("/curl[^|]*\\|\\s*(ba)?sh/", "curl -s x | bash"), true);
     assert.equal(matches(["git push --force", "git push -f"], "git push -uf origin"), true);
     assert.equal(matches("*ctl delete", "systemctl delete x"), true);
+    // A compiled rule is reused: a sticky or global regex must not skip every other command.
+    const sticky = rules("/git\\s+reset/gy");
+    assert.equal(escalateCommand("git reset --hard", sticky, []) !== null, true);
+    assert.equal(escalateCommand("git reset --hard", sticky, []) !== null, true);
+    assert.throws(() => compileCommandPattern("/usr/bin/git push", { extended: true }), /programs are matched by name, so "\/usr\/bin\/git" never matches; write "git"/);
     // Quotes holding an operator do not split a command.
     assert.equal(matches("git push --force", "git -c 'x=a;b' push --force"), true);
     assert.equal(matchBlockedCommand("git -c \"a|b\" push --force", ["git push --force"]), "git push --force");
@@ -2161,6 +2166,48 @@ async function run(): Promise<void> {
       delete process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
     } else {
       process.env.PI_AUTO_APPROVAL_CONFIG_PATH = previousConfigPath;
+    }
+  });
+
+  await test("/auto-approval rules answers through the command, also when the rules are broken", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-auto-approval-rules-command-"));
+    const previousConfigPath = process.env.PI_AUTO_APPROVAL_CONFIG_PATH;
+    const previousRulesPath = process.env.PI_AUTO_APPROVAL_RULES_PATH;
+    process.env.PI_AUTO_APPROVAL_CONFIG_PATH = join(dir, "config.jsonc");
+    process.env.PI_AUTO_APPROVAL_RULES_PATH = join(dir, "rules.jsonc");
+    writeFileSync(join(dir, "config.jsonc"), JSON.stringify({ enabled: true, mode: "auto" }));
+    // A user entry for a program that is installed, so that explain can fast-path it.
+    writeFileSync(join(dir, "rules.jsonc"), KUBE_RULES.replace('"programs": {', '"programs": { "whoami": { "opensNoFiles": true, "operands": "none" },'));
+    let handler: ((args: string, ctx: ExtensionContextLike) => Promise<void> | void) | undefined;
+    ompAutoApprovalExtension({ on: () => {}, getAllTools: () => [], registerCommand: (_name, definition) => { handler = definition.handler; } });
+    const messages: string[] = [];
+    const commandCtx = ctx({ cwd: dir, ui: { notify: (message) => { messages.push(message); }, setStatus: () => {} } });
+    const say = async (args: string) => {
+      messages.length = 0;
+      await handler!(args, commandCtx);
+      return messages.join("\n");
+    };
+    try {
+      assert.match(await say("rules"), /kube-delete-all: block/);
+      assert.match(await say("rules program:git status"), /^program:git status \(default\)\n  options: any, except --output --ext-diff --no-index --open-files-in-pager\n  operands: git-operands$/);
+      assert.match(await say("rules kube-secrets"), /^kube-secrets: review/);
+      assert.match(await say("rules nothing"), /No program or rule named "nothing"/);
+      assert.match(await say("explain bash kubectl delete --all pods"), /route: blocked[\s\S]*rule: kube-delete-all \(block, .*rules\.jsonc\)/);
+      assert.match(await say("explain bash whoami"), /allowed by: program:whoami \(.*rules\.jsonc\)\nnote: entries from your rules files are not checked by the program oracle/);
+      assert.match(await say("explain bash git status"), /allowed by: program:git status \(default\)$/);
+      writeFileSync(join(dir, "rules.jsonc"), "{ broken");
+      for (const args of ["rules", "rules git"]) {
+        assert.match(await say(args), /^command rules could not be loaded, so every bash command is reviewed: .*rules\.jsonc: expected a key/, args);
+      }
+    } finally {
+      for (const [name, previous] of [["PI_AUTO_APPROVAL_CONFIG_PATH", previousConfigPath], ["PI_AUTO_APPROVAL_RULES_PATH", previousRulesPath]] as const) {
+        if (previous === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = previous;
+        }
+      }
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

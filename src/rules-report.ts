@@ -105,9 +105,12 @@ export function rulesOverview(rules: CommandRules, blockCommands: readonly strin
 
 /** One program's entry, or one rule, or null when there is neither. */
 export function describeRule(rules: CommandRules, name: string): string | null {
-  const program = rules.programs.get(name.replace(/^program:/, ""));
-  if (program) {
-    return [`${program.id} (${program.source})`, ...entryLines(program, "  ")].join("\n");
+  // `git`, `program:git`, or `program:git status`, as explain and the audit log name them.
+  const [programName, subcommandName] = name.replace(/^program:/, "").split(/\s+/);
+  const program = rules.programs.get(programName);
+  const entry = subcommandName === undefined ? program : program?.subcommands?.get(subcommandName);
+  if (entry) {
+    return [`${entry.id} (${entry.source})`, ...entryLines(entry, "  ")].join("\n");
   }
   const rule = rules.rules.find((candidate) => candidate.id === name);
   return rule ? ruleLines(rule).join("\n") : null;

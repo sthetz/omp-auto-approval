@@ -99,10 +99,15 @@ export function compileCommandPattern(raw: string, options: { extended: boolean 
   }
   const regex = /^\/(.+)\/([a-z]*)$/.exec(pattern);
   if (regex) {
-    const compiled = new RegExp(regex[1], regex[2].replace(/g/g, ""));
+    // Without g and y, test() keeps no state between commands.
+    const compiled = new RegExp(regex[1], regex[2].replace(/[gy]/g, ""));
     return (command) => compiled.test(command);
   }
-  const [program, ...rest] = pattern.split(/\s+/).map((word) => wordTest(word, options.extended));
+  const words = pattern.split(/\s+/);
+  if (options.extended && words[0].includes("/")) {
+    throw new Error(`programs are matched by name, so "${words[0]}" never matches; write "${words[0].slice(words[0].lastIndexOf("/") + 1)}"`);
+  }
+  const [program, ...rest] = words.map((word) => wordTest(word, options.extended));
   return (_command, segments) => segments.some((segment) => segment.some((word, start) => {
     if (!program(programName(word))) {
       return false;

@@ -612,7 +612,7 @@ function isExcepted(text: string, except: string[]): boolean {
   }
   return (
     text.startsWith("-") &&
-    except.some((option) => !option.startsWith("--") && option.length > 1 && text.slice(1).includes(option.charAt(1)))
+    except.some((option) => !option.startsWith("--") && text.slice(1).includes(option.charAt(1)))
   );
 }
 

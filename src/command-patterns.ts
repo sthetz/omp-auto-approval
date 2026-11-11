@@ -99,7 +99,8 @@ function resolveExpansions(lines: string[][]): string[][] {
     for (const word of setters) {
       const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(word);
       if (assignment) {
-        const [name, value] = [group(assignment, 1), group(assignment, 2)];
+        const name = group(assignment, 1);
+        const value = group(assignment, 2);
         if (EXPANSION.test(value)) {
           literals.delete(name);
         } else {

@@ -260,7 +260,8 @@ export function shellHook(command: string, directory: string, depth = 0): string
     for (const word of setters) {
       const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(word);
       if (assignment) {
-        const [variableName, value] = [group(assignment, 1), group(assignment, 2)];
+        const variableName = group(assignment, 1);
+        const value = group(assignment, 2);
         if (/[$`]/.test(value)) {
           literals.delete(variableName);
         } else {

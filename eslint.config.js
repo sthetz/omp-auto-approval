@@ -22,7 +22,6 @@ export default defineConfig(
       "@typescript-eslint/no-misused-spread": "off",
       "@typescript-eslint/no-non-null-assertion": "off",
       "@typescript-eslint/no-redundant-type-constituents": "off",
-      "@typescript-eslint/no-unnecessary-boolean-literal-compare": "off",
       "@typescript-eslint/no-unnecessary-condition": "off",
       "@typescript-eslint/no-unsafe-argument": "off",
       "@typescript-eslint/no-unsafe-assignment": "off",

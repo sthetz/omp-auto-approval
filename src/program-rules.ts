@@ -99,7 +99,7 @@ export function parseOptions(spec: OptionTable, words: ShellWord[]): ParsedComma
     const text = word.text;
     if (endOfOptions || text === "-" || !text.startsWith("-")) {
       operands.push(word);
-      endOfOptions ||= spec.stopAtOperand === true;
+      endOfOptions ||= spec.stopAtOperand;
       continue;
     }
     if (text === "--") {

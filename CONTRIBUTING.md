@@ -7,7 +7,7 @@ npm install
 npm run check
 ```
 
-`npm run check` runs the format check, the type check, the tests, and a smoke test that loads the extension through a stand-in for OMP's extension API. It needs Node 20.11 or later and `git` (and uses `python3` for one test when it is there). It uses no network, no model, and no files outside temporary directories. CI runs it on pull requests and on pushes to `master`.
+`npm run check` runs the format check, the type check, ESLint (typescript-eslint, with type information), the tests, and a smoke test that loads the extension through a stand-in for OMP's extension API. It needs Node 20.11 or later and `git` (and uses `python3` for one test when it is there). It uses no network, no model, and no files outside temporary directories. CI runs it on pull requests and on pushes to `master`.
 
 `npm run format` formats the TypeScript with [Prettier](https://prettier.io); set your editor to format on save, or run it before committing. A commit that only reformats goes in `.git-blame-ignore-revs`, which GitHub's blame skips; for `git blame` to skip it too, run `git config blame.ignoreRevsFile .git-blame-ignore-revs` once.
 

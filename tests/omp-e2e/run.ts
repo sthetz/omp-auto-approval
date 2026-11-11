@@ -252,7 +252,7 @@ const SCENARIOS: Scenario[] = [
       expect(
         problems,
         touch?.route === "safe_command" && touch.ruleIds?.includes("touch-marker") === true,
-        `touch route ${touch?.route} rules ${touch?.ruleIds}, wanted safe_command via touch-marker`,
+        `touch route ${touch?.route} rules ${touch?.ruleIds?.join(",")}, wanted safe_command via touch-marker`,
       );
       expect(problems, existsSync(join(result.workspace, "allowed.txt")), "the allowed command did not run");
       expect(

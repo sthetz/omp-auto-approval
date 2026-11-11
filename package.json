@@ -34,9 +34,10 @@
     "oracle:shell": "node --import tsx tests/shell-oracle/run.ts",
     "oracle:programs": "node --import tsx tests/program-oracle/run.ts",
     "oracle:help": "node --import tsx tests/program-oracle/help-check.ts",
+    "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "npm run format:check && npm run typecheck && npm run test && npm run smoke:omp"
+    "check": "npm run format:check && npm run typecheck && npm run lint && npm run test && npm run smoke:omp"
   },
   "keywords": [
     "oh-my-pi",
@@ -71,8 +72,10 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "eslint": "^10.13.0",
     "prettier": "^3.10.0",
     "tsx": "^4.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.72.0"
   }
 }

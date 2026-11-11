@@ -4565,7 +4565,7 @@ async function run(): Promise<void> {
       { toolName: "bash", input: { command: "pwd" }, cwd: "/tmp", actionSummary: "bash: pwd", actionHash: "x" },
       async (model, _context, options) => {
         capturedModel = model;
-        capturedOptions = options as Record<string, unknown>;
+        capturedOptions = options;
         return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
       },
     );
@@ -4598,7 +4598,7 @@ async function run(): Promise<void> {
       config({ classifierModel: "my-cf/some-model" }),
       { toolName: "bash", input: { command: "pwd" }, cwd: "/tmp", actionSummary: "bash: pwd", actionHash: "x" },
       async (_model, _context, options) => {
-        capturedOptions = options as Record<string, unknown>;
+        capturedOptions = options;
         return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
       },
     );
@@ -4644,7 +4644,7 @@ async function run(): Promise<void> {
       config({}),
       { toolName: "bash", input: { command: "pwd" }, cwd: "/tmp", actionSummary: "bash: pwd", actionHash: "x" },
       async (_model, _context, options) => {
-        capturedOptions = options as Record<string, unknown>;
+        capturedOptions = options;
         return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
       },
     );
@@ -4682,7 +4682,7 @@ async function run(): Promise<void> {
       config({ classifierModel: "my-proxy/my-model" }),
       { toolName: "bash", input: { command: "pwd" }, cwd: "/tmp", actionSummary: "bash: pwd", actionHash: "x" },
       async (_model, _context, options) => {
-        capturedOptions = options as Record<string, unknown>;
+        capturedOptions = options;
         return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
       },
     );

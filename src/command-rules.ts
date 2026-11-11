@@ -201,7 +201,7 @@ function compileRuleList(value: unknown, source: string, where: string, seen: Se
     if (object.why !== undefined && typeof object.why !== "string") {
       throw new RulesError(`${at}.why: expected text`);
     }
-    const why = (object.why as string | undefined) ?? null;
+    const why = object.why ?? null;
     if (object.outcome === "allow") {
       // A prefix of the command as written (see matchesAllowEntry in safe-command.ts).
       if (object.match !== undefined) {
@@ -226,7 +226,7 @@ function compileRuleList(value: unknown, source: string, where: string, seen: Se
     if (!Array.isArray(match) || !match.length || !match.every((pattern) => typeof pattern === "string")) {
       throw new RulesError(`${at}.match: expected a pattern or a list of patterns`);
     }
-    const patterns = (match as string[]).map((pattern) => {
+    const patterns = match.map((pattern) => {
       try {
         return compileCommandPattern(pattern);
       } catch (error) {
@@ -235,7 +235,7 @@ function compileRuleList(value: unknown, source: string, where: string, seen: Se
     });
     return {
       id,
-      match: match as string[],
+      match,
       patterns,
       outcome: object.outcome as RuleOutcome,
       prefix: null,

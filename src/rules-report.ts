@@ -84,7 +84,7 @@ function ruleLines(rule: CommandRule): string[] {
 /** The overview: files, programs by source, and every rule. */
 export function rulesOverview(rules: CommandRules): string {
   if (rules.problem) {
-    return `command rules could not be loaded, so every bash command asks you first (and is denied without an interactive UI): ${rules.problem}`;
+    return `command rules could not be loaded, so every bash call is blocked until the file is fixed: ${rules.problem}`;
   }
   const bySource = new Map<string, string[]>();
   for (const [name, entry] of rules.programs) {

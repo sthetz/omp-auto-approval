@@ -155,7 +155,11 @@ function evaluateStatic(call: CanonicalToolCall & { toolName: string }, state: D
   const builtin = isBuiltinTool(toolDefinition, tools.length > 0);
   const normalizedToolName = call.toolName.trim().toLowerCase();
   const command = bashCommand(call.toolName, call.input);
-  const escalation = command ? escalateCommand(command, rules) : null;
+  const escalation = call.toolName === "bash" && rules.problem
+    ? escalateCommand(command ?? "", rules)
+    : command
+      ? escalateCommand(command, rules)
+      : null;
   const verdict = (outcome: StaticVerdict["outcome"], route: StaticRoute, plan: SafeCommandPlan | null = null): StaticVerdict => ({
     evaluator: "static",
     outcome,
@@ -273,7 +277,9 @@ export function decide(call: CanonicalToolCall, state: DecisionState): Decision 
   const rule = staticVerdict.escalation?.rule;
 
   if (staticVerdict.outcome === "block") {
-    const reason = `This command matches the command rule "${rule?.id}" (block) and never runs.${rule?.why ? ` Why: ${rule.why}` : ""} Do not retry it in another form; tell the user what you wanted to run and why.`;
+    const reason = rule?.id === RULES_PROBLEM_ID
+      ? `The command rules are broken at ${rule.why}. Every bash call is blocked until the file is fixed. Report this rules error to the user and do not retry the call.`
+      : `This command matches the command rule "${rule?.id}" (block) and never runs.${rule?.why ? ` Why: ${rule.why}` : ""} Do not retry it in another form; tell the user what you wanted to run and why.`;
     return { ...base, route: "blocked_command", ...automaticDenial(reason) };
   }
 
@@ -292,9 +298,7 @@ export function decide(call: CanonicalToolCall, state: DecisionState): Decision 
     }
     const reason = staticVerdict.route === "manual_only"
       ? MANUAL_ONLY_FAILURE
-      : rule?.id === RULES_PROBLEM_ID
-        ? `The command rules could not be loaded, so every bash command needs the user's approval, and the user cannot be asked without an interactive UI. Problem: ${rule.why}. Do not retry; tell the user to fix the rules file.`
-        : `This command matches the command rule "${rule?.id}", which asks the user to approve it, and the user cannot be asked without an interactive UI.${rule?.why ? ` Why: ${rule.why}` : ""} Do not retry it in another form; tell the user what you wanted to run and why.`;
+      : `This command matches the command rule "${rule?.id}", which asks the user to approve it, and the user cannot be asked without an interactive UI.${rule?.why ? ` Why: ${rule.why}` : ""} Do not retry it in another form; tell the user what you wanted to run and why.`;
     return {
       ...base,
       ...automaticDenial(reason),

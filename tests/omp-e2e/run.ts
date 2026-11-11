@@ -177,7 +177,7 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
-    name: "a broken rules file makes every bash command ask",
+    name: "a broken rules file blocks every bash command",
     reviewer: "ai",
     verdict: "allow",
     rules: "{ \"rules\": [ broken",
@@ -185,8 +185,8 @@ const SCENARIOS: Scenario[] = [
     check(result) {
       const problems: string[] = [];
       const [line] = decisions(result);
-      expect(problems, line?.route === "ask_rule" && line.outcome === "deny", `route ${line?.route}/${line?.outcome}, wanted ask_rule/deny`);
-      expect(problems, result.model.toolResults.flat().some((text) => text.includes("rules file")), "the agent was not told the rules file is broken");
+      expect(problems, line?.route === "blocked_command" && line.outcome === "deny", `route ${line?.route}/${line?.outcome}, wanted blocked_command/deny`);
+      expect(problems, result.model.toolResults.flat().some((text) => text.includes("Report this rules error")), "the agent was not told to report the rules error");
       return problems;
     },
   },

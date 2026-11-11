@@ -1,6 +1,6 @@
 import type { ClearanceConfig, ExtensionContextLike, Reviewer } from "./src/types.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, saveConfig } from "./src/extension-config.js";
-import { defaultRulesPath, loadCommandRules, userRulesPath, type CommandRules } from "./src/command-rules.js";
+import { defaultRulesPath, userRulesPath, type CommandRules } from "./src/command-rules.js";
 import { decide, sessionKey, snapshotDecisionState, type Decision } from "./src/decision.js";
 import { canonicalContext, canonicalTools, evaluateToolCall } from "./src/omp-host.js";
 import { describeRule, rulesOverview } from "./src/rules-report.js";
@@ -10,6 +10,7 @@ import { assistantText } from "./src/context-projection.js";
 import { SessionApprovalStore } from "./src/session-approval-store.js";
 import { selectClassifierModel } from "./src/model-selector.js";
 import { loadReviewerState, reviewerStatePath, saveReviewerState, type ReviewerState } from "./src/reviewer-state.js";
+import { watchCommandRules, type CommandRulesWatch } from "./src/rules-watch.js";
 
 type ExtensionAPI = {
   on(event: string, handler: (event: unknown, ctx: unknown) => unknown): void;
@@ -81,12 +82,13 @@ function parseExplainInput(toolName: string, rest: string): { input: unknown } |
   return { input: rest ? { path: rest } : {} };
 }
 
-function statusText(state: ReviewerState): string {
-  return `clearance:${state.reviewer}${state.problem ? " (invalid reviewer state)" : ""}`;
+function statusText(state: ReviewerState, rules: CommandRules): string {
+  const text = `clearance:${state.reviewer}${state.problem ? " (invalid reviewer state)" : ""}${rules.problem ? " (rules error)" : ""}`;
+  return rules.problem ? `\u001B[31m${text}\u001B[0m` : text;
 }
 
 function rulesProblemText(rules: CommandRules): string {
-  return `omp-clearance: the command rules could not be loaded, so every bash command asks you first (and is denied without an interactive UI): ${rules.problem}. Fix the file, then run /clearance status to reload it.`;
+  return `omp-clearance: the command rules could not be loaded, so every bash call is blocked until the file is fixed: ${rules.problem}. Fixing the file is enough; rules reload automatically.`;
 }
 
 function rulesStatusText(rules: CommandRules): string[] {
@@ -104,8 +106,8 @@ function notify(ctx: ExtensionContextLike, message: string, type: "info" | "warn
   ctx.ui?.notify?.(message, type);
 }
 
-function setStatus(ctx: ExtensionContextLike, state: ReviewerState): void {
-  ctx.ui?.setStatus?.(STATUS_KEY, statusText(state));
+function setStatus(ctx: ExtensionContextLike, state: ReviewerState, rules: CommandRules): void {
+  ctx.ui?.setStatus?.(STATUS_KEY, statusText(state, rules));
 }
 
 function parseCommand(args: string): string {
@@ -145,37 +147,47 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
   let loadResult = loadConfig();
   let config = loadResult.config;
   let reviewerState = loadReviewerState(config, loadResult.reviewerConfigured);
-  // The command rules for this session: re-read at session start and on any
-  // /clearance command.
-  let rules = loadCommandRules();
+  // The command rules for this session: watched on every tool call and
+  // reloaded on session start and /clearance commands.
+  let rulesWatch: CommandRulesWatch = watchCommandRules();
+  let rules = rulesWatch.rules;
   const approvals = new SessionApprovalStore();
   let lastContext: ExtensionContextLike | null = null;
   // Latest assistant text in the current agent run, for the classifier.
   let agentMessage: string | undefined;
 
-  function refresh(ctx?: ExtensionContextLike, options: { announce?: boolean; quiet?: boolean } = {}): void {
+  function refresh(ctx?: ExtensionContextLike, options: { announce?: boolean; quiet?: boolean } = {}): boolean {
     if (ctx) {
       lastContext = ctx;
     }
     loadResult = loadConfig();
     config = loadResult.config;
+    const previousReviewerProblem = reviewerState.problem;
+    const previousRulesProblem = rules.problem;
     reviewerState = loadReviewerState(config, loadResult.reviewerConfigured);
-    rules = loadCommandRules();
+    rulesWatch = watchCommandRules();
+    rules = rulesWatch.rules;
+    let rulesNotified = false;
     if (ctx) {
-      setStatus(ctx, reviewerState);
+      setStatus(ctx, reviewerState, rules);
       if (loadResult.warning && !options.quiet) {
         notify(ctx, loadResult.warning, "warning");
       }
       if (options.announce && loadResult.notice) {
         notify(ctx, loadResult.notice, "warning");
       }
-      if (options.announce && reviewerState.problem) {
+      if (reviewerState.problem && (options.announce || reviewerState.problem !== previousReviewerProblem)) {
         notify(ctx, reviewerState.problem, "error");
       }
-      if (options.announce && rules.problem) {
+      if (rules.problem && (options.announce || rules.problem !== previousRulesProblem)) {
         notify(ctx, rulesProblemText(rules), "error");
+        rulesNotified = true;
+      }
+      if (!rules.problem && previousRulesProblem) {
+        notify(ctx, "omp-clearance: command rules reloaded; bash calls are no longer blocked.", "info");
       }
     }
+    return rulesNotified;
   }
 
   function explain(rest: string, ctx: ExtensionContextLike): void {
@@ -226,7 +238,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
       return;
     }
     config = next;
-    setStatus(ctx, reviewerState);
+    setStatus(ctx, reviewerState, rules);
   }
 
   function persistReviewer(reviewer: Reviewer, ctx: ExtensionContextLike): void {
@@ -236,13 +248,13 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
       return;
     }
     reviewerState = loadReviewerState(config, loadResult.reviewerConfigured);
-    setStatus(ctx, reviewerState);
+    setStatus(ctx, reviewerState, rules);
     notify(ctx, `omp-clearance reviewer: ${reviewer}.`);
   }
 
   async function runCommand(command: string, rest: string, ctx: ExtensionContextLike): Promise<void> {
     lastContext = ctx;
-    refresh(ctx);
+    const rulesNotified = refresh(ctx);
     switch (command) {
       case "ai":
         persistReviewer("ai", ctx);
@@ -276,7 +288,9 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
         break;
       case "rules":
         if (rules.problem) {
-          notify(ctx, rulesProblemText(rules), "warning");
+          if (!rulesNotified) {
+            notify(ctx, rulesProblemText(rules), "warning");
+          }
         } else if (rest) {
           notify(ctx, describeRule(rules, rest) ?? `No program or rule named "${rest}". /clearance rules lists them.`, "info");
         } else {
@@ -360,12 +374,21 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
       if (loadResult.created || loadResult.warning) {
         refresh(ctx, { quiet: true });
       }
+      const nextRules = watchCommandRules(rulesWatch);
+      if (nextRules.rules.problem && nextRules.rules.problem !== rules.problem) {
+        notify(ctx, rulesProblemText(nextRules.rules), "error");
+      }
+      if (!nextRules.rules.problem && rules.problem) {
+        notify(ctx, "omp-clearance: command rules reloaded; bash calls are no longer blocked.", "info");
+      }
+      rulesWatch = nextRules;
+      rules = nextRules.rules;
       const nextReviewer = loadReviewerState(config, loadResult.reviewerConfigured, reviewerState);
       if (nextReviewer.problem && nextReviewer.problem !== reviewerState.problem) {
         notify(ctx, nextReviewer.problem, "error");
       }
       reviewerState = nextReviewer;
-      setStatus(ctx, reviewerState);
+      setStatus(ctx, reviewerState, rules);
       return await evaluateToolCall(event, ctx, config, approvals, {
         reviewer: reviewerState.reviewer,
         tools: canonicalTools(omp.getAllTools?.()),

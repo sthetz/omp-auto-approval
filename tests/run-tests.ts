@@ -668,7 +668,7 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("a rules file with any problem is not used, and every bash command is reviewed", () => {
+  await test("a rules file with any problem is not used, and every bash call is blocked", () => {
     const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-rules-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
     const file = join(workspace, "rules.jsonc");
@@ -694,7 +694,7 @@ async function run(): Promise<void> {
         writeFileSync(file, text);
         const rules = loadRulesFile(file, "rules.jsonc");
         assert.match(rules.problem ?? "", problem, text);
-        assert.match(rules.problem ?? "", /^rules\.jsonc: /);
+        assert.match(rules.problem ?? "", /^rules\.jsonc:\d+:\d+: /);
         assert.equal(rules.programs.size, 0);
         // Not even allow rules apply: the file could have held a rule
         // that is meant to restrict it.
@@ -709,7 +709,7 @@ async function run(): Promise<void> {
       assert.notEqual(planSafeCommand("cat notes.txt", config(), { workspace, searchPath: TEST_PATH, rules }), null);
       assert.equal(planSafeCommand("cat -n notes.txt", config(), { workspace, searchPath: TEST_PATH, rules }), null);
       assert.equal(planSafeCommand("pwd", config(), { workspace, searchPath: TEST_PATH, rules }), null);
-      assert.match(loadRulesFile(join(workspace, "missing.jsonc"), "missing.jsonc").problem ?? "", /^missing\.jsonc: ENOENT/);
+      assert.match(loadRulesFile(join(workspace, "missing.jsonc"), "missing.jsonc").problem ?? "", /^missing\.jsonc:\d+:\d+: ENOENT/);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
@@ -947,13 +947,13 @@ async function run(): Promise<void> {
       assert.notEqual(planSafeCommand("npm ls", config(), { workspace: home, searchPath: TEST_PATH, rules }), null);
 
       const broken: [Record<string, string>, RegExp][] = [
-        [{ "rules.jsonc": '{ "include": ["rules/npm.jsonc"] }' }, /^~\/rules\.jsonc: include: expected an absolute path or one starting with ~\//],
-        [{ "rules.jsonc": '{ "include": ["~/rules/missing.jsonc"] }' }, /^~\/rules\/missing\.jsonc: ENOENT/],
-        [{ "rules.jsonc": '{ "include": ["~/rules/a.jsonc"] }', "rules/a.jsonc": '{ "include": ["~/rules.jsonc"] }' }, /^~\/rules\.jsonc: includes itself through ~\/rules\.jsonc → ~\/rules\/a\.jsonc/],
-        [{ "rules.jsonc": '{ "include": ["~/rules/a.jsonc"] }', "rules/a.jsonc": "{ oops }" }, /^~\/rules\/a\.jsonc: expected a key in double quotes at line 1/],
+        [{ "rules.jsonc": '{ "include": ["rules/npm.jsonc"] }' }, /^~\/rules\.jsonc:\d+:\d+: include: expected an absolute path or one starting with ~\//],
+        [{ "rules.jsonc": '{ "include": ["~/rules/missing.jsonc"] }' }, /^~\/rules\/missing\.jsonc:\d+:\d+: ENOENT/],
+        [{ "rules.jsonc": '{ "include": ["~/rules/a.jsonc"] }', "rules/a.jsonc": '{ "include": ["~/rules.jsonc"] }' }, /^~\/rules\.jsonc:\d+:\d+: includes itself through ~\/rules\.jsonc → ~\/rules\/a\.jsonc/],
+        [{ "rules.jsonc": '{ "include": ["~/rules/a.jsonc"] }', "rules/a.jsonc": "{ oops }" }, /^~\/rules\/a\.jsonc:\d+:\d+: expected a key in double quotes at line 1/],
         [
           { "rules.jsonc": '{ "include": ["~/rules/a.jsonc"], "programs": { "cat": { "operands": "none" } } }', "rules/a.jsonc": '{ "programs": { "cat": { "operands": "none" } } }' },
-          /^~\/rules\.jsonc: programs\["cat"\]: also defined in ~\/rules\/a\.jsonc/,
+          /^~\/rules\.jsonc:\d+:\d+: programs\["cat"\]: also defined in ~\/rules\/a\.jsonc/,
         ],
       ];
       for (const [files, problem] of broken) {
@@ -974,7 +974,7 @@ async function run(): Promise<void> {
       // A dangling symbolic link is an error, not "no rules file".
       rmSync(join(home, "rules.jsonc"));
       symlinkSync(join(home, "gone.jsonc"), join(home, "rules.jsonc"));
-      assert.match(loadCommandRules(join(home, "rules.jsonc")).problem ?? "", /^~\/rules\.jsonc: ENOENT/);
+      assert.match(loadCommandRules(join(home, "rules.jsonc")).problem ?? "", /^~\/rules\.jsonc:\d+:\d+: ENOENT/);
     } finally {
       process.env.HOME = previousHome;
       rmSync(home, { recursive: true, force: true });
@@ -987,7 +987,7 @@ async function run(): Promise<void> {
     const file = join(workspace, "rules.jsonc");
     try {
       const broken: [string, RegExp][] = [
-        ['{ "programs": {}, "rule": [] }', /rules\.jsonc: unknown key "rule"/],
+        ['{ "programs": {}, "rule": [] }', /rules\.jsonc:\d+:\d+: unknown key "rule"/],
         ['{ "programs": { "sed": null } }', /to turn off a built-in program, list "program:sed" in "disable"/],
         ['{ "programs": { "head": { "extends": "builtin" } } }', /programs\["head"\]\.extends: only "default"/],
         ['{ "programs": { "kubectl": { "extends": "default" } } }', /programs\["kubectl"\]\.extends: only "default", for a program the defaults have$/],
@@ -1002,7 +1002,7 @@ async function run(): Promise<void> {
         ['{ "programs": { "git": { "extends": "default", "subcommands": { "worktree": null } } } }', /no subcommand "worktree"/],
         ['{ "programs": { "git": { "extends": "default", "subcommands": { "worktree": { "extends": "default" } } } } }', /subcommands\["worktree"\]\.extends: only "default", for a subcommand the default entry has/],
         ['{ "programs": { "npm": { "subcommands": { "ls": { "extends": "default", "operands": "none" } } } } }', /extends: only "default", for a subcommand the defaults have/],
-        ['{ "programs": { "cat": { "options": { "-n": "flags" }, "operands": "read-files" } } }', /rules\.jsonc: programs\["cat"\]\.options\["-n"\]: unknown kind "flags"/],
+        ['{ "programs": { "cat": { "options": { "-n": "flags" }, "operands": "read-files" } } }', /rules\.jsonc:\d+:\d+: programs\["cat"\]\.options\["-n"\]: unknown kind "flags"/],
         ['{ "programs": { "later": { "options": { "-k": "string" }, "operands": "duration-then-command" } } }', /needs "stopAtOperand": true/],
         ['{ "programs": { "git": { "extends": "default", "subcommands": { "run": { "options": "any", "stopAtOperand": true, "operands": "duration-then-command" } } } } }', /needs "stopAtOperand": true and an option table/],
       ];
@@ -1033,8 +1033,8 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("while the rules file is broken, every bash command asks the user, and session start says so", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-broken-ask-"));
+  await test("broken rules block bash in every reviewer, report loudly, and reload when fixed", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-broken-block-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
     writeFileSync(join(workspace, "rules.jsonc"), "{ broken");
     const previousRules = process.env.CLEARANCE_RULES_PATH;
@@ -1047,25 +1047,103 @@ async function run(): Promise<void> {
       assert.notEqual(rules.problem, null);
       const noClassifier = { classifierClient: async () => { throw new Error("must not call the classifier"); }, rules };
       const bash = (command: string) => ({ toolName: "bash", input: { command } });
-      // Without a UI the ask is denied; the classifier is never called.
-      const denied = await evaluateToolCall(bash("git status"), ctx({ cwd: workspace }), config({ reviewer: "ai" }), new SessionApprovalStore(), noClassifier);
-      assert.match((denied as { reason?: string }).reason ?? "", /^The command rules could not be loaded, so every bash command needs the user's approval, and the user cannot be asked without an interactive UI\. Problem: .*rules\.jsonc: expected a key.*\. Do not retry; tell the user to fix the rules file\.$/);
-      // Even with bash in reviewExemptTools.
-      assert.equal("block" in await evaluateToolCall(bash("git status"), ctx({ cwd: workspace }), config({ reviewer: "ai", reviewExemptTools: ["bash"] }), new SessionApprovalStore(), noClassifier), true);
-      // With a UI, ask policy prompts even with the manual reviewer.
-      let prompt = "";
-      const ui = { select: async (title: string) => { prompt = title; return "Allow Once"; } };
-      assert.deepEqual(await evaluateToolCall(bash("git status"), ctx({ cwd: workspace, hasUI: true, ui }), config({ reviewer: "manual" }), new SessionApprovalStore(), noClassifier), {});
-      assert.match(prompt, /The command rules could not be loaded, so every bash command needs your approval until they are fixed\.[\s\S]*Rule: rules-unreadable \(ask, .*rules\.jsonc\)\nWhy: .*rules\.jsonc: expected a key/);
-      // Other tools are not governed by the rules.
+      for (const reviewer of ["ai", "manual", "off"] as const) {
+        const denied = await evaluateToolCall(
+          bash("git status"),
+          ctx({ cwd: workspace, hasUI: true, ui: { select: async () => { throw new Error("broken rules must not prompt"); } } }),
+          config({ reviewer }),
+          new SessionApprovalStore(),
+          noClassifier,
+        );
+        assert.match((denied as { reason?: string }).reason ?? "", /^The command rules are broken at .*rules\.jsonc:\d+:\d+: expected a key.*Every bash call is blocked until the file is fixed\. Report this rules error to the user and do not retry the call\.$/);
+      }
+      // Even with bash in reviewExemptTools; other tools are not governed by the rules.
+      for (const input of [{}, { command: "" }]) {
+        assert.equal("block" in await evaluateToolCall({ toolName: "bash", input }, ctx({ cwd: workspace }), config({ reviewer: "off", reviewExemptTools: ["bash"] }), new SessionApprovalStore(), noClassifier), true);
+      }
+      assert.equal("block" in await evaluateToolCall(bash("git status"), ctx({ cwd: workspace }), config({ reviewer: "off", reviewExemptTools: ["bash"] }), new SessionApprovalStore(), noClassifier), true);
       assert.deepEqual(await evaluateToolCall({ toolName: "read", input: { path: "notes.txt" } }, ctx({ cwd: workspace }), config({ reviewer: "ai" }), new SessionApprovalStore(), noClassifier), {});
 
-      // Session start shows an error.
+      // Session start shows an error and keeps the problem in the status line.
       const handlers = new Map<string, (...args: any[]) => any>();
       ompClearanceExtension({ on: (event, handler) => { handlers.set(event, handler); }, getAllTools: () => [], registerCommand: () => {} });
       const notices: [string, string | undefined][] = [];
-      await handlers.get("session_start")!({}, ctx({ cwd: workspace, ui: { notify: (message, type) => { notices.push([message, type]); }, setStatus: () => {} } }));
-      assert.ok(notices.some(([message, type]) => type === "error" && /^omp-clearance: the command rules could not be loaded, so every bash command asks you first/.test(message)), JSON.stringify(notices));
+      const statuses: string[] = [];
+      const sessionCtx = ctx({ cwd: workspace, ui: {
+        notify: (message, type) => { notices.push([message, type]); },
+        setStatus: (_key, value) => { if (value) statuses.push(value); },
+      } });
+      await handlers.get("session_start")!({}, sessionCtx);
+      assert.ok(notices.some(([message, type]) => type === "error" && /^omp-clearance: the command rules could not be loaded, so every bash call is blocked/.test(message)), JSON.stringify(notices));
+      assert.match(statuses.at(-1) ?? "", /rules error/);
+      assert.ok(statuses.at(-1)?.startsWith("\u001B[31m"));
+      assert.ok(statuses.at(-1)?.endsWith("\u001B[0m"));
+
+      // Fixing the main file is enough: the next call reloads it and runs safely.
+      writeFileSync(join(workspace, "rules.jsonc"), "{}");
+      utimesSync(join(workspace, "rules.jsonc"), 60, 60);
+      assert.deepEqual(await handlers.get("tool_call")!(bash("git status"), sessionCtx), {});
+      assert.doesNotMatch(statuses.at(-1) ?? "", /rules error/);
+      assert.equal(notices.filter(([message, type]) => type === "info" && message === "omp-clearance: command rules reloaded; bash calls are no longer blocked.").length, 1);
+    } finally {
+      for (const [name, previous] of [["CLEARANCE_RULES_PATH", previousRules], ["CLEARANCE_CONFIG_PATH", previousConfig]] as const) {
+        if (previous === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = previous;
+        }
+      }
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  await test("rules includes reload when their contents change", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-include-reload-"));
+    const main = join(workspace, "rules.jsonc");
+    const included = join(workspace, "included.jsonc");
+    const validInclude = '{ "programs": { "whoami": { "opensNoFiles": true, "operands": "none" } } }';
+    writeFileSync(main, JSON.stringify({ include: [included] }));
+    writeFileSync(included, validInclude);
+    const previousRules = process.env.CLEARANCE_RULES_PATH;
+    const previousConfig = process.env.CLEARANCE_CONFIG_PATH;
+    process.env.CLEARANCE_RULES_PATH = main;
+    process.env.CLEARANCE_CONFIG_PATH = join(workspace, "config.jsonc");
+    writeFileSync(process.env.CLEARANCE_CONFIG_PATH, JSON.stringify({ reviewer: "off" }));
+    const handlers = new Map<string, (...args: any[]) => any>();
+    const notices: string[] = [];
+    const sessionCtx = ctx({ cwd: workspace, ui: { notify: (message) => { notices.push(message); }, setStatus: () => {} } });
+    try {
+      ompClearanceExtension({ on: (event, handler) => { handlers.set(event, handler); }, getAllTools: () => [], registerCommand: () => {} });
+      const call = () => handlers.get("tool_call")!({ toolName: "bash", input: { command: "whoami" } }, sessionCtx);
+      assert.deepEqual(await call(), {});
+
+      writeFileSync(included, "{ broken");
+      utimesSync(included, 70, 70);
+      await handlers.get("resources_discover")!({}, sessionCtx);
+      assert.match(notices.at(-1) ?? "", /included\.jsonc/);
+      const blocked = await call();
+      assert.match("reason" in blocked ? blocked.reason : "", /included\.jsonc:\d+:\d+: expected a key/);
+      assert.equal(notices.length, 1);
+
+      writeFileSync(included, validInclude);
+      utimesSync(included, 80, 80);
+      assert.deepEqual(await call(), {});
+
+      writeFileSync(included, '{ "programs": { "x": {} } }');
+      utimesSync(included, 90, 90);
+      const invalid = await call();
+      assert.match("reason" in invalid ? invalid.reason : "", /included\.jsonc:\d+:\d+: programs\["x"\]: missing "operands"/);
+
+      for (const [seconds, document, message] of [
+        [100, '{ "programs": { "cat": { "extends": "default", "operands": { "read-files": { "min": 2, "max": 1 } } } } }', "min is more than max"],
+        [110, '{ "programs": { "bad key": {} } }', "one program per entry"],
+      ] as const) {
+        writeFileSync(included, document);
+        utimesSync(included, seconds, seconds);
+        const problem = loadCommandRules(main).problem ?? "";
+        assert.ok(problem.startsWith(`${included}:`), problem);
+        assert.match(problem, new RegExp(message));
+      }
     } finally {
       for (const [name, previous] of [["CLEARANCE_RULES_PATH", previousRules], ["CLEARANCE_CONFIG_PATH", previousConfig]] as const) {
         if (previous === undefined) {
@@ -2618,7 +2696,8 @@ async function run(): Promise<void> {
       assert.match(await say("explain bash git status"), /allowed by: program:git status \(default\)$/);
       writeFileSync(join(dir, "rules.jsonc"), "{ broken");
       for (const args of ["rules", "rules git"]) {
-        assert.match(await say(args), /^omp-clearance: the command rules could not be loaded, so every bash command asks you first \(and is denied without an interactive UI\): .*rules\.jsonc: expected a key.*Fix the file, then run \/clearance status to reload it\.$/, args);
+        assert.match(await say(args), /omp-clearance: the command rules could not be loaded, so every bash call is blocked until the file is fixed: .*rules\.jsonc:\d+:\d+: expected a key.*Fixing the file is enough; rules reload automatically\.$/, args);
+        assert.equal(messages.length, 1);
       }
     } finally {
       for (const [name, previous] of [["CLEARANCE_CONFIG_PATH", previousConfigPath], ["CLEARANCE_RULES_PATH", previousRulesPath]] as const) {

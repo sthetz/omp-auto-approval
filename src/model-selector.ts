@@ -2,82 +2,6 @@ import type { ClearanceConfig, ExtensionContextLike } from "./types.js";
 
 const ANSI_SGR_PATTERN = /(\x1b\[[0-9;]*m)/g;
 
-/**
- * @deprecated Compatibility helper retained for existing tests/consumers.
- * Production selector rendering uses Pi TUI's own width utilities instead.
- */
-export function columnWidth(char: string): number {
-  const code = char.codePointAt(0) ?? 0;
-  return (code >= 0x1100 && code <= 0x115f) ||
-    (code >= 0x2e80 && code <= 0xa4cf) ||
-    (code >= 0xac00 && code <= 0xd7a3) ||
-    (code >= 0xf900 && code <= 0xfaff) ||
-    (code >= 0xfe30 && code <= 0xfe4f) ||
-    (code >= 0xff00 && code <= 0xff60) ||
-    (code >= 0xffe0 && code <= 0xffe6) ||
-    (code >= 0x20000 && code <= 0x2fffd) ||
-    (code >= 0x30000 && code <= 0x3fffd)
-    ? 2
-    : 1;
-}
-
-/** @deprecated See columnWidth(). */
-export function visibleWidthOf(line: string): number {
-  let width = 0;
-  const parts = line.split(ANSI_SGR_PATTERN);
-  for (let i = 0; i < parts.length; i += 2) {
-    for (const char of parts[i]) {
-      width += columnWidth(char);
-    }
-  }
-  return width;
-}
-
-/** @deprecated See columnWidth(). Production rendering does not call this. */
-export function truncateVisible(line: string, maxWidth: number): string {
-  if (maxWidth <= 0) {
-    return "";
-  }
-  if (visibleWidthOf(line) <= maxWidth) {
-    return line;
-  }
-  const ellipsis = "...";
-  const ellipsisWidth = 3;
-  const textBudget = ellipsisWidth < maxWidth ? maxWidth - ellipsisWidth : maxWidth;
-  const parts = line.split(ANSI_SGR_PATTERN);
-  let result = "";
-  let visible = 0;
-  let usedAnsi = false;
-  let truncated = false;
-  for (let i = 0; i < parts.length; i += 1) {
-    const part = parts[i];
-    if (i % 2 === 1) {
-      usedAnsi = true;
-      result += part;
-      continue;
-    }
-    for (const char of part) {
-      const width = columnWidth(char);
-      if (visible + width > textBudget) {
-        truncated = true;
-        break;
-      }
-      result += char;
-      visible += width;
-    }
-    if (truncated) {
-      break;
-    }
-  }
-  if (!truncated) {
-    return result;
-  }
-  if (ellipsisWidth < maxWidth) {
-    return usedAnsi ? `${result}\x1b[0m${ellipsis}` : `${result}${ellipsis}`;
-  }
-  return usedAnsi ? `${result}\x1b[0m` : result;
-}
-
 type ThemeLike = {
   fg?: (name: string, text: string) => string;
   bold?: (text: string) => string;
@@ -450,9 +374,6 @@ export const modelSelectorInternals = {
   modelLabel,
   normalizeModel,
   sortModels,
-  truncateVisible,
-  visibleWidthOf,
-  columnWidth,
   fitLineToWidth,
   createSelectorComponent,
   selectClassifierModelWithTextUtils,

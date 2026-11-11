@@ -36,7 +36,6 @@ import {
   evaluateToolCall,
   type ToolCallDecision,
 } from "../src/omp-host.js";
-import { columnWidth, truncateVisible } from "../src/model-selector.js";
 import { planSafeCommand } from "../src/safe-command.js";
 import { isSafeSedScript } from "../src/program-rules.js";
 import {
@@ -3484,17 +3483,6 @@ async function run(): Promise<void> {
   });
 
   await test("model selector truncates every rendered line to the terminal width", async () => {
-    // truncateVisible unit checks: ellipsis reserved, ANSI preserved + reset,
-    // CJK counted as two columns.
-    assert.equal(truncateVisible("abcdef", 3), "abc");
-    assert.equal(truncateVisible("abcdef", 5), "ab...");
-    assert.equal(truncateVisible("abcdef", 10), "abcdef");
-    assert.equal(truncateVisible("\u001b[31mabcdef\u001b[0m", 5), "\u001b[31mab\u001b[0m...");
-    assert.equal(truncateVisible("中文ab", 5), "中...");
-    assert.equal(truncateVisible("中文ab", 4), "...");
-    assert.equal(truncateVisible("", 10), "");
-    assert.equal(truncateVisible("abcdef", 0), "");
-
     const dir = mkdtempSync(join(tmpdir(), "omp-clearance-config-"));
     const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
     process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
@@ -3542,6 +3530,22 @@ async function run(): Promise<void> {
       }),
     );
 
+    // Wide East Asian ranges count two columns, everything else one.
+    const columnWidth = (char: string): number => {
+      const code = char.codePointAt(0) ?? 0;
+      const wide = [
+        [0x1100, 0x115f],
+        [0x2e80, 0xa4cf],
+        [0xac00, 0xd7a3],
+        [0xf900, 0xfaff],
+        [0xfe30, 0xfe4f],
+        [0xff00, 0xff60],
+        [0xffe0, 0xffe6],
+        [0x20000, 0x2fffd],
+        [0x30000, 0x3fffd],
+      ];
+      return wide.some(([low, high]) => code >= low && code <= high) ? 2 : 1;
+    };
     const lineWidth = (line: string): number => {
       let width = 0;
       for (const part of line.split(/\x1b\[[0-9;]*m/)) {

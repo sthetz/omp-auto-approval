@@ -95,23 +95,20 @@ export function applyDecisionPolicy(decision: ClassifierDecision): ClassifierDec
   };
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, controller?: AbortController): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, controller?: AbortController): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
       controller?.abort();
       reject(new Error(`classifier timed out after ${timeoutMs}ms`));
     }, timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
   });
+  try {
+    // A rejection of the classifier call comes through race() unchanged.
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function splitModelRef(modelRef: string, currentModel: Record<string, unknown>): { provider?: string; id: string } {

@@ -49,24 +49,53 @@ const LOCAL_READ_SCHEMES = new Set(["skill", "rule", "agent", "artifact", "memor
 // e.g. OMP's patch-mode edit `{ path, edits: [{ rename }] }`.
 const WRITE_DESTINATION_KEYS = new Set([...PATH_KEYS, "rename", "move", "to", "newPath", "new_path", "destination"]);
 
-// Workspace entries whose contents are executed or trusted without further
-// review: git config and hooks (run by fast-pathed git commands such as
-// `git status` via core.fsmonitor), agent configuration, direnv, editor tasks.
-// Workspace entries whose contents run code or configure an agent later: git
-// hooks and config, agent and editor settings (Claude Code hooks and MCP
-// servers run commands), commit hooks, and dev container definitions.
+// Workspace entries whose contents run code or configure an agent later,
+// without a tool call this extension could review. Matched as a path segment
+// at any depth, because a session can start in a subdirectory.
 const PROTECTED_WORKSPACE_ENTRIES = new Set([
+  // Git config and hooks: fast-pathed git commands run them (`git status`
+  // runs core.fsmonitor).
   ".git",
+  ".husky",
+  // Agent and editor settings. OMP reads its own and other agents' project
+  // config at session start and starts the MCP servers, tools, hooks and
+  // plugins they name (checked in OMP 18.18.8 for `.mcp.json`, `mcp.json`,
+  // `.codex/config.toml`, `.gemini/settings.json`, `opencode.json` and
+  // `.windsurf/mcp_config.json`). `ssh.json` names the hosts OMP's ssh tool
+  // connects to.
   ".omp",
   ".pi",
   ".claude",
-  ".mcp.json",
+  ".codex",
+  ".gemini",
+  ".opencode",
   ".cursor",
+  ".windsurf",
+  ".mcp.json",
+  "mcp.json",
+  "opencode.json",
+  "opencode.jsonc",
+  "ssh.json",
+  ".ssh.json",
   ".envrc",
   ".vscode",
   ".idea",
-  ".husky",
   ".devcontainer",
+  // Language servers. OMP starts them when a code file is written
+  // (`lsp.diagnosticsOnWrite` is on by default), reads their command from
+  // these files, looks for their programs under `node_modules/.bin` and
+  // the virtualenv `bin` directories first, and typescript-language-server
+  // runs the workspace's `node_modules/typescript/lib/tsserver.js`.
+  "lsp.json",
+  ".lsp.json",
+  "lsp.yaml",
+  ".lsp.yaml",
+  "lsp.yml",
+  ".lsp.yml",
+  "node_modules",
+  ".venv",
+  "venv",
+  ".env",
 ]);
 
 export function isLocalStateTool(toolName: string): boolean {

@@ -8,6 +8,11 @@ export function dictionary<T>(): Record<string, T> {
   return Object.create(null) as Record<string, T>;
 }
 
+/** A JSON-style object: not null, not an array. */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function toRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }

@@ -26,7 +26,7 @@ export function itemAt<T>(items: readonly T[], index: number): T {
  * Capture group `n` of `match`, for a group the pattern always fills when it
  * matches. Throws if it didn't, like itemAt().
  */
-export function group(match: RegExpExecArray, n: number): string {
+export function group(match: RegExpMatchArray, n: number): string {
   const value = match[n];
   if (value === undefined) {
     throw new Error(`internal error: capture group ${n} is empty in a match of ${JSON.stringify(match.input)}`);

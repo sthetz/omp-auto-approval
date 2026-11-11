@@ -244,7 +244,7 @@ function splitAlternatives(word: string): string[] {
   const parts: string[] = [];
   let current = "";
   for (let index = 0; index < word.length; index += 1) {
-    const char = word[index];
+    const char = word.charAt(index);
     if (char === "[") {
       const end = word.indexOf("]", index + 2);
       if (end >= 0) {

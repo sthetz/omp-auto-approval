@@ -118,7 +118,8 @@ async function pool<T, R>(items: T[], jobs: number, work: (item: T) => Promise<R
       while (next < items.length) {
         const index = next;
         next += 1;
-        results[index] = await work(items[index]);
+        // In range: index < items.length, checked just above.
+        results[index] = await work(items[index] as T);
       }
     }),
   );

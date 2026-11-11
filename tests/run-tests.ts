@@ -487,13 +487,13 @@ async function run(): Promise<void> {
         [{ words: ["pwd"], redirects: [] }],
       ],
     });
-    assert.deepEqual(shape("make &>/dev/null")?.pipelines[0][0].redirects, ["1write:/dev/null", "2duplicate:1"]);
-    assert.deepEqual(shape("ls a2>x 2>>log >&2 <in")?.pipelines[0][0], {
+    assert.deepEqual(shape("make &>/dev/null")?.pipelines[0]?.[0]?.redirects, ["1write:/dev/null", "2duplicate:1"]);
+    assert.deepEqual(shape("ls a2>x 2>>log >&2 <in")?.pipelines[0]?.[0], {
       words: ["ls", "a2"],
       redirects: ["1write:x", "2append:log", "1duplicate:2", "0read:in"],
     });
     // Quoting: single quotes keep everything; inside double quotes a backslash escapes only $ ` " \\ and newline.
-    assert.deepEqual(shape(`echo 'a\\b' "src\\/x" "q\\"q" a\\ b a#b`)?.pipelines[0][0].words, [
+    assert.deepEqual(shape(`echo 'a\\b' "src\\/x" "q\\"q" a\\ b a#b`)?.pipelines[0]?.[0]?.words, [
       "echo",
       "a\\b",
       "src\\/x",
@@ -511,8 +511,10 @@ async function run(): Promise<void> {
       [28, 39],
     ]);
 
-    const words = required(recognizeShell("  \"git\" ~/x a=~/k 'a'=~ *.ts X=1"), "recognized script").pipelines[0][0]
-      .words;
+    const words = required(
+      recognizeShell("  \"git\" ~/x a=~/k 'a'=~ *.ts X=1")?.pipelines[0]?.[0],
+      "recognized command",
+    ).words;
     assert.deepEqual(
       words.map(({ text, expands, quoted, assignment, start, end }) => [text, expands, quoted, assignment, start, end]),
       [
@@ -1033,7 +1035,7 @@ async function run(): Promise<void> {
     ) as RulesSchema;
     assert.deepEqual([...schema.$defs.operandCheck.enum].sort(), Object.keys(OPERAND_CHECKS).sort());
     assert.deepEqual(schema.$defs.entry.properties.arguments.enum, [...ARGUMENT_PARSERS]);
-    assert.deepEqual(schema.$defs.rule.oneOf[0].properties.outcome.enum, [...RULE_OUTCOMES]);
+    assert.deepEqual(schema.$defs.rule.oneOf[0]?.properties.outcome.enum, [...RULE_OUTCOMES]);
     const kinds = new Set<string>();
     for (const entry of defaultRules().programs.values()) {
       for (const sub of [entry, ...(entry.subcommands?.values() ?? [])]) {
@@ -2289,7 +2291,7 @@ async function run(): Promise<void> {
             initialIndex?: number;
           };
           timeouts.push(timeout);
-          highlighted.push(options[initialIndex ?? 0]);
+          highlighted.push(required(options[initialIndex ?? 0], "highlighted option"));
           onTimeout?.();
           return "Allow Once";
         },
@@ -3612,7 +3614,7 @@ async function run(): Promise<void> {
     // Wide East Asian ranges count two columns, everything else one.
     const columnWidth = (char: string): number => {
       const code = char.codePointAt(0) ?? 0;
-      const wide = [
+      const wide: [number, number][] = [
         [0x1100, 0x115f],
         [0x2e80, 0xa4cf],
         [0xac00, 0xd7a3],
@@ -4361,8 +4363,9 @@ async function run(): Promise<void> {
     assert.equal("block" in (await run("logger checking\nrm -rf demo-target")), true);
     assert.equal(seen.length, 2);
     // The reviewer saw the newline (escaped once per JSON layer), not a space.
-    assert.match(seen[1], /logger checking\\+nrm -rf demo-target/);
-    assert.ok(!seen[1].includes("logger checking rm"));
+    const reviewed = required(seen[1], "second reviewed action");
+    assert.match(reviewed, /logger checking\\+nrm -rf demo-target/);
+    assert.ok(!reviewed.includes("logger checking rm"));
   });
 
   await test("bash calls with fields that change how they run are not fast-pathed", () => {
@@ -4400,7 +4403,7 @@ async function run(): Promise<void> {
     writeFileSync(join(dir, "outer.sh"), "source ./setup.sh\n");
     spawnSync("mkfifo", [join(dir, "fifo")]);
     try {
-      for (const [command, reason] of [
+      const cases: [string, string][] = [
         ["trap 'x' DEBUG", "`trap`"],
         ["builtin trap x ERR", "`trap`"],
         ["t''rap x RETURN", "`trap`"],
@@ -4435,7 +4438,8 @@ async function run(): Promise<void> {
         ["source fifo", "`source` of a file that could not be read"],
         ["source /dev/zero", "`source` of a file that could not be read"],
         [". /dev/stdin", "`.` of a file that could not be read"],
-      ]) {
+      ];
+      for (const [command, reason] of cases) {
         assert.equal(shellHook(command, dir), reason, command);
       }
       for (const command of [
@@ -5126,7 +5130,7 @@ async function run(): Promise<void> {
     }
     assert.equal(aborts, 1);
     assert.equal(reasons[1], CLASSIFIER_DENY_REASON);
-    assert.match(reasons[2], /rejected 3 actions in a row and stopped the turn/);
+    assert.match(required(reasons[2], "third reason"), /rejected 3 actions in a row and stopped the turn/);
     assert.equal(reasons[3], CLASSIFIER_DENY_REASON);
 
     const withoutAbort = new SessionApprovalStore();

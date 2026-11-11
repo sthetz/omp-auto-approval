@@ -221,6 +221,12 @@ async function run(): Promise<void> {
       assert.equal(legacy.config.reviewer, "off");
       assert.match(legacy.notice ?? "", /enabled is no longer read/);
       assert.match(legacy.notice ?? "", /mode is no longer read/);
+      for (const notAnObject of ["null", "[]", "5", '"ai"']) {
+        writeFileSync(legacyPath, notAnObject);
+        const loaded = loadConfig(legacyPath);
+        assert.deepEqual(loaded.config, DEFAULT_CONFIG, notAnObject);
+        assert.match(loaded.warning ?? "", /expected an object of settings; using defaults/, notAnObject);
+      }
     } finally {
       rmSync(legacyDir, { recursive: true, force: true });
     }

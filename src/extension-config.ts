@@ -150,7 +150,11 @@ export function loadConfig(path = configPath()): {
   }
 
   try {
-    const parsed = JSON.parse(stripJsonComments(readFileSync(path, "utf-8")));
+    const raw: unknown = JSON.parse(stripJsonComments(readFileSync(path, "utf-8")));
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error("expected an object of settings");
+    }
+    const parsed = raw as Record<string, unknown>;
     const config = normalizeConfig(parsed);
     const notices = configNotices(path, parsed, config);
     return {

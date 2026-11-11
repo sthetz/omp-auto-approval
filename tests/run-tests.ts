@@ -1,3 +1,4 @@
+import { group, itemAt } from "../src/common.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
@@ -221,6 +222,25 @@ function classifierDenyOptions(reason = "needs review"): {
 }
 
 async function run(): Promise<void> {
+  await test("itemAt and group return what is there and throw on anything else", () => {
+    assert.equal(itemAt(["a", "b"], 1), "b");
+    assert.equal(itemAt([undefined, "b"], 0), undefined);
+    for (const index of [-1, 2, 0.5, Number.NaN]) {
+      assert.throws(() => itemAt(["a", "b"], index), /internal error: index .* is outside a list of 2/, String(index));
+    }
+    const match = /^(a)(x)?$/.exec("a");
+    assert.ok(match);
+    assert.equal(group(match, 1), "a");
+    const long = `a${"b".repeat(100)}`;
+    const longMatch = /^(a)(x)?/.exec(long);
+    assert.ok(longMatch);
+    assert.throws(
+      () => group(longMatch, 2),
+      (error: unknown) =>
+        error instanceof Error && error.message.length < 120 && !error.message.includes("b".repeat(50)),
+    );
+  });
+
   await test("normalizeConfig defaults to off and reads reviewer as the starting value", () => {
     assert.deepEqual(normalizeConfig({}), DEFAULT_CONFIG);
     assert.equal(normalizeConfig({ reviewer: "ai" }).reviewer, "ai");

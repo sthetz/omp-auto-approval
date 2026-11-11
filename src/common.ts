@@ -14,12 +14,11 @@ export function dictionary<T>(): Record<string, T> {
  * `undefined` on.
  */
 export function itemAt<T>(items: readonly T[], index: number): T {
-  // at() counts a negative index from the end; here it is out of range.
-  const item = index < 0 ? undefined : items.at(index);
-  if (item === undefined) {
+  if (!Number.isInteger(index) || index < 0 || index >= items.length) {
     throw new Error(`internal error: index ${index} is outside a list of ${items.length}`);
   }
-  return item;
+  // In range, so the element is there (and may itself be undefined, if T allows).
+  return items[index] as T;
 }
 
 /**
@@ -29,7 +28,8 @@ export function itemAt<T>(items: readonly T[], index: number): T {
 export function group(match: RegExpMatchArray, n: number): string {
   const value = match[n];
   if (value === undefined) {
-    throw new Error(`internal error: capture group ${n} is empty in a match of ${JSON.stringify(match.input)}`);
+    const input = match.input ?? "";
+    throw new Error(`internal error: capture group ${n} is empty in a match of ${JSON.stringify(input.slice(0, 40))}`);
   }
   return value;
 }

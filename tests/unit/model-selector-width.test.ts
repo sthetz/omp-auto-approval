@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { modelSelectorInternals } from "../src/model-selector.js";
-import type { ClearanceConfig, ExtensionContextLike } from "../src/types.js";
+import { modelSelectorInternals } from "../../src/model-selector.js";
+import type { ClearanceConfig, ExtensionContextLike } from "../../src/types.js";
+import { test } from "node:test";
 
 const ANSI_SGR_PATTERN = /\x1b\[[0-9;]*m/g;
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -56,7 +57,7 @@ function assertFits(text: string, width: number): void {
   assert.ok(piLikeTextUtils.visibleWidth(fitted) <= width, `${JSON.stringify(fitted)} exceeds ${width} columns`);
 }
 
-async function run(): Promise<void> {
+await test("the model selector fits every line with the host's width helpers, and the fallback stays within ASCII", async () => {
   assertFits("😀😀", 3);
   assertFits("e\u0301e\u0301e\u0301", 2);
   assertFits("👨‍👩‍👧‍👦👨‍👩‍👧‍👦", 3);
@@ -120,16 +121,4 @@ async function run(): Promise<void> {
   }
   assert.equal(piLikeTextUtils.visibleWidth(rendered[0] ?? ""), 20);
   assert.equal(piLikeTextUtils.visibleWidth(rendered.at(-1) ?? ""), 20);
-
-  console.log(
-    "[PASS] model selector uses the host TUI width helpers for emoji, combining marks, ZWJ emoji, CJK, and ANSI text",
-  );
-  console.log("[PASS] safe fallback never guesses Unicode width and keeps visible text within printable ASCII bounds");
-  console.log("[PASS] narrow selector render keeps every row within terminal width");
-  console.log("[PASS] the host TUI width engine is used when it loads");
-}
-
-run().catch((error: unknown) => {
-  console.error(error);
-  process.exitCode = 1;
 });

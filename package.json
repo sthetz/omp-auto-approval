@@ -26,7 +26,7 @@
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx tests/run-tests.ts && node --import tsx tests/model-selector-width.ts && node --import tsx tests/classifier-headers.ts",
+    "test": "node --import tsx --test tests/unit/*.test.ts",
     "smoke:omp": "node --import tsx tests/omp-smoke.ts",
     "e2e:omp": "node --import tsx tests/omp-e2e/run.ts",
     "decisions:diff": "node --import tsx tests/decision-diff/run.ts",

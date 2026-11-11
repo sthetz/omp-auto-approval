@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { classifyAction } from "../src/classifier.js";
-import type { ClearanceConfig, ExtensionContextLike } from "../src/types.js";
+import { classifyAction } from "../../src/classifier.js";
+import type { ClearanceConfig, ExtensionContextLike } from "../../src/types.js";
+import { test } from "node:test";
 
 const config: ClearanceConfig = {
   reviewer: "ai",
@@ -46,7 +47,7 @@ function ctx(headers?: Record<string, string>): ExtensionContextLike {
   };
 }
 
-async function run(): Promise<void> {
+await test("classifier requests carry only the model registry's headers", async () => {
   // The classifier request carries only the headers the model registry gives,
   // whatever the provider: no attribution headers of its own.
   let capturedOptions: Record<string, unknown> | undefined;
@@ -62,11 +63,4 @@ async function run(): Promise<void> {
     return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
   });
   assert.deepEqual(capturedOptions?.headers, { "X-Custom": "registry" });
-
-  console.log("[PASS] classifier requests carry only the model registry's headers");
-}
-
-run().catch((error: unknown) => {
-  console.error(error);
-  process.exitCode = 1;
 });

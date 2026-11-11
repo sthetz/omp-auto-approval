@@ -29,7 +29,14 @@ Steps 2 to 5 run on your machine only, not in CI, since they need tools CI lacks
 
 ### Unit tests and smoke test
 
-Add a test for every change to what is allowed, asked, reviewed or blocked, in `tests/run-tests.ts`. Most tests call `evaluateToolCall` or `planSafeCommand` directly. The test file runs programs from a temporary directory of stub programs and points the config, rules and audit log paths at temporary files, so it never reads or writes your real ones.
+Add a test for every change to what is allowed, asked, reviewed or blocked. The unit tests use Node's built-in test runner, one file per area in `tests/unit/`: `fast-path`, `command-rules`, `shell`, `tools`, `classifier`, `reviewer`, `extension`, `model-selector` and `config`. Most tests call `evaluateToolCall` or `planSafeCommand` directly. `tests/unit/helpers.ts` makes them run programs from a temporary directory of stub programs and points the config, rules and audit log paths at temporary files, so they never read or write your real ones. Each file runs in its own process, and its tests run in order.
+
+To run one file, or the tests whose names match a pattern:
+
+```bash
+node --import tsx --test tests/unit/fast-path.test.ts
+node --import tsx --test --test-name-pattern="sed scripts" tests/unit/*.test.ts
+```
 
 `config/default-rules.jsonc` is validated strictly when it loads: an unknown key, kind or check name, or an option listed twice, is an error. Then every bash command is blocked in every reviewer mode, including `off`, until the file is fixed; `/clearance status` says why. Default, user and included files are checked for changes on every tool call and reload automatically. `npm test` loads the defaults, checks `schemas/rules.schema.json` against the code, and covers broken-file and include reloads.
 

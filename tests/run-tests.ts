@@ -1329,7 +1329,7 @@ async function run(): Promise<void> {
       }
       const decided = (command: string) => {
         const escalation = escalateCommand(command, rules);
-        return escalation && `${escalation.outcome} ${escalation.rule?.id}`;
+        return escalation && `${escalation.outcome} ${escalation.rule.id}`;
       };
       assert.equal(decided("docker ps"), null);
       assert.equal(decided("docker run --privileged x"), "ask docker-privileged");
@@ -1360,7 +1360,7 @@ async function run(): Promise<void> {
       const decide = (command: string) => {
         const escalation = escalateCommand(command, rules);
         if (escalation) {
-          return `${escalation.outcome} ${escalation.rule?.id}`;
+          return `${escalation.outcome} ${escalation.rule.id}`;
         }
         return planSafeCommand(command, config(), { workspace, searchPath: TEST_PATH, rules }) ? "fast" : "classifier";
       };
@@ -2707,7 +2707,7 @@ async function run(): Promise<void> {
     assert.equal(await hostCtx.ui?.select?.("question", []), undefined);
     assert.equal(hostCtx.ui?.notify, undefined);
     assert.deepEqual(hostCtx.sessionManager?.getBranch?.(), []);
-    assert.equal(hostCtx.sessionManager?.getSessionId?.(), "");
+    assert.equal(hostCtx.sessionManager.getSessionId?.(), "");
     assert.deepEqual(await hostCtx.modelRegistry?.getAvailable?.(), []);
     assert.deepEqual(await hostCtx.modelRegistry?.getApiKeyAndHeaders?.({}), { ok: false, headers: { good: "value" } });
 
@@ -4279,7 +4279,7 @@ async function run(): Promise<void> {
       assert.equal(entries.length, 2);
       assert.equal(entries[0]?.route, "human");
       assert.equal(entries[1]?.route, "session_approval");
-      assert.equal(entries[1]?.classifierDecision, undefined);
+      assert.equal(entries[1].classifierDecision, undefined);
     } finally {
       if (previousLogsDir === undefined) {
         delete process.env.CLEARANCE_LOGS_DIR;
@@ -4656,9 +4656,9 @@ async function run(): Promise<void> {
     );
     assert.equal(decision.outcome, "allow");
     assert.equal(capturedOptions?.temperature, 0);
-    assert.equal(capturedOptions?.apiKey, "test-key-from-models-json");
-    assert.deepEqual(capturedOptions?.headers, { "X-Custom-Header": "yes" });
-    assert.deepEqual(capturedOptions?.env, { PROXY_REGION: "eu" });
+    assert.equal(capturedOptions.apiKey, "test-key-from-models-json");
+    assert.deepEqual(capturedOptions.headers, { "X-Custom-Header": "yes" });
+    assert.deepEqual(capturedOptions.env, { PROXY_REGION: "eu" });
     assert.equal((capturedModel as { provider?: string }).provider, "my-proxy");
   });
 
@@ -4736,20 +4736,16 @@ async function run(): Promise<void> {
     assert.equal(decision.outcome, "allow");
     assert.equal(capturedOptions?.temperature, 0);
     assert.equal(
-      "apiKey" in (capturedOptions ?? {}),
+      "apiKey" in capturedOptions,
       false,
       "apiKey must not be present when registry lacks getApiKeyAndHeaders",
     );
     assert.equal(
-      "headers" in (capturedOptions ?? {}),
+      "headers" in capturedOptions,
       false,
       "headers must not be present when registry lacks getApiKeyAndHeaders",
     );
-    assert.equal(
-      "env" in (capturedOptions ?? {}),
-      false,
-      "env must not be present when registry lacks getApiKeyAndHeaders",
-    );
+    assert.equal("env" in capturedOptions, false, "env must not be present when registry lacks getApiKeyAndHeaders");
   });
 
   await test("classifier tolerates auth resolution returning empty fields", async () => {
@@ -4773,9 +4769,9 @@ async function run(): Promise<void> {
     );
     assert.equal(decision.outcome, "allow");
     assert.equal(capturedOptions?.temperature, 0);
-    assert.equal("apiKey" in (capturedOptions ?? {}), false);
-    assert.equal("headers" in (capturedOptions ?? {}), false);
-    assert.equal("env" in (capturedOptions ?? {}), false);
+    assert.equal("apiKey" in capturedOptions, false);
+    assert.equal("headers" in capturedOptions, false);
+    assert.equal("env" in capturedOptions, false);
   });
 
   await test("ai reviewer end-to-end allow with injected custom provider auth", async () => {
@@ -5243,8 +5239,8 @@ async function run(): Promise<void> {
           .map((line) => JSON.parse(line) as Record<string, unknown>);
         assert.equal(entries.length, 2);
         assert.equal(entries[1]?.route, testCase.route);
-        assert.equal(entries[1]?.reason, entries[0]?.reason);
-        assert.doesNotMatch(String(entries[1]?.reason), /rejected 2 actions in a row/);
+        assert.equal(entries[1].reason, entries[0]?.reason);
+        assert.doesNotMatch(String(entries[1].reason), /rejected 2 actions in a row/);
       }
     } finally {
       if (previousLogsDir === undefined) {
@@ -5624,7 +5620,7 @@ async function run(): Promise<void> {
       for (const command of ["rgx", "rg x /etc/passwd", "rg --pre=cat x", "rg x .env"]) {
         assert.equal(plan(command), null, command);
       }
-      assert.equal(escalateCommand("rg --pre=cat x", rules)?.rule?.id, "no-rg-pre");
+      assert.equal(escalateCommand("rg --pre=cat x", rules)?.rule.id, "no-rg-pre");
       assert.equal(escalateCommand("rg x", rules), null);
     } finally {
       rmSync(workspace, { recursive: true, force: true });

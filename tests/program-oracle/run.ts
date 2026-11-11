@@ -185,10 +185,10 @@ function generate(rng: ReturnType<typeof random>): string {
   };
   for (let count = Math.floor(rng.next() * 4); count > 0; count -= 1) {
     const choices: (() => void)[] = [];
-    for (const letter of spec.flags ?? "") {
+    for (const letter of spec.flags) {
       choices.push(() => args.push(`-${letter}`));
     }
-    for (const [letter, kind] of Object.entries(spec.values ?? {})) {
+    for (const [letter, kind] of Object.entries(spec.values)) {
       const alias = spec.aliases[letter];
       choices.push(() =>
         kind === "optional"
@@ -196,10 +196,10 @@ function generate(rng: ReturnType<typeof random>): string {
           : args.push(`-${letter}`, value(letter, kind, alias)),
       );
     }
-    for (const name of spec.long ?? []) {
+    for (const name of spec.long) {
       choices.push(() => args.push(`--${name}`));
     }
-    for (const [name, kind] of Object.entries(spec.longValues ?? {})) {
+    for (const [name, kind] of Object.entries(spec.longValues)) {
       choices.push(() => {
         if (kind === "optional") {
           args.push(rng.chance(0.5) ? `--${name}=${value(name, kind)}` : `--${name}`);

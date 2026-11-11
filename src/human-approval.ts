@@ -68,7 +68,9 @@ export async function requestHumanApproval(
   // OMP's selector times out it chooses the highlighted option, whichever the
   // user moved to; it calls onTimeout first, so an answer after that is the
   // timeout's, not the user's, and rejects.
-  let timedOut = false;
+  // Set by onTimeout while select() waits; typed boolean, since the compiler
+  // can't see a callback's assignment and would treat it as always false.
+  let timedOut = false as boolean;
   const selected = await ctx.ui.select(`${options.title ?? "omp-clearance"}\n${details}`, choices, {
     timeout: options.timeoutSeconds * 1000,
     onTimeout: () => {

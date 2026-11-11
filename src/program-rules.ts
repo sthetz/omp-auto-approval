@@ -115,14 +115,14 @@ export function parseOptions(spec: OptionTable, words: ShellWord[]): ParsedComma
     if (text.startsWith("--")) {
       const equals = text.indexOf("=");
       const name = equals < 0 ? text.slice(2) : text.slice(2, equals);
-      if (spec.long?.includes(name)) {
+      if (spec.long.includes(name)) {
         if (equals >= 0) {
           return null;
         }
         options.push({ name, kind: "flag", word });
         continue;
       }
-      const kind = spec.longValues?.[name];
+      const kind = spec.longValues[name];
       if (!kind) {
         return null;
       }
@@ -164,12 +164,12 @@ export function parseOptions(spec: OptionTable, words: ShellWord[]): ParsedComma
         position += digits.length - 1;
         continue;
       }
-      const name = spec.aliases?.[letter] ?? letter;
-      if (spec.flags?.includes(letter)) {
+      const name = spec.aliases[letter] ?? letter;
+      if (spec.flags.includes(letter)) {
         options.push({ name, kind: "flag", word });
         continue;
       }
-      const kind = spec.values?.[letter];
+      const kind = spec.values[letter];
       if (!kind || kind === "pair") {
         return null;
       }

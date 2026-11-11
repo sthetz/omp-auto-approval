@@ -2732,6 +2732,26 @@ async function run(): Promise<void> {
     });
     assert.equal(picked, "picked");
     assert.deepEqual(seen, ["render", "text", "no matches"]);
+    // A key match counts by truthiness; only no answer falls back to the built-in keys.
+    for (const [answer, expected] of [
+      [{ action: "confirm" }, true],
+      [0, false],
+      [null, undefined],
+      [undefined, undefined],
+    ] as const) {
+      const keysCtx = canonicalContext({
+        ui: {
+          custom: (factory: (...args: unknown[]) => unknown) => {
+            factory({}, {}, { matches: () => answer }, () => undefined);
+            return Promise.resolve(undefined);
+          },
+        },
+      });
+      await keysCtx?.ui?.custom?.((_tui, _theme, keybindings) => {
+        assert.equal(keybindings.matches?.("\t", "tui.select.confirm"), expected, JSON.stringify(answer));
+        return {};
+      });
+    }
 
     const missingName = await evaluateToolCall(
       null,

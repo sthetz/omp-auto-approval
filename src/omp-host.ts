@@ -82,8 +82,9 @@ function canonicalKeybindings(value: unknown): KeybindingsLike {
   return typeof matches === "function"
     ? {
         matches: (data, key) => {
+          // As before: only no answer falls back to the built-in keys.
           const matched: unknown = matches.call(record, data, key);
-          return typeof matched === "boolean" ? matched : undefined;
+          return matched === undefined || matched === null ? undefined : Boolean(matched);
         },
       }
     : {};

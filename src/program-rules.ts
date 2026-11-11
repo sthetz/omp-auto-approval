@@ -154,7 +154,11 @@ export function parseOptions(spec: OptionTable, words: ShellWord[]): ParsedComma
     for (let position = 1; position < text.length; position += 1) {
       const letter = text[position];
       if (spec.numeric && /[0-9]/.test(letter)) {
-        const digits = /^[0-9]+/.exec(text.slice(position))?.[0] ?? letter;
+        let end = position + 1;
+        while (end < text.length && /[0-9]/.test(text[end])) {
+          end += 1;
+        }
+        const digits = text.slice(position, end);
         options.push({ name: "#", kind: "number", value: digits, word });
         position += digits.length - 1;
         continue;
@@ -400,9 +404,9 @@ function checkSed(command: ParsedCommand, context: RuleContext): boolean {
   const scripts: string[] = [];
   for (const option of command.options) {
     if (option.name === "expression") {
-      // A script that wasn't read can't be checked.
+      // The option table gives "expression" a value.
       if (option.value === undefined) {
-        return false;
+        throw new Error("internal error: sed expression without a script");
       }
       scripts.push(option.value);
     }
@@ -684,7 +688,10 @@ function isSafeWithSubcommand(
     }
     index += 1;
   }
-  const subcommand = entry.subcommands?.get(words[index]?.text ?? "");
+  if (!entry.subcommands) {
+    throw new Error(`internal error: ${entry.id} has no subcommand table`);
+  }
+  const subcommand = entry.subcommands.get(words[index]?.text ?? "");
   return subcommand !== undefined && isSafeByEntry(subcommand, words.slice(index), place, used);
 }
 
@@ -723,7 +730,7 @@ function isSafeByEntry(
   }
   const rule = entry.operands;
   if (!rule) {
-    return false;
+    throw new Error(`internal error: ${entry.id} has no operand rule`);
   }
   if (!OPERAND_CHECK_FUNCTIONS[rule.check](command, context, rule, args)) {
     return false;

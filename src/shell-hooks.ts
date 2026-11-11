@@ -95,12 +95,13 @@ export function commandLines(text: string, heredocBodies?: string[]): string[][]
     started = false;
     quote = null;
   };
+  // Every caller has checked that a substitution is open.
   const closeSubstitution = () => {
-    endLine();
     const closing = substitutions.pop();
     if (!closing) {
-      return;
+      throw new Error("internal error: no command substitution to close");
     }
+    endLine();
     const { quote: outerQuote, outer } = closing;
     quote = outerQuote;
     words = outer.words;

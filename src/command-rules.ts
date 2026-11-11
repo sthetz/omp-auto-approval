@@ -867,7 +867,8 @@ export function loadCommandRules(path = userRulesPath(), freshDefaults = false):
       }
       const programId = PROGRAM_ID.exec(id);
       if (!programId) {
-        throw new RulesError(`${file}: disable: "${id}" is not a program id`);
+        // Ids were checked against PROGRAM_ID or RULE_NAME, which has no colon.
+        throw new Error(`internal error: disable id "${id}" is not a program id`);
       }
       const [, name, subcommand] = programId;
       const entry = Object.hasOwn(programs, name) ? record(programs[name], name) : undefined;

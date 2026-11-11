@@ -41,11 +41,11 @@ export const OPERAND_CHECKS = {
   // Files the program reads.
   "read-files": ["min", "max"],
   // Words that are not files, never expanded by the shell, optionally matching a pattern.
-  "literals": ["min", "max", "pattern"],
+  literals: ["min", "max", "pattern"],
   // No operands at all.
-  "none": [],
+  none: [],
   // Any operands; for programs that open no files and take literal words.
-  "any": [],
+  any: [],
   // printf's format, which must not start with `-`, then its arguments.
   "printf-format": [],
   // grep's pattern (unless -e or -f gave it), then files and directories it searches.
@@ -189,7 +189,9 @@ function compileRuleList(value: unknown, source: string, where: string, seen: Se
     onlyKeys(object, ["id", "match", "prefix", "outcome", "why"], ruleWhere);
     const id = object.id;
     if (typeof id !== "string" || !RULE_NAME.test(id)) {
-      throw new RulesError(`${ruleWhere}.id: expected a name of letters, digits, ".", "_" and "-", got ${JSON.stringify(id)}`);
+      throw new RulesError(
+        `${ruleWhere}.id: expected a name of letters, digits, ".", "_" and "-", got ${JSON.stringify(id)}`,
+      );
     }
     if (seen.has(id)) {
       throw new RulesError(`${ruleWhere}.id: "${id}" is used by another rule`);
@@ -231,7 +233,15 @@ function compileRuleList(value: unknown, source: string, where: string, seen: Se
         throw new RulesError(`${at}.match: ${JSON.stringify(pattern)}: ${(error as Error).message}`);
       }
     });
-    return { id, match: match as string[], patterns, outcome: object.outcome as RuleOutcome, prefix: null, why, source };
+    return {
+      id,
+      match: match as string[],
+      patterns,
+      outcome: object.outcome as RuleOutcome,
+      prefix: null,
+      why,
+      source,
+    };
   });
 }
 
@@ -239,7 +249,15 @@ const PROGRAM_NAME = /^[A-Za-z0-9_][A-Za-z0-9._+-]*$/;
 const SUBCOMMAND_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const SHORT_OPTION = /^-[A-Za-z0-9]$/;
 const LONG_OPTION = /^--[A-Za-z0-9][A-Za-z0-9-]*$/;
-const VALUE_KINDS = new Set<string>(["flag", "string", "number", "read-file", "optional", "pair", "workspace-directory"]);
+const VALUE_KINDS = new Set<string>([
+  "flag",
+  "string",
+  "number",
+  "read-file",
+  "optional",
+  "pair",
+  "workspace-directory",
+]);
 // Global options of a program with subcommands are whole words, so only
 // kinds that are a flag or take the next word fit.
 const GLOBAL_KINDS = new Set<string>(["flag", "string", "number", "read-file", "workspace-directory"]);
@@ -337,7 +355,11 @@ function compileEntry(
   context: { subcommand: boolean; inheritedExcept: string[]; source: string; sources: ReadonlyMap<string, string> },
 ): ProgramEntry {
   const object = record(value, where);
-  onlyKeys(object, ["options", "except", "operands", "arguments", "subcommands", "stopAtOperand", "opensNoFiles"], where);
+  onlyKeys(
+    object,
+    ["options", "except", "operands", "arguments", "subcommands", "stopAtOperand", "opensNoFiles"],
+    where,
+  );
   const hasSubcommands = object.subcommands !== undefined;
   if (hasSubcommands && context.subcommand) {
     throw new RulesError(`${where}: subcommands cannot have subcommands`);
@@ -366,7 +388,9 @@ function compileEntry(
     }
     entry.arguments = object.arguments as ArgumentParser;
     if (entry.arguments !== "options" && (object.options !== undefined || entry.stopAtOperand)) {
-      throw new RulesError(`${where}: "arguments": "${entry.arguments}" reads options itself; remove "options" and "stopAtOperand"`);
+      throw new RulesError(
+        `${where}: "arguments": "${entry.arguments}" reads options itself; remove "options" and "stopAtOperand"`,
+      );
     }
   }
 
@@ -406,12 +430,15 @@ function compileEntry(
         if (entry.subcommands.has(name)) {
           throw new RulesError(`${subWhere}: subcommand "${name}" is listed twice`);
         }
-        entry.subcommands.set(name, compileEntry(sub, `${id} ${name}`, subWhere, {
-          subcommand: true,
-          inheritedExcept: entry.except,
-          source: entry.source,
-          sources: context.sources,
-        }));
+        entry.subcommands.set(
+          name,
+          compileEntry(sub, `${id} ${name}`, subWhere, {
+            subcommand: true,
+            inheritedExcept: entry.except,
+            source: entry.source,
+            sources: context.sources,
+          }),
+        );
       }
     }
   } else {
@@ -421,7 +448,10 @@ function compileEntry(
     entry.operands = compileOperands(object.operands, `${where}.operands`);
     // The inner command's own options must reach its check: getopt would
     // otherwise take `timeout 5 sort -o out` as an outer -o.
-    if (entry.operands.check === "duration-then-command" && (!entry.stopAtOperand || entry.anyOptions || entry.arguments !== "options")) {
+    if (
+      entry.operands.check === "duration-then-command" &&
+      (!entry.stopAtOperand || entry.anyOptions || entry.arguments !== "options")
+    ) {
       throw new RulesError(`${where}: "duration-then-command" needs "stopAtOperand": true and an option table`);
     }
   }
@@ -479,7 +509,10 @@ function compileOptions(options: Record<string, unknown>, entry: ProgramEntry, w
 }
 
 /** Compile the contents of a rules file; throws with the place of the first problem. */
-export function compileRules(raw: unknown, sources: ReadonlyMap<string, string> = new Map()): Map<string, ProgramEntry> {
+export function compileRules(
+  raw: unknown,
+  sources: ReadonlyMap<string, string> = new Map(),
+): Map<string, ProgramEntry> {
   const top = record(raw, "");
   onlyKeys(top, ["$schema", "programs", "rules"], "");
   const programs = new Map<string, ProgramEntry>();
@@ -490,11 +523,23 @@ export function compileRules(raw: unknown, sources: ReadonlyMap<string, string> 
       if (extra.length) {
         throw new RulesError(`${where}: one program per entry`);
       }
-      programs.set(name, compileEntry(entry, `program:${name}`, where, { subcommand: false, inheritedExcept: [], source: "default", sources }));
+      programs.set(
+        name,
+        compileEntry(entry, `program:${name}`, where, {
+          subcommand: false,
+          inheritedExcept: [],
+          source: "default",
+          sources,
+        }),
+      );
     } catch (error) {
       const source = sources.get(`program:${key}`);
       if (source) {
-        (error as RulesError).file = source.startsWith("default, ") ? source.slice("default, ".length) : source === "default" ? defaultRulesPath() : source;
+        (error as RulesError).file = source.startsWith("default, ")
+          ? source.slice("default, ".length)
+          : source === "default"
+            ? defaultRulesPath()
+            : source;
       }
       throw error;
     }
@@ -506,7 +551,12 @@ export function compileRules(raw: unknown, sources: ReadonlyMap<string, string> 
 export function loadRulesFile(path: string, label = path): CommandRules {
   try {
     const document = record(parseJsonc(readFileSync(path, "utf8")), "");
-    return { programs: compileRules(document), rules: compileRuleList(document.rules ?? [], "default", "rules", new Set()), files: [], problem: null };
+    return {
+      programs: compileRules(document),
+      rules: compileRuleList(document.rules ?? [], "default", "rules", new Set()),
+      files: [],
+      problem: null,
+    };
   } catch (error) {
     return { programs: new Map(), rules: [], files: [], problem: rulesProblem(label, error) };
   }
@@ -530,7 +580,15 @@ function loadDefaults(fresh = false): { rules: CommandRules; document: Record<st
       const rules = compileRuleList(document.rules ?? [], "default", "rules", new Set());
       defaults = { rules: { programs: compileRules(document), rules, files: [], problem: null }, document };
     } catch (error) {
-      defaults = { rules: { programs: new Map(), rules: [], files: [], problem: rulesProblem("config/default-rules.jsonc", error) }, document: null };
+      defaults = {
+        rules: {
+          programs: new Map(),
+          rules: [],
+          files: [],
+          problem: rulesProblem("config/default-rules.jsonc", error),
+        },
+        document: null,
+      };
     }
   }
   return defaults;
@@ -597,7 +655,9 @@ function readUserFile(path: string, layer: UserLayer, chain: string[]): void {
     if (typeof include !== "string" || !(isAbsolute(include) || include.startsWith("~/"))) {
       fail(`include: expected an absolute path or one starting with ~/, got ${JSON.stringify(include)}`);
     }
-    const target = (include as string).startsWith("~/") ? join(homedir(), (include as string).slice(2)) : include as string;
+    const target = (include as string).startsWith("~/")
+      ? join(homedir(), (include as string).slice(2))
+      : (include as string);
     readUserFile(target, layer, [...chain, canonical]);
   }
   const disable = document.disable ?? [];
@@ -648,7 +708,11 @@ function subcommandsByName(value: unknown, where: string): Map<string, unknown> 
   return byName;
 }
 
-function mergeOptions(base: Record<string, unknown>, user: Record<string, unknown>, where: string): Record<string, unknown> {
+function mergeOptions(
+  base: Record<string, unknown>,
+  user: Record<string, unknown>,
+  where: string,
+): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...base };
   for (const [key, kind] of Object.entries(user)) {
     if (kind !== null) {
@@ -659,7 +723,9 @@ function mergeOptions(base: Record<string, unknown>, user: Record<string, unknow
       // Deleting by part of a grouped key would be ambiguous.
       const tokens = key.split(/\s+/);
       const group = Object.keys(base).find((other) => other.split(/\s+/).some((token) => tokens.includes(token)));
-      throw new RulesError(`${where}[${JSON.stringify(key)}]: no such option in the default entry${group ? `; it lists ${JSON.stringify(group)}` : ""}`);
+      throw new RulesError(
+        `${where}[${JSON.stringify(key)}]: no such option in the default entry${group ? `; it lists ${JSON.stringify(group)}` : ""}`,
+      );
     }
   }
   return merged;
@@ -671,7 +737,14 @@ function mergeOptions(base: Record<string, unknown>, user: Record<string, unknow
  * default key; `except` lists are joined, and `"except": null` drops the
  * default one; any other key the user gives replaces the default.
  */
-function mergeEntry(base: Record<string, unknown>, user: Record<string, unknown>, where: string, id: string, file: string, sources: Map<string, string>): Record<string, unknown> {
+function mergeEntry(
+  base: Record<string, unknown>,
+  user: Record<string, unknown>,
+  where: string,
+  id: string,
+  file: string,
+  sources: Map<string, string>,
+): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...base };
   // Built-in subcommands stay built-in unless the user's entry touches them.
   if (base.subcommands !== undefined) {
@@ -688,8 +761,17 @@ function mergeEntry(base: Record<string, unknown>, user: Record<string, unknown>
         throw new RulesError(`${where}.${key}: the default entry has none to delete`);
       }
       delete merged[key];
-    } else if (key === "options" && typeof value === "object" && typeof base.options === "object" && base.options !== null) {
-      merged.options = mergeOptions(record(base.options, `${where}.options`), record(value, `${where}.options`), `${where}.options`);
+    } else if (
+      key === "options" &&
+      typeof value === "object" &&
+      typeof base.options === "object" &&
+      base.options !== null
+    ) {
+      merged.options = mergeOptions(
+        record(base.options, `${where}.options`),
+        record(value, `${where}.options`),
+        `${where}.options`,
+      );
     } else if (key === "except" && Array.isArray(value) && Array.isArray(base.except)) {
       merged.except = [...base.except, ...value.filter((option) => !(base.except as unknown[]).includes(option))];
     } else if (key === "subcommands" && base.subcommands !== undefined) {
@@ -713,7 +795,10 @@ function mergeEntry(base: Record<string, unknown>, user: Record<string, unknown>
             throw new RulesError(`${subWhere}.extends: only "default", for a subcommand the default entry has`);
           } else {
             sources.set(`${id} ${name}`, `default, ${file}`);
-            subcommands.set(name, mergeEntry(record(existing, subWhere), userEntry, subWhere, `${id} ${name}`, file, sources));
+            subcommands.set(
+              name,
+              mergeEntry(record(existing, subWhere), userEntry, subWhere, `${id} ${name}`, file, sources),
+            );
           }
         }
       }
@@ -733,7 +818,9 @@ function noExtends(entry: Record<string, unknown>, where: string): void {
   if (entry.subcommands && typeof entry.subcommands === "object") {
     for (const [key, sub] of Object.entries(entry.subcommands)) {
       if (sub && typeof sub === "object" && (sub as Record<string, unknown>).extends !== undefined) {
-        throw new RulesError(`${where}.subcommands[${JSON.stringify(key)}].extends: only "default", for a subcommand the defaults have`);
+        throw new RulesError(
+          `${where}.subcommands[${JSON.stringify(key)}].extends: only "default", for a subcommand the defaults have`,
+        );
       }
     }
   }
@@ -764,7 +851,10 @@ export function loadCommandRules(path = userRulesPath(), freshDefaults = false):
   try {
     readUserFile(path, layer, []);
     // Without a prototype, so that a program named `__proto__` is just a name.
-    const programs: Record<string, unknown> = Object.assign(Object.create(null), record(document.programs ?? {}, "programs"));
+    const programs: Record<string, unknown> = Object.assign(
+      Object.create(null),
+      record(document.programs ?? {}, "programs"),
+    );
     const rules = [...base.rules];
     for (const { id, file } of layer.disable) {
       if (!id.startsWith("program:")) {
@@ -800,7 +890,9 @@ export function loadCommandRules(path = userRulesPath(), freshDefaults = false):
         programs[name] = entry;
         sources.set(id, file);
       } else if (entry.extends !== "default" || !Object.hasOwn(programs, name)) {
-        throw new RulesError(`${where}.extends: only "default", for a program the defaults have${Object.hasOwn(record(document.programs, "programs"), name) ? " (this one is disabled)" : ""}`);
+        throw new RulesError(
+          `${where}.extends: only "default", for a program the defaults have${Object.hasOwn(record(document.programs, "programs"), name) ? " (this one is disabled)" : ""}`,
+        );
       } else {
         sources.set(id, `default, ${file}`);
         programs[name] = mergeEntry(record(programs[name], where), entry, where, id, file, sources);
@@ -814,10 +906,20 @@ export function loadCommandRules(path = userRulesPath(), freshDefaults = false):
     try {
       return { programs: compileRules({ programs }, sources), rules, files: layer.files, problem: null };
     } catch (error) {
-      return { programs: new Map(), rules: [], files: layer.files, problem: rulesProblem((error as RulesError).file ?? displayPath(path), error) };
+      return {
+        programs: new Map(),
+        rules: [],
+        files: layer.files,
+        problem: rulesProblem((error as RulesError).file ?? displayPath(path), error),
+      };
     }
   } catch (error) {
-    return { programs: new Map(), rules: [], files: layer.files, problem: normalizeRulesProblem((error as Error).message) };
+    return {
+      programs: new Map(),
+      rules: [],
+      files: layer.files,
+      problem: normalizeRulesProblem((error as Error).message),
+    };
   }
 }
 

@@ -11,14 +11,14 @@ function testGraphemeWidth(segment: string): number {
   if (extendedPictographicRegex.test(segment)) return 2;
   if (markRegex.test(segment)) return 0;
   const base = segment.normalize("NFC").codePointAt(0) ?? 0;
-  return (
-    (base >= 0x1100 && base <= 0x115f)
-    || (base >= 0x2e80 && base <= 0xa4cf)
-    || (base >= 0xac00 && base <= 0xd7a3)
-    || (base >= 0xf900 && base <= 0xfaff)
-    || (base >= 0xff00 && base <= 0xff60)
-    || (base >= 0xffe0 && base <= 0xffe6)
-  ) ? 2 : 1;
+  return (base >= 0x1100 && base <= 0x115f) ||
+    (base >= 0x2e80 && base <= 0xa4cf) ||
+    (base >= 0xac00 && base <= 0xd7a3) ||
+    (base >= 0xf900 && base <= 0xfaff) ||
+    (base >= 0xff00 && base <= 0xff60) ||
+    (base >= 0xffe0 && base <= 0xffe6)
+    ? 2
+    : 1;
 }
 
 function testVisibleWidth(text: string): number {
@@ -53,10 +53,7 @@ const piLikeTextUtils = {
 
 function assertFits(text: string, width: number): void {
   const fitted = modelSelectorInternals.fitLineToWidth(text, width, piLikeTextUtils);
-  assert.ok(
-    piLikeTextUtils.visibleWidth(fitted) <= width,
-    `${JSON.stringify(fitted)} exceeds ${width} columns`,
-  );
+  assert.ok(piLikeTextUtils.visibleWidth(fitted) <= width, `${JSON.stringify(fitted)} exceeds ${width} columns`);
 }
 
 async function run(): Promise<void> {
@@ -70,7 +67,10 @@ async function run(): Promise<void> {
   for (const sample of ["😀中文", "e\u0301", "👨‍👩‍👧‍👦", "\u001b[31mstyled\u001b[0m"]) {
     const fallback = modelSelectorInternals.fitLineToWidth(sample, 6, modelSelectorInternals.safeFallbackTextUtils);
     const visibleFallback = fallback.replace(ANSI_SGR_PATTERN, "");
-    assert.ok(/^[\x20-\x7e]*$/.test(visibleFallback), `fallback visible text must be printable ASCII: ${JSON.stringify(fallback)}`);
+    assert.ok(
+      /^[\x20-\x7e]*$/.test(visibleFallback),
+      `fallback visible text must be printable ASCII: ${JSON.stringify(fallback)}`,
+    );
     assert.ok(visibleFallback.length <= 6, `fallback visible text exceeds width: ${JSON.stringify(fallback)}`);
   }
 
@@ -121,7 +121,9 @@ async function run(): Promise<void> {
   assert.equal(piLikeTextUtils.visibleWidth(rendered[0]), 20);
   assert.equal(piLikeTextUtils.visibleWidth(rendered.at(-1) ?? ""), 20);
 
-  console.log("[PASS] model selector uses the host TUI width helpers for emoji, combining marks, ZWJ emoji, CJK, and ANSI text");
+  console.log(
+    "[PASS] model selector uses the host TUI width helpers for emoji, combining marks, ZWJ emoji, CJK, and ANSI text",
+  );
   console.log("[PASS] safe fallback never guesses Unicode width and keeps visible text within printable ASCII bounds");
   console.log("[PASS] narrow selector render keeps every row within terminal width");
   console.log("[PASS] the host TUI width engine is used when it loads");

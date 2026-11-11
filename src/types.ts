@@ -37,12 +37,7 @@ export interface ExtensionContextLike {
     select?: (title: string, options: string[], optionsOverride?: unknown) => Promise<string | undefined>;
     input?: (title: string, placeholder?: string, optionsOverride?: unknown) => Promise<string | undefined>;
     custom?: <T>(
-      factory: (
-        tui: any,
-        theme: any,
-        keybindings: any,
-        done: (result: T) => void,
-      ) => unknown | Promise<unknown>,
+      factory: (tui: any, theme: any, keybindings: any, done: (result: T) => void) => unknown | Promise<unknown>,
       optionsOverride?: unknown,
     ) => Promise<T>;
     notify?: (message: string, type?: "info" | "warning" | "error") => void;

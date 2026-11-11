@@ -142,7 +142,7 @@ export const SHELL_CASES: string[] = [
   "echo `pwd`",
   "echo $'a\\tb'",
   'echo $"a"',
-  "echo \"$HOME\"",
+  'echo "$HOME"',
   "echo '$HOME'",
   "echo \\$HOME",
   "echo $((1+1))",

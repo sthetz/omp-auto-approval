@@ -6,7 +6,11 @@
  */
 
 export class JsoncError extends Error {
-  constructor(message: string, readonly line: number, readonly column: number) {
+  constructor(
+    message: string,
+    readonly line: number,
+    readonly column: number,
+  ) {
     super(`${message} at line ${line}, column ${column}`);
   }
 }
@@ -42,7 +46,7 @@ export function parseJsonc(text: string): unknown {
   const string = (): string => {
     const start = index;
     index += 1;
-    while (index < text.length && text[index] !== "\"") {
+    while (index < text.length && text[index] !== '"') {
       if (text[index] === "\n") {
         fail("line break in a string");
       }
@@ -68,7 +72,7 @@ export function parseJsonc(text: string): unknown {
       const object: Record<string, unknown> = Object.create(null);
       skip();
       while (text[index] !== "}") {
-        if (text[index] !== "\"") {
+        if (text[index] !== '"') {
           fail("expected a key in double quotes");
         }
         const keyStart = index;
@@ -111,10 +115,12 @@ export function parseJsonc(text: string): unknown {
       index += 1;
       return array;
     }
-    if (char === "\"") {
+    if (char === '"') {
       return string();
     }
-    const literal = /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(text.slice(index, index + 64));
+    const literal = /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(
+      text.slice(index, index + 64),
+    );
     if (!literal) {
       return fail(index >= text.length ? "unexpected end of file" : `unexpected '${char}'`);
     }

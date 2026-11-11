@@ -54,14 +54,34 @@ export interface ShellScript {
 }
 
 const RESERVED_WORDS = new Set([
-  "!", "case", "coproc", "do", "done", "elif", "else", "esac", "fi", "for", "function",
-  "if", "in", "select", "then", "time", "until", "while", "{", "}", "[[", "]]",
+  "!",
+  "case",
+  "coproc",
+  "do",
+  "done",
+  "elif",
+  "else",
+  "esac",
+  "fi",
+  "for",
+  "function",
+  "if",
+  "in",
+  "select",
+  "then",
+  "time",
+  "until",
+  "while",
+  "{",
+  "}",
+  "[[",
+  "]]",
 ]);
 // Characters that end an unquoted word.
 const METACHARACTERS = new Set([" ", "\t", "\n", "|", "&", ";", "(", ")", "<", ">"]);
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*\+?$/;
 // Inside double quotes a backslash only escapes these.
-const DOUBLE_QUOTE_ESCAPABLE = new Set(["$", "`", "\"", "\\"]);
+const DOUBLE_QUOTE_ESCAPABLE = new Set(["$", "`", '"', "\\"]);
 
 class Reject extends Error {}
 
@@ -120,7 +140,10 @@ class Lexer {
             start,
             end: this.index,
             type: "redirect",
-            redirects: [{ fd: 1, kind: append ? "append" : "write" }, { fd: 2, kind: "duplicate", target: "1" }],
+            redirects: [
+              { fd: 1, kind: append ? "append" : "write" },
+              { fd: 2, kind: "duplicate", target: "1" },
+            ],
             needsTarget: true,
           });
         } else {
@@ -191,7 +214,13 @@ class Lexer {
         throw new Reject();
       }
       // `>&file` is `&>file`.
-      push([{ fd: 1, kind: "write" }, { fd: 2, kind: "duplicate", target: "1" }], true);
+      push(
+        [
+          { fd: 1, kind: "write" },
+          { fd: 2, kind: "duplicate", target: "1" },
+        ],
+        true,
+      );
       return;
     }
     this.index += 1;
@@ -231,7 +260,7 @@ class Lexer {
         this.index = close + 1;
         continue;
       }
-      if (char === "\"") {
+      if (char === '"') {
         text += this.doubleQuoted();
         quoted = true;
         continue;
@@ -275,7 +304,12 @@ class Lexer {
         throw new Reject();
       }
     }
-    this.tokens.push({ start, end: this.index, type: "word", word: { text, expands, quoted, assignment, start, end: this.index } });
+    this.tokens.push({
+      start,
+      end: this.index,
+      type: "word",
+      word: { text, expands, quoted, assignment, start, end: this.index },
+    });
   }
 
   private doubleQuoted(): string {
@@ -283,7 +317,7 @@ class Lexer {
     this.index += 1;
     while (this.index < this.source.length) {
       const char = this.peek();
-      if (char === "\"") {
+      if (char === '"') {
         this.index += 1;
         return text;
       }

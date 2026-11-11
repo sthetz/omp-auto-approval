@@ -14,7 +14,7 @@ export function canonicalToolCall(event: unknown): CanonicalToolCall {
   const toolRecord = toRecord(record.tool);
   return {
     toolName: direct ?? getString(toolRecord.name) ?? getString(toolRecord.toolName) ?? null,
-    input: record.input !== undefined ? record.input : record.arguments ?? {},
+    input: record.input !== undefined ? record.input : (record.arguments ?? {}),
   };
 }
 
@@ -22,7 +22,9 @@ function stringRecord(value: unknown): Record<string, string> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
-  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
 }
 
 function canonicalAuthResolution(value: unknown): AuthResolution {
@@ -59,33 +61,43 @@ export function canonicalContext(value: unknown): ExtensionContextLike | null {
 
   if (typeof record.abort === "function") {
     const abort = record.abort;
-    context.abort = () => { abort.call(record); };
+    context.abort = () => {
+      abort.call(record);
+    };
   }
 
   const uiRecord = toRecord(record.ui);
   const ui: NonNullable<ExtensionContextLike["ui"]> = {};
   if (typeof uiRecord.select === "function") {
     const select = uiRecord.select;
-    ui.select = async (title, options, optionsOverride) => getString(await select.call(uiRecord, title, options, optionsOverride));
+    ui.select = async (title, options, optionsOverride) =>
+      getString(await select.call(uiRecord, title, options, optionsOverride));
   }
   if (typeof uiRecord.input === "function") {
     const input = uiRecord.input;
-    ui.input = async (title, placeholder, optionsOverride) => getString(await input.call(uiRecord, title, placeholder, optionsOverride));
+    ui.input = async (title, placeholder, optionsOverride) =>
+      getString(await input.call(uiRecord, title, placeholder, optionsOverride));
   }
   if (typeof uiRecord.custom === "function") {
     const custom = uiRecord.custom;
-    ui.custom = async <T,>(factory: Parameters<NonNullable<NonNullable<ExtensionContextLike["ui"]>["custom"]>>[0], optionsOverride?: unknown): Promise<T> => (
+    ui.custom = async <T>(
+      factory: Parameters<NonNullable<NonNullable<ExtensionContextLike["ui"]>["custom"]>>[0],
+      optionsOverride?: unknown,
+    ): Promise<T> =>
       // The extension-supplied factory, not OMP, determines this result type.
-      await custom.call(uiRecord, factory, optionsOverride) as T
-    );
+      (await custom.call(uiRecord, factory, optionsOverride)) as T;
   }
   if (typeof uiRecord.notify === "function") {
     const notify = uiRecord.notify;
-    ui.notify = (message, type) => { notify.call(uiRecord, message, type); };
+    ui.notify = (message, type) => {
+      notify.call(uiRecord, message, type);
+    };
   }
   if (typeof uiRecord.setStatus === "function") {
     const setStatus = uiRecord.setStatus;
-    ui.setStatus = (key, status) => { setStatus.call(uiRecord, key, status); };
+    ui.setStatus = (key, status) => {
+      setStatus.call(uiRecord, key, status);
+    };
   }
   if (record.ui !== undefined) {
     context.ui = ui;
@@ -142,7 +154,8 @@ export function canonicalContext(value: unknown): ExtensionContextLike | null {
   }
   if (typeof registryRecord.getApiKeyAndHeaders === "function") {
     const getApiKeyAndHeaders = registryRecord.getApiKeyAndHeaders;
-    modelRegistry.getApiKeyAndHeaders = async (model) => canonicalAuthResolution(await getApiKeyAndHeaders.call(registryRecord, model));
+    modelRegistry.getApiKeyAndHeaders = async (model) =>
+      canonicalAuthResolution(await getApiKeyAndHeaders.call(registryRecord, model));
   }
   if (record.modelRegistry !== undefined) {
     context.modelRegistry = modelRegistry;

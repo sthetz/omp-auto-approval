@@ -84,8 +84,13 @@ for (const [name, entry] of Object.entries(programTables())) {
     }
   }
   for (const [letter, option] of Object.entries(entry.aliases)) {
-    const together = help.split("\n").some((line) => new RegExp(`(^|[\\s,])-${escape(letter)}\\b`).test(line)
-      && new RegExp(`--${escape(option)}(?![\\w-])`).test(line));
+    const together = help
+      .split("\n")
+      .some(
+        (line) =>
+          new RegExp(`(^|[\\s,])-${escape(letter)}\\b`).test(line) &&
+          new RegExp(`--${escape(option)}(?![\\w-])`).test(line),
+      );
     if (!together) {
       problems.push(`-${letter} and --${option} not paired`);
     }

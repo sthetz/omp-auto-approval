@@ -1,4 +1,11 @@
-import { defaultRulesPath, type CommandRule, type CommandRules, type OptionKind, type OperandRule, type ProgramEntry } from "./command-rules.js";
+import {
+  defaultRulesPath,
+  type CommandRule,
+  type CommandRules,
+  type OptionKind,
+  type OperandRule,
+  type ProgramEntry,
+} from "./command-rules.js";
 
 /**
  * Text for `/clearance rules`: what the command rules in use say, and
@@ -23,7 +30,10 @@ function optionLines(entry: ProgramEntry): string[] {
   for (const [name, kind] of Object.entries(entry.longValues)) {
     groups.set(name, { names: [`--${name}`], kind });
   }
-  const shorts: [string, OptionKind][] = [...[...entry.flags].map((letter): [string, OptionKind] => [letter, "flag"]), ...Object.entries(entry.values)];
+  const shorts: [string, OptionKind][] = [
+    ...[...entry.flags].map((letter): [string, OptionKind] => [letter, "flag"]),
+    ...Object.entries(entry.values),
+  ];
   for (const [letter, kind] of shorts.reverse()) {
     const group = groups.get(entry.aliases[letter] ?? "");
     if (group && group.kind === kind) {
@@ -51,7 +61,10 @@ function entryLines(entry: ProgramEntry, indent: string): string[] {
   } else {
     const options = optionLines(entry);
     if (options.length) {
-      lines.push(`${indent}options${entry.subcommands ? " before the subcommand (whole words)" : ""}:`, ...options.map((line) => `${indent}  ${line}`));
+      lines.push(
+        `${indent}options${entry.subcommands ? " before the subcommand (whole words)" : ""}:`,
+        ...options.map((line) => `${indent}  ${line}`),
+      );
     } else if (entry.arguments === "options") {
       lines.push(`${indent}options: none`);
     }
@@ -66,7 +79,12 @@ function entryLines(entry: ProgramEntry, indent: string): string[] {
     lines.push(`${indent}subcommands (any other is reviewed):`);
     for (const [name, subcommand] of entry.subcommands) {
       lines.push(`${indent}  ${name}${subcommand.source !== entry.source ? ` (${subcommand.source})` : ""}`);
-      lines.push(...entryLines({ ...subcommand, except: subcommand.except.filter((option) => !entry.except.includes(option)) }, `${indent}    `));
+      lines.push(
+        ...entryLines(
+          { ...subcommand, except: subcommand.except.filter((option) => !entry.except.includes(option)) },
+          `${indent}    `,
+        ),
+      );
     }
   }
   return lines;

@@ -29,7 +29,9 @@ function segmentPattern(segment: string): RegExp | null {
   if (segment.includes("[")) {
     return /^.*$/s;
   }
-  const body = [...segment].map((char) => (char === "*" ? ".*" : char === "?" ? "." : char.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"))).join("");
+  const body = [...segment]
+    .map((char) => (char === "*" ? ".*" : char === "?" ? "." : char.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")))
+    .join("");
   // Case-insensitive and matching leading dots, in case of nocaseglob and dotglob.
   return new RegExp(`^${body}$`, "is");
 }
@@ -124,8 +126,15 @@ function includeMatches(pattern: string, name: string, path: string): boolean {
   if (/[[\\!]/.test(pattern)) {
     return true;
   }
-  const regex = new RegExp(`^${[...pattern].map((char) => (char === "*" ? ".*" : char === "?" ? "." : char.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"))).join("")}$`, "is");
-  return regex.test(name) || regex.test(path) || path.split("/").some((_, index, parts) => regex.test(parts.slice(index).join("/")));
+  const regex = new RegExp(
+    `^${[...pattern].map((char) => (char === "*" ? ".*" : char === "?" ? "." : char.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"))).join("")}$`,
+    "is",
+  );
+  return (
+    regex.test(name) ||
+    regex.test(path) ||
+    path.split("/").some((_, index, parts) => regex.test(parts.slice(index).join("/")))
+  );
 }
 
 // Whether a directory surely matches an --exclude-dir pattern: only plain
@@ -135,7 +144,10 @@ function surelyExcluded(pattern: string, name: string): boolean {
   if (!trimmed || /[[\\!/{}]/.test(trimmed)) {
     return false;
   }
-  const regex = new RegExp(`^${[...trimmed].map((char) => (char === "*" ? ".*" : char === "?" ? "." : char.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"))).join("")}$`, "s");
+  const regex = new RegExp(
+    `^${[...trimmed].map((char) => (char === "*" ? ".*" : char === "?" ? "." : char.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"))).join("")}$`,
+    "s",
+  );
   return regex.test(name);
 }
 
@@ -145,7 +157,10 @@ function surelyExcluded(pattern: string, name: string): boolean {
  * `grep -r`; the root itself is checked by the caller. False when the tree is
  * too large to walk.
  */
-export function isTreeClean(root: string, filter: FileFilter = { include: [], includeFirst: false, excludeDirectories: [] }): boolean {
+export function isTreeClean(
+  root: string,
+  filter: FileFilter = { include: [], includeFirst: false, excludeDirectories: [] },
+): boolean {
   let budget = MAX_WALK_ENTRIES;
   const pending = [root];
   while (pending.length) {
@@ -176,7 +191,8 @@ export function isTreeClean(root: string, filter: FileFilter = { include: [], in
         pending.push(path);
         continue;
       }
-      const read = !filter.includeFirst || filter.include.some((pattern) => includeMatches(pattern, entry.name, inside));
+      const read =
+        !filter.includeFirst || filter.include.some((pattern) => includeMatches(pattern, entry.name, inside));
       if (read && isSensitivePath(inside)) {
         return false;
       }

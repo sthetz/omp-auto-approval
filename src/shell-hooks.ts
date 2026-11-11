@@ -22,7 +22,20 @@ import { resolvePathForCwd } from "./common.js";
 // text unread.
 const HOOK_COMMANDS = new Set(["trap", "source", ".", "eval", "exec", "enable"]);
 // Words that may stand before a command name.
-const PREFIX_WORDS = new Set(["!", "then", "do", "else", "elif", "if", "while", "until", "time", "builtin", "command", "{"]);
+const PREFIX_WORDS = new Set([
+  "!",
+  "then",
+  "do",
+  "else",
+  "elif",
+  "if",
+  "while",
+  "until",
+  "time",
+  "builtin",
+  "command",
+  "{",
+]);
 // Variables and options that make the shell run code by itself.
 const HOOK_TEXT = /\b(BASH_ENV|PS4|PROMPT_COMMAND|promptvars|extdebug|functrace|errtrace)\b/;
 // An alias or variable whose value starts with a hook command (`alias t=trap`, `t=eval`).
@@ -49,12 +62,17 @@ export function commandLines(text: string, heredocBodies?: string[]): string[][]
   let words: string[] = [];
   let word = "";
   let started = false;
-  let quote: "'" | "\"" | null = null;
+  let quote: "'" | '"' | null = null;
   // Open command substitutions: the quoting and the outer line's words to
   // return to when each closes, and how many plain parentheses are open
   // inside it. Its commands become lines of their own; the outer word gets
   // `$(…)` in its place, so a command named by a substitution stays visible.
-  const substitutions: { quote: "\"" | null; backtick: boolean; depth: number; outer: { words: string[]; word: string; started: boolean } }[] = [];
+  const substitutions: {
+    quote: '"' | null;
+    backtick: boolean;
+    depth: number;
+    outer: { words: string[]; word: string; started: boolean };
+  }[] = [];
   // Heredocs opened on the current line, whose bodies start after it.
   const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
   const endWord = () => {
@@ -71,7 +89,7 @@ export function commandLines(text: string, heredocBodies?: string[]): string[][]
   };
   const openSubstitution = (backtick: boolean) => {
     // Never inside single quotes, which are read before substitutions.
-    substitutions.push({ quote: quote as "\"" | null, backtick, depth: 0, outer: { words, word, started } });
+    substitutions.push({ quote: quote as '"' | null, backtick, depth: 0, outer: { words, word, started } });
     words = [];
     word = "";
     started = false;
@@ -116,12 +134,12 @@ export function commandLines(text: string, heredocBodies?: string[]): string[][]
       index += char === "$" ? 1 : 0;
       continue;
     }
-    if (quote === "\"") {
+    if (quote === '"') {
       word += char;
-      quote = char === "\"" ? null : quote;
+      quote = char === '"' ? null : quote;
       continue;
     }
-    if (char === "'" || char === "\"") {
+    if (char === "'" || char === '"') {
       quote = char;
       word += char;
       started = true;
@@ -193,7 +211,8 @@ function sourcedFile(word: string, directory: string): string | null {
   if (!word || /[$`*?[{]/.test(word)) {
     return null;
   }
-  const path = word === "~" || word.startsWith("~/") ? join(homedir(), word.slice(1)) : resolvePathForCwd(word, directory);
+  const path =
+    word === "~" || word.startsWith("~/") ? join(homedir(), word.slice(1)) : resolvePathForCwd(word, directory);
   return path;
 }
 
@@ -224,7 +243,12 @@ export function shellHook(command: string, directory: string, depth = 0): string
     const name = plain[position];
     // A line of only assignments, or `export`/`declare`/… of them, sets shell
     // variables; assignments before a command only set its environment.
-    const setters = name === undefined ? words : ["export", "declare", "typeset", "local", "readonly"].includes(name) ? words.slice(position + 1) : [];
+    const setters =
+      name === undefined
+        ? words
+        : ["export", "declare", "typeset", "local", "readonly"].includes(name)
+          ? words.slice(position + 1)
+          : [];
     for (const word of setters) {
       const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(word);
       if (assignment) {
@@ -242,7 +266,8 @@ export function shellHook(command: string, directory: string, depth = 0): string
       const variable = /^"?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?$/.exec(words[position]);
       const value = variable ? literals.get(variable[1]) : undefined;
       // Unquoted, the value splits into words and the first is the program.
-      const program = value === undefined ? undefined : words[position].startsWith("\"") ? value : value.trim().split(/\s+/)[0];
+      const program =
+        value === undefined ? undefined : words[position].startsWith('"') ? value : value.trim().split(/\s+/)[0];
       if (program === undefined) {
         return `a command named by a ${words[position].includes("$(…)") ? "command substitution" : "variable"} (\`${words[position].slice(0, 40)}\`)`;
       }

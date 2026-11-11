@@ -1,8 +1,22 @@
-import type { ClearanceConfig, ExtensionContextLike, ClassifierDecision, ReviewSubject, Reviewer, RouteName } from "./types.js";
+import type {
+  ClearanceConfig,
+  ExtensionContextLike,
+  ClassifierDecision,
+  ReviewSubject,
+  Reviewer,
+  RouteName,
+} from "./types.js";
 import { classifyAction, type ClassifierClient } from "./classifier.js";
 import { writeAudit } from "./logging.js";
 import { planSafeCommand, type SafeCommandPlan } from "./safe-command.js";
-import { defaultRules, escalateCommand, RULES_PROBLEM_ID, userRulesPath, type CommandRules, type Escalation } from "./command-rules.js";
+import {
+  defaultRules,
+  escalateCommand,
+  RULES_PROBLEM_ID,
+  userRulesPath,
+  type CommandRules,
+  type Escalation,
+} from "./command-rules.js";
 import { configPath } from "./extension-config.js";
 import { SessionApprovalStore } from "./session-approval-store.js";
 import {
@@ -107,7 +121,9 @@ function classifierDenyReason(decision: ClassifierDecision): string {
     "The approval classifier rejected this action.",
     decision.rationale ? `Reason: ${decision.rationale}` : null,
     "Do not retry the same action unless the user explicitly approves it.",
-  ].filter(Boolean).join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 const MANUAL_ONLY_FAILURE = "This tool requires explicit user interaction and cannot be auto-approved.";
@@ -129,9 +145,13 @@ const PLAIN_BASH_FIELDS = new Set(["command", "cwd", "timeout", "description"]);
 const OFF_BY_DEFAULT_BASH_FIELDS = new Set(["pty", "async"]);
 
 function hasOnlyPlainBashFields(input: unknown): boolean {
-  return Object.entries(toRecord(input)).every(([key, value]) => (
-    PLAIN_BASH_FIELDS.has(key) || value === undefined || value === null || (OFF_BY_DEFAULT_BASH_FIELDS.has(key) && value === false)
-  ));
+  return Object.entries(toRecord(input)).every(
+    ([key, value]) =>
+      PLAIN_BASH_FIELDS.has(key) ||
+      value === undefined ||
+      value === null ||
+      (OFF_BY_DEFAULT_BASH_FIELDS.has(key) && value === false),
+  );
 }
 
 /** How a bash call that skips review runs (see planSafeCommand), or null. */
@@ -155,12 +175,17 @@ function evaluateStatic(call: CanonicalToolCall & { toolName: string }, state: D
   const builtin = isBuiltinTool(toolDefinition, tools.length > 0);
   const normalizedToolName = call.toolName.trim().toLowerCase();
   const command = bashCommand(call.toolName, call.input);
-  const escalation = call.toolName === "bash" && rules.problem
-    ? escalateCommand(command ?? "", rules)
-    : command
-      ? escalateCommand(command, rules)
-      : null;
-  const verdict = (outcome: StaticVerdict["outcome"], route: StaticRoute, plan: SafeCommandPlan | null = null): StaticVerdict => ({
+  const escalation =
+    call.toolName === "bash" && rules.problem
+      ? escalateCommand(command ?? "", rules)
+      : command
+        ? escalateCommand(command, rules)
+        : null;
+  const verdict = (
+    outcome: StaticVerdict["outcome"],
+    route: StaticRoute,
+    plan: SafeCommandPlan | null = null,
+  ): StaticVerdict => ({
     evaluator: "static",
     outcome,
     route,
@@ -188,10 +213,18 @@ function evaluateStatic(call: CanonicalToolCall & { toolName: string }, state: D
   if (!reviewBash && config.reviewExemptTools.some((name) => name.trim().toLowerCase() === normalizedToolName)) {
     return verdict("allow", "tool_allowlist");
   }
-  if (builtin && isReadOnlyTool(call.toolName) && isWorkspaceReadFastPath(call.input, resolveReadRoots(state.cwd, config.readRoots))) {
+  if (
+    builtin &&
+    isReadOnlyTool(call.toolName) &&
+    isWorkspaceReadFastPath(call.input, resolveReadRoots(state.cwd, config.readRoots))
+  ) {
     return verdict("allow", "readonly");
   }
-  if (builtin && (call.toolName === "write" || call.toolName === "edit") && isWorkspaceWriteFastPath(call.input, state.cwd, [configPath(), userRulesPath(), ...rules.files])) {
+  if (
+    builtin &&
+    (call.toolName === "write" || call.toolName === "edit") &&
+    isWorkspaceWriteFastPath(call.input, state.cwd, [configPath(), userRulesPath(), ...rules.files])
+  ) {
     return verdict("allow", "workspace_write");
   }
   if (isManualOnlyTool(call.toolName, toolDefinition)) {
@@ -205,21 +238,31 @@ function automaticDenial(baseReason: string): Pick<Decision, "outcome" | "reason
   return { outcome: "deny", reason: baseReason, automaticDenial: { baseReason } };
 }
 
-function baseDecision(call: CanonicalToolCall, state: DecisionState, subject: ReviewSubject | null, staticVerdict: StaticVerdict | null): Decision {
+function baseDecision(
+  call: CanonicalToolCall,
+  state: DecisionState,
+  subject: ReviewSubject | null,
+  staticVerdict: StaticVerdict | null,
+): Decision {
   return {
     call,
     state,
     subject,
     staticVerdict,
     humanVerdict: state.human,
-    route: staticVerdict?.route === "review" ? "classifier" : staticVerdict?.route ?? "invalid",
+    route: staticVerdict?.route === "review" ? "classifier" : (staticVerdict?.route ?? "invalid"),
     outcome: "review",
     evaluator: "static",
     plan: staticVerdict?.plan ?? null,
   };
 }
 
-function humanDecision(call: CanonicalToolCall, state: DecisionState, subject: ReviewSubject, staticVerdict: StaticVerdict): Decision {
+function humanDecision(
+  call: CanonicalToolCall,
+  state: DecisionState,
+  subject: ReviewSubject,
+  staticVerdict: StaticVerdict,
+): Decision {
   const base = {
     ...baseDecision(call, state, subject, staticVerdict),
     classifierVerdict: staticVerdict.route === "review" ? state.classifier : undefined,
@@ -233,14 +276,17 @@ function humanDecision(call: CanonicalToolCall, state: DecisionState, subject: R
   }
   const rule = staticVerdict.escalation?.rule;
   const classifier = state.classifier;
-  const reason = human.state === "stop"
-    ? "The user rejected this action and stopped the turn. Wait for the user's next message."
-    : human.reason
-      ?? (staticVerdict.route === "ask_rule" ? `The user rejected this action, which the command rule "${rule?.id}" asks them to approve.` : undefined)
-      ?? (classifier && classifier.outcome !== "failure" ? classifier.decision.rationale : undefined)
-      ?? (classifier?.outcome === "failure" ? classifier.reason : undefined)
-      ?? (staticVerdict.route === "manual_only" ? MANUAL_ONLY_FAILURE : undefined)
-      ?? "Manual approval was rejected.";
+  const reason =
+    human.state === "stop"
+      ? "The user rejected this action and stopped the turn. Wait for the user's next message."
+      : (human.reason ??
+        (staticVerdict.route === "ask_rule"
+          ? `The user rejected this action, which the command rule "${rule?.id}" asks them to approve.`
+          : undefined) ??
+        (classifier && classifier.outcome !== "failure" ? classifier.decision.rationale : undefined) ??
+        (classifier?.outcome === "failure" ? classifier.reason : undefined) ??
+        (staticVerdict.route === "manual_only" ? MANUAL_ONLY_FAILURE : undefined) ??
+        "Manual approval was rejected.");
   return {
     ...base,
     route: "human",
@@ -277,9 +323,10 @@ export function decide(call: CanonicalToolCall, state: DecisionState): Decision 
   const rule = staticVerdict.escalation?.rule;
 
   if (staticVerdict.outcome === "block") {
-    const reason = rule?.id === RULES_PROBLEM_ID
-      ? `The command rules are broken at ${rule.why}. Every bash call is blocked until the file is fixed. Report this rules error to the user and do not retry the call.`
-      : `This command matches the command rule "${rule?.id}" (block) and never runs.${rule?.why ? ` Why: ${rule.why}` : ""} Do not retry it in another form; tell the user what you wanted to run and why.`;
+    const reason =
+      rule?.id === RULES_PROBLEM_ID
+        ? `The command rules are broken at ${rule.why}. Every bash call is blocked until the file is fixed. Report this rules error to the user and do not retry the call.`
+        : `This command matches the command rule "${rule?.id}" (block) and never runs.${rule?.why ? ` Why: ${rule.why}` : ""} Do not retry it in another form; tell the user what you wanted to run and why.`;
     return { ...base, route: "blocked_command", ...automaticDenial(reason) };
   }
 
@@ -296,9 +343,10 @@ export function decide(call: CanonicalToolCall, state: DecisionState): Decision 
       const prompted = humanDecision(call, state, subject, staticVerdict);
       return staticVerdict.route === "manual_only" ? { ...prompted, failureReason: MANUAL_ONLY_FAILURE } : prompted;
     }
-    const reason = staticVerdict.route === "manual_only"
-      ? MANUAL_ONLY_FAILURE
-      : `This command matches the command rule "${rule?.id}", which asks the user to approve it, and the user cannot be asked without an interactive UI.${rule?.why ? ` Why: ${rule.why}` : ""} Do not retry it in another form; tell the user what you wanted to run and why.`;
+    const reason =
+      staticVerdict.route === "manual_only"
+        ? MANUAL_ONLY_FAILURE
+        : `This command matches the command rule "${rule?.id}", which asks the user to approve it, and the user cannot be asked without an interactive UI.${rule?.why ? ` Why: ${rule.why}` : ""} Do not retry it in another form; tell the user what you wanted to run and why.`;
     return {
       ...base,
       ...automaticDenial(reason),
@@ -384,7 +432,9 @@ export function snapshotDecisionState(
     rules: options.rules ?? defaultRules(),
     exactApproved: subject ? store.isExactApproved(subject.actionHash) : false,
     ...(subject ? { subject } : {}),
-    ...(cached ? { classifier: { evaluator: "classifier", outcome: cached.outcome, decision: cached, cached: true } } : {}),
+    ...(cached
+      ? { classifier: { evaluator: "classifier", outcome: cached.outcome, decision: cached, cached: true } }
+      : {}),
   };
 }
 
@@ -396,7 +446,8 @@ async function auditDecision(decision: Decision, started: number, pinnedInputCha
   const classifier = decision.classifierVerdict;
   const human = decision.humanVerdict?.decision;
   const rule = decision.staticVerdict?.escalation?.rule ?? undefined;
-  const pinned = decision.outcome === "allow" && decision.staticVerdict?.route === "safe_command" ? decision.plan : null;
+  const pinned =
+    decision.outcome === "allow" && decision.staticVerdict?.route === "safe_command" ? decision.plan : null;
   await writeAudit(state.config, {
     event: "decision",
     route: decision.route,
@@ -407,11 +458,13 @@ async function auditDecision(decision: Decision, started: number, pinnedInputCha
     outcome: decision.outcome,
     ...(classifier && classifier.outcome !== "failure" ? { classifierDecision: classifier.decision } : {}),
     ...(human ? { humanDecision: human.approved ? human.persistence : human.state } : {}),
-    ...(decision.auditReason ?? decision.reason ? { reason: decision.auditReason ?? decision.reason } : {}),
-    ...(pinned && pinnedInputChanged ? {
-      pinnedCommand: pinned.command,
-      ...(pinned.cwd ? { pinnedCwd: pinned.cwd } : {}),
-    } : {}),
+    ...((decision.auditReason ?? decision.reason) ? { reason: decision.auditReason ?? decision.reason } : {}),
+    ...(pinned && pinnedInputChanged
+      ? {
+          pinnedCommand: pinned.command,
+          ...(pinned.cwd ? { pinnedCwd: pinned.cwd } : {}),
+        }
+      : {}),
     ...(pinned ? { ruleIds: pinned.rules.map((used) => used.id) } : {}),
     ...(rule ? { ruleId: rule.id, ruleSource: rule.source } : {}),
     durationMs: Date.now() - started,
@@ -419,17 +472,27 @@ async function auditDecision(decision: Decision, started: number, pinnedInputCha
 }
 
 /** Apply a final decision's audit, counter, and pinned-input effects. */
-async function applyFinal(decision: Decision, ctx: ExtensionContextLike, store: SessionApprovalStore, started: number): Promise<Decision> {
+async function applyFinal(
+  decision: Decision,
+  ctx: ExtensionContextLike,
+  store: SessionApprovalStore,
+  started: number,
+): Promise<Decision> {
   const { state } = decision;
-  const pinnedInputChanged = decision.outcome === "allow" && decision.plan !== null
-    && (decision.plan.command !== toRecord(decision.call.input).command || Boolean(decision.plan.cwd));
+  const pinnedInputChanged =
+    decision.outcome === "allow" &&
+    decision.plan !== null &&
+    (decision.plan.command !== toRecord(decision.call.input).command || Boolean(decision.plan.cwd));
   if (decision.outcome === "allow") {
     store.recordNonDenial();
   }
   if (decision.outcome === "allow" && decision.staticVerdict?.route === "safe_command" && decision.plan) {
     const record = toRecord(decision.call.input);
     if (decision.plan.command !== record.command || decision.plan.cwd) {
-      Object.assign(record, { command: decision.plan.command, ...(decision.plan.cwd ? { cwd: decision.plan.cwd } : {}) });
+      Object.assign(record, {
+        command: decision.plan.command,
+        ...(decision.plan.cwd ? { cwd: decision.plan.cwd } : {}),
+      });
     }
   }
 
@@ -450,13 +513,21 @@ async function applyFinal(decision: Decision, ctx: ExtensionContextLike, store: 
       store.recordNonDenial();
       if (ctx.abort) {
         // The agent never sees this reason once the turn ends; tell the user why.
-        ctx.ui?.notify?.(`omp-clearance stopped the turn after ${denials} rejected actions in a row. Last: ${automatic.baseReason}`, "warning");
+        ctx.ui?.notify?.(
+          `omp-clearance stopped the turn after ${denials} rejected actions in a row. Last: ${automatic.baseReason}`,
+          "warning",
+        );
         ctx.abort();
       }
     }
   } else if (decision.recordDenial) {
     store.recordDenial();
-  } else if (decision.route === "human" && decision.outcome === "deny" && decision.humanVerdict?.decision.approved === false && decision.humanVerdict.decision.state === "stop") {
+  } else if (
+    decision.route === "human" &&
+    decision.outcome === "deny" &&
+    decision.humanVerdict?.decision.approved === false &&
+    decision.humanVerdict.decision.state === "stop"
+  ) {
     // The user ended the turn; the next one starts with a clean count.
     store.recordNonDenial();
     ctx.abort?.();
@@ -476,7 +547,10 @@ async function applyFinal(decision: Decision, ctx: ExtensionContextLike, store: 
       actionHash: decision.subject.actionHash,
       reason: latch.reason,
     });
-    ctx.ui?.notify?.(`omp-clearance: an approved bash command used ${latch.reason}, which can make the shell run code before later commands. ${state.reviewer === "off" ? "Safe-command fast paths are off for the rest of this session." : "Bash commands are reviewed for the rest of this session."}`, "warning");
+    ctx.ui?.notify?.(
+      `omp-clearance: an approved bash command used ${latch.reason}, which can make the shell run code before later commands. ${state.reviewer === "off" ? "Safe-command fast paths are off for the rest of this session." : "Bash commands are reviewed for the rest of this session."}`,
+      "warning",
+    );
   }
   return decision;
 }
@@ -513,13 +587,18 @@ export async function apply(
         cached: false,
       };
     }
-    return apply(decide(decision.call, {
-      ...decision.state,
-      staticVerdict: decision.staticVerdict ?? undefined,
-      consecutiveDenials: store.consecutiveDenialCount,
-      classifier,
-      human: undefined,
-    }), ctx, store, { ...options, started });
+    return apply(
+      decide(decision.call, {
+        ...decision.state,
+        staticVerdict: decision.staticVerdict ?? undefined,
+        consecutiveDenials: store.consecutiveDenialCount,
+        classifier,
+        human: undefined,
+      }),
+      ctx,
+      store,
+      { ...options, started },
+    );
   }
 
   if (decision.outcome === "ask") {
@@ -540,12 +619,17 @@ export async function apply(
         store.recordNonDenial();
       }
     }
-    return apply(decide(decision.call, {
-      ...decision.state,
-      staticVerdict: decision.staticVerdict ?? undefined,
-      exactApproved: decision.state.exactApproved || (human.approved && human.persistence === "exact"),
-      human: { evaluator: "human", decision: human },
-    }), ctx, store, { ...options, started });
+    return apply(
+      decide(decision.call, {
+        ...decision.state,
+        staticVerdict: decision.staticVerdict ?? undefined,
+        exactApproved: decision.state.exactApproved || (human.approved && human.persistence === "exact"),
+        human: { evaluator: "human", decision: human },
+      }),
+      ctx,
+      store,
+      { ...options, started },
+    );
   }
 
   return applyFinal(decision, ctx, store, started);

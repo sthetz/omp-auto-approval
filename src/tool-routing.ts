@@ -1,7 +1,17 @@
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { canonicalPath, getString, relativePathWithin, resolvePathForCwd, sha256, stableStringify, toRecord, truncateInline, type ReadRoots } from "./common.js";
+import {
+  canonicalPath,
+  getString,
+  relativePathWithin,
+  resolvePathForCwd,
+  sha256,
+  stableStringify,
+  toRecord,
+  truncateInline,
+  type ReadRoots,
+} from "./common.js";
 
 export { resolveReadRoots, type ReadRoots } from "./common.js";
 import { isSensitivePath } from "./sensitive-paths.js";
@@ -34,7 +44,6 @@ const READ_TARGET_KEYS = [...PATH_KEYS, "paths"];
 // reach remote hosts (ssh, mcp, pr, issue, mr), devices or processes (proc,
 // out, xd), or user secrets and settings (vault, cfg), and stay reviewed.
 const LOCAL_READ_SCHEMES = new Set(["skill", "rule", "agent", "artifact", "memory", "local", "omp"]);
-
 
 // Keys that can name a write destination anywhere in a write/edit payload,
 // e.g. OMP's patch-mode edit `{ path, edits: [{ rename }] }`.
@@ -180,7 +189,6 @@ function isReadTarget(value: unknown, roots: ReadRoots, depth = 0): boolean {
   });
 }
 
-
 /**
  * Read fast path: every target named in the payload must pass
  * isReadTarget. A call naming no target reads the workspace itself.
@@ -193,7 +201,9 @@ export function isWorkspaceReadFastPath(input: unknown, roots: ReadRoots): boole
   if (record.gitignore === false) {
     return false;
   }
-  const targets = READ_TARGET_KEYS.filter((key) => record[key] !== undefined && record[key] !== null).map((key) => record[key]);
+  const targets = READ_TARGET_KEYS.filter((key) => record[key] !== undefined && record[key] !== null).map(
+    (key) => record[key],
+  );
   return targets.every((target) => isReadTarget(target, roots));
 }
 
@@ -232,11 +242,13 @@ function collectWriteDestinations(value: unknown, found: unknown[], depth = 0): 
  */
 function isPlainPath(value: string): boolean {
   const trimmed = value.trim();
-  return trimmed.length > 0
-    && !trimmed.startsWith("[")
-    && !trimmed.endsWith("]")
-    && !trimmed.startsWith("~")
-    && !(/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^[a-z]:[\\/]/i.test(trimmed));
+  return (
+    trimmed.length > 0 &&
+    !trimmed.startsWith("[") &&
+    !trimmed.endsWith("]") &&
+    !trimmed.startsWith("~") &&
+    !(/^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^[a-z]:[\\/]/i.test(trimmed))
+  );
 }
 
 function isProtectedWorkspacePath(relativePath: string): boolean {
@@ -277,17 +289,22 @@ export function isWorkspaceWriteFastPath(input: unknown, cwd: string, protectedF
   const protectedPaths = new Set(protectedFiles.map((path) => canonicalPath(path, cwd)));
   const destinations: unknown[] = [];
   collectWriteDestinations(input, destinations);
-  return destinations.length > 0 && destinations.every((destination) => {
-    if (typeof destination !== "string" || !isPlainPath(destination)) {
-      return false;
-    }
-    const relative = relativePathWithin(destination, cwd);
-    return relative !== null
-      && !protectedPaths.has(canonicalPath(destination, cwd))
-      && !isProtectedWorkspacePath(relative)
-      && !isSensitivePath(relative)
-      && !isExecutableFile(destination, cwd);
-  });
+  return (
+    destinations.length > 0 &&
+    destinations.every((destination) => {
+      if (typeof destination !== "string" || !isPlainPath(destination)) {
+        return false;
+      }
+      const relative = relativePathWithin(destination, cwd);
+      return (
+        relative !== null &&
+        !protectedPaths.has(canonicalPath(destination, cwd)) &&
+        !isProtectedWorkspacePath(relative) &&
+        !isSensitivePath(relative) &&
+        !isExecutableFile(destination, cwd)
+      );
+    })
+  );
 }
 
 export function isManualOnlyTool(toolName: string, toolDefinition?: unknown): boolean {
@@ -305,15 +322,17 @@ export function isManualOnlyTool(toolName: string, toolDefinition?: unknown): bo
   if (record.requiresUserInteraction === true) {
     return true;
   }
-  return normalized.includes("computer")
-    || normalized.includes("browser_click")
-    || normalized.includes("browser_type")
-    || normalized.includes("chrome_click")
-    || normalized.includes("chrome_type")
-    || normalized.includes("install_plugin")
-    || normalized.includes("request_plugin_install")
-    || normalized.includes("mcp_config")
-    || normalized.includes("permission_config");
+  return (
+    normalized.includes("computer") ||
+    normalized.includes("browser_click") ||
+    normalized.includes("browser_type") ||
+    normalized.includes("chrome_click") ||
+    normalized.includes("chrome_type") ||
+    normalized.includes("install_plugin") ||
+    normalized.includes("request_plugin_install") ||
+    normalized.includes("mcp_config") ||
+    normalized.includes("permission_config")
+  );
 }
 
 export function findToolDefinition(toolName: string, tools: unknown[]): unknown | undefined {
@@ -332,11 +351,12 @@ export function createReviewSubject(toolName: string, input: unknown, cwd: strin
   // harmless-looking echo, and give both the same cached decision.
   // One line for display, with line breaks shown as `\n`: the classifier and
   // the approval dialog see this too, and must not see two commands as one.
-  const actionSummary = toolName === "bash" && command
-    ? `bash: ${truncateInline(command.replace(/\r/g, "\\r").replace(/\n/g, "\\n"))}`
-    : path
-      ? `${toolName}: ${truncateInline(path)}`
-      : `${toolName}: ${truncateInline(stableStringify(input))}`;
+  const actionSummary =
+    toolName === "bash" && command
+      ? `bash: ${truncateInline(command.replace(/\r/g, "\\r").replace(/\n/g, "\\n"))}`
+      : path
+        ? `${toolName}: ${truncateInline(path)}`
+        : `${toolName}: ${truncateInline(stableStringify(input))}`;
   const hashSource = stableStringify({ toolName, cwd, input: record });
   return {
     toolName,

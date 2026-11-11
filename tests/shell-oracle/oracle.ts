@@ -1,5 +1,17 @@
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -215,23 +227,58 @@ export async function runOracle(
   const fileArgs = prepareFiles(root, work, options.files ?? { read: [], written: [] });
   writeFileSync(join(root, "stdin"), "");
   mkdirSync(join(root, "log"));
-  const stdio = [openSync(join(root, "stdin"), "r"), openSync(join(root, "stdout"), "w"), openSync(join(root, "stderr"), "w")];
+  const stdio = [
+    openSync(join(root, "stdin"), "r"),
+    openSync(join(root, "stdout"), "w"),
+    openSync(join(root, "stderr"), "w"),
+  ];
   const args = [
-    "--unshare-all", "--die-with-parent", "--new-session",
-    ...SYSTEM_DIRECTORIES.filter((directory) => existsSync(directory)).flatMap((directory) => ["--ro-bind", directory, directory]),
-    "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-    "--bind", root, root,
-    "--ro-bind", PRELUDE, join(root, "prelude.sh"),
+    "--unshare-all",
+    "--die-with-parent",
+    "--new-session",
+    ...SYSTEM_DIRECTORIES.filter((directory) => existsSync(directory)).flatMap((directory) => [
+      "--ro-bind",
+      directory,
+      directory,
+    ]),
+    "--proc",
+    "/proc",
+    "--dev",
+    "/dev",
+    "--tmpfs",
+    "/tmp",
+    "--bind",
+    root,
+    root,
+    "--ro-bind",
+    PRELUDE,
+    join(root, "prelude.sh"),
     ...fileArgs,
-    "--chdir", work,
+    "--chdir",
+    work,
     "--clearenv",
-    "--setenv", "HOME", home,
-    "--setenv", "PATH", join(root, "no-programs"),
-    "--setenv", "BASH_ENV", join(root, "prelude.sh"),
-    "--setenv", "ORACLE_LOG", join(root, "log"),
-    "--setenv", "ORACLE_STATUS", String(status),
-    "--setenv", "ORACLE_COREUTILS", env.coreutils,
-    env.bash, "--noprofile", "-c", command,
+    "--setenv",
+    "HOME",
+    home,
+    "--setenv",
+    "PATH",
+    join(root, "no-programs"),
+    "--setenv",
+    "BASH_ENV",
+    join(root, "prelude.sh"),
+    "--setenv",
+    "ORACLE_LOG",
+    join(root, "log"),
+    "--setenv",
+    "ORACLE_STATUS",
+    String(status),
+    "--setenv",
+    "ORACLE_COREUTILS",
+    env.coreutils,
+    env.bash,
+    "--noprofile",
+    "-c",
+    command,
   ];
   try {
     const { exitCode, timedOut } = await new Promise<{ exitCode: number | null; timedOut: boolean }>((resolve) => {
@@ -248,7 +295,9 @@ export async function runOracle(
     });
     const log = join(root, "log");
     return {
-      records: readdirSync(log).sort().flatMap((name) => parseRecords(readFileSync(join(log, name)), root)),
+      records: readdirSync(log)
+        .sort()
+        .flatMap((name) => parseRecords(readFileSync(join(log, name)), root)),
       exitCode,
       stderr: readFileSync(join(root, "stderr"), "utf8"),
       timedOut,
@@ -275,12 +324,16 @@ export function pipelinesRun(script: ParsedScript, status: number): number[] {
 }
 
 function expectedFds(command: ParsedCommand, position: number, length: number): [string, string, string] {
-  const fds: [string, string, string] = [position === 0 ? "stdin" : "pipe", position === length - 1 ? "stdout" : "pipe", "stderr"];
+  const fds: [string, string, string] = [
+    position === 0 ? "stdin" : "pipe",
+    position === length - 1 ? "stdout" : "pipe",
+    "stderr",
+  ];
   for (const { fd, target, duplicate } of command.redirects) {
     if (fd < 0 || fd > 2) {
       continue;
     }
-    fds[fd] = duplicate ? fds[Number(target)] ?? `&${target}` : normalize(target);
+    fds[fd] = duplicate ? (fds[Number(target)] ?? `&${target}`) : normalize(target);
   }
   return fds;
 }
@@ -298,7 +351,9 @@ function matches(command: ParsedCommand, fds: string[], record: OracleRecord): b
   if (command.words.some((word) => word.expands)) {
     return command.words[0].expands || record.argv[0] === command.words[0].text;
   }
-  return record.argv.length === command.words.length && record.argv.every((arg, index) => arg === command.words[index].text);
+  return (
+    record.argv.length === command.words.length && record.argv.every((arg, index) => arg === command.words[index].text)
+  );
 }
 
 /**
@@ -319,12 +374,19 @@ export function compareRun(script: ParsedScript, status: number, run: OracleRun)
     pipeline.forEach((command, position) => {
       const fds = expectedFds(command, position, pipeline.length);
       // Exact matches first, so a loosely matched word cannot take another command's record.
-      const exact = unmatched.findIndex((record) => !command.words.some((word) => word.expands) && matches(command, fds, record));
+      const exact = unmatched.findIndex(
+        (record) => !command.words.some((word) => word.expands) && matches(command, fds, record),
+      );
       const found = exact >= 0 ? exact : unmatched.findIndex((record) => matches(command, fds, record));
       if (found >= 0) {
         unmatched.splice(found, 1);
       } else {
-        problems.push(`expected ${describe(command.words.map((word) => word.text), fds)}`);
+        problems.push(
+          `expected ${describe(
+            command.words.map((word) => word.text),
+            fds,
+          )}`,
+        );
       }
     });
     problems.push(...unmatched.map((record) => `bash ran ${describe(record.argv, record.fds)}`));

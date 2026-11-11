@@ -9,14 +9,16 @@ export interface CommandRulesWatch {
 }
 
 function versionFor(main: string, included: string[]): string {
-  return [...new Set([defaultRulesPath(), main, ...included])].map((path) => {
-    try {
-      const stats = statSync(path);
-      return `${path}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.ino}:${stats.size}`;
-    } catch (error) {
-      return `${path}:missing-or-unreadable:${String(toRecord(error).code ?? "unknown")}`;
-    }
-  }).join("\n");
+  return [...new Set([defaultRulesPath(), main, ...included])]
+    .map((path) => {
+      try {
+        const stats = statSync(path);
+        return `${path}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.ino}:${stats.size}`;
+      } catch (error) {
+        return `${path}:missing-or-unreadable:${String(toRecord(error).code ?? "unknown")}`;
+      }
+    })
+    .join("\n");
 }
 
 /**

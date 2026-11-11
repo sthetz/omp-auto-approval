@@ -21,7 +21,7 @@ export function parseJsonc(text: string): unknown {
 
   const fail = (message: string): never => {
     const before = text.slice(0, index).split("\n");
-    throw new JsoncError(message, before.length, before.at(-1)!.length + 1);
+    throw new JsoncError(message, before.length, (before.at(-1) ?? "").length + 1);
   };
 
   const skip = () => {

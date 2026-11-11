@@ -120,6 +120,12 @@ function pinnedCommand(command: string, cfg: TestConfig, workspace: string, sear
   return planSafeCommand(command, cfg, { workspace, searchPath, rules: cfg.rules })?.command ?? null;
 }
 
+/** `value`, which the test has set up to be there; fails the test if it isn't. */
+function required<T>(value: T | null | undefined, what: string): T {
+  assert.ok(value !== null && value !== undefined, `${what} is missing`);
+  return value;
+}
+
 /** The reason of a tool_call response, or "" when it has none. */
 function reasonOf(response: unknown): string {
   const reason: unknown =
@@ -497,7 +503,7 @@ async function run(): Promise<void> {
     ]);
 
     // Each command's span runs from its first word or redirection to its last, redirection targets included.
-    const spans = recognizeShell("  2>/dev/null git status && ls -l > out # note")!
+    const spans = required(recognizeShell("  2>/dev/null git status && ls -l > out # note"), "recognized script")
       .pipelines.flat()
       .map(({ start, end }) => [start, end]);
     assert.deepEqual(spans, [
@@ -505,7 +511,8 @@ async function run(): Promise<void> {
       [28, 39],
     ]);
 
-    const words = recognizeShell("  \"git\" ~/x a=~/k 'a'=~ *.ts X=1")!.pipelines[0][0].words;
+    const words = required(recognizeShell("  \"git\" ~/x a=~/k 'a'=~ *.ts X=1"), "recognized script").pipelines[0][0]
+      .words;
     assert.deepEqual(
       words.map(({ text, expands, quoted, assignment, start, end }) => [text, expands, quoted, assignment, start, end]),
       [
@@ -1688,7 +1695,7 @@ async function run(): Promise<void> {
           },
         },
       });
-      await handlers.get("session_start")!({}, sessionCtx);
+      await required(handlers.get("session_start"), "session_start handler")({}, sessionCtx);
       assert.ok(
         notices.some(
           ([message, type]) =>
@@ -1704,7 +1711,10 @@ async function run(): Promise<void> {
       // Fixing the main file is enough: the next call reloads it and runs safely.
       writeFileSync(join(workspace, "rules.jsonc"), "{}");
       utimesSync(join(workspace, "rules.jsonc"), 60, 60);
-      assert.deepEqual(await handlers.get("tool_call")!(bash("git status"), sessionCtx), {});
+      assert.deepEqual(
+        await required(handlers.get("tool_call"), "tool_call handler")(bash("git status"), sessionCtx),
+        {},
+      );
       assert.doesNotMatch(statuses.at(-1) ?? "", /rules error/);
       assert.equal(
         notices.filter(
@@ -1759,12 +1769,16 @@ async function run(): Promise<void> {
         getAllTools: () => [],
         registerCommand: () => {},
       });
-      const call = () => handlers.get("tool_call")!({ toolName: "bash", input: { command: "whoami" } }, sessionCtx);
+      const call = () =>
+        required(handlers.get("tool_call"), "tool_call handler")(
+          { toolName: "bash", input: { command: "whoami" } },
+          sessionCtx,
+        );
       assert.deepEqual(await call(), {});
 
       writeFileSync(included, "{ broken");
       utimesSync(included, 70, 70);
-      await handlers.get("resources_discover")!({}, sessionCtx);
+      await required(handlers.get("resources_discover"), "resources_discover handler")({}, sessionCtx);
       assert.match(notices.at(-1) ?? "", /included\.jsonc/);
       const blocked = await call();
       assert.match(reasonOf(blocked), /included\.jsonc:\d+:\d+: expected a key/);
@@ -3839,7 +3853,7 @@ async function run(): Promise<void> {
     });
     const say = async (args: string) => {
       messages.length = 0;
-      await handler!(args, commandCtx);
+      await required(handler, "/clearance handler")(args, commandCtx);
       return messages.join("\n");
     };
     try {
@@ -3946,10 +3960,8 @@ async function run(): Promise<void> {
       writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, reviewer: "manual" }));
       assert.match(await routeFor("read ~/.ssh/id_ed25519"), /route: blocked: manual review needs an interactive UI/);
       writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, reviewer: "ai" }));
-      writeFileSync(
-        process.env.CLEARANCE_RULES_PATH!,
-        '{ "rules": [{ "id": "no-apply", "match": "terraform apply", "outcome": "block" }] }',
-      );
+      const rulesPath = required(process.env.CLEARANCE_RULES_PATH, "CLEARANCE_RULES_PATH");
+      writeFileSync(rulesPath, '{ "rules": [{ "id": "no-apply", "match": "terraform apply", "outcome": "block" }] }');
       try {
         assert.match(
           await routeFor("bash terraform apply -auto-approve"),
@@ -3960,7 +3972,7 @@ async function run(): Promise<void> {
           /route: blocked: [^\n]*\nrule: force-push \(block, default\)\nwhy: A force push rewrites history/,
         );
       } finally {
-        rmSync(process.env.CLEARANCE_RULES_PATH!, { force: true });
+        rmSync(rulesPath, { force: true });
       }
       assert.match(await routeFor(""), /Usage: \/clearance explain/);
     } finally {

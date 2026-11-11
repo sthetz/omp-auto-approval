@@ -865,7 +865,11 @@ export function loadCommandRules(path = userRulesPath(), freshDefaults = false):
         rules.splice(index, 1);
         continue;
       }
-      const [, name, subcommand] = PROGRAM_ID.exec(id)!;
+      const programId = PROGRAM_ID.exec(id);
+      if (!programId) {
+        throw new RulesError(`${file}: disable: "${id}" is not a program id`);
+      }
+      const [, name, subcommand] = programId;
       const entry = Object.hasOwn(programs, name) ? record(programs[name], name) : undefined;
       if (!entry) {
         throw new RulesError(`${file}: disable: no built-in rule "${id}"`);

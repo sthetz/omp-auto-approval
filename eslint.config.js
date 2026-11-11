@@ -23,7 +23,6 @@ export default defineConfig(
 
       // Rules the code doesn't pass yet. Each is turned on in its own
       // commit, with its fixes.
-      "@typescript-eslint/no-non-null-assertion": "off",
       "@typescript-eslint/no-unnecessary-condition": "off",
     },
   },

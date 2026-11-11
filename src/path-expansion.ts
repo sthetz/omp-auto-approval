@@ -163,8 +163,7 @@ export function isTreeClean(
 ): boolean {
   let budget = MAX_WALK_ENTRIES;
   const pending = [root];
-  while (pending.length) {
-    const directory = pending.pop()!;
+  for (let directory = pending.pop(); directory !== undefined; directory = pending.pop()) {
     let entries: Dirent[];
     try {
       entries = readdirSync(directory, { withFileTypes: true });

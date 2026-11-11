@@ -97,7 +97,11 @@ export function commandLines(text: string, heredocBodies?: string[]): string[][]
   };
   const closeSubstitution = () => {
     endLine();
-    const { quote: outerQuote, outer } = substitutions.pop()!;
+    const closing = substitutions.pop();
+    if (!closing) {
+      return;
+    }
+    const { quote: outerQuote, outer } = closing;
     quote = outerQuote;
     words = outer.words;
     word = `${outer.word}$(…)`;

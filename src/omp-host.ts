@@ -1,4 +1,12 @@
-import type { AuthResolution, ClearanceConfig, ExtensionContextLike, Reviewer } from "./types.js";
+import type {
+  AuthResolution,
+  ClearanceConfig,
+  ExtensionContextLike,
+  KeybindingsLike,
+  Reviewer,
+  ThemeLike,
+  TuiLike,
+} from "./types.js";
 import type { ClassifierClient } from "./classifier.js";
 import type { CommandRules } from "./command-rules.js";
 import { getString, toRecord } from "./common.js";
@@ -42,6 +50,45 @@ function canonicalAuthResolution(value: unknown): AuthResolution {
   };
 }
 
+/** The TUI handle OMP passes to a custom component's factory. */
+function canonicalTui(value: unknown): TuiLike {
+  const record = toRecord(value);
+  const requestRender = record.requestRender;
+  return typeof requestRender === "function"
+    ? {
+        requestRender: () => {
+          requestRender.call(record);
+        },
+      }
+    : {};
+}
+
+function canonicalTheme(value: unknown): ThemeLike {
+  const record = toRecord(value);
+  const fg = record.fg;
+  return typeof fg === "function"
+    ? {
+        fg: (name, text) => {
+          const styled: unknown = fg.call(record, name, text);
+          return typeof styled === "string" ? styled : text;
+        },
+      }
+    : {};
+}
+
+function canonicalKeybindings(value: unknown): KeybindingsLike {
+  const record = toRecord(value);
+  const matches = record.matches;
+  return typeof matches === "function"
+    ? {
+        matches: (data, key) => {
+          const matched: unknown = matches.call(record, data, key);
+          return typeof matched === "boolean" ? matched : undefined;
+        },
+      }
+    : {};
+}
+
 /**
  * Validate OMP's extension context once. Internal code receives only the
  * fields and return shapes declared in ExtensionContextLike.
@@ -82,11 +129,16 @@ export function canonicalContext(value: unknown): ExtensionContextLike | null {
   if (typeof uiRecord.custom === "function") {
     const custom = uiRecord.custom;
     ui.custom = async <T>(
-      factory: Parameters<NonNullable<NonNullable<ExtensionContextLike["ui"]>["custom"]>>[0],
+      factory: (tui: TuiLike, theme: ThemeLike, keybindings: KeybindingsLike, done: (result: T) => void) => unknown,
       optionsOverride?: unknown,
     ): Promise<T> =>
       // The extension-supplied factory, not OMP, determines this result type.
-      (await custom.call(uiRecord, factory, optionsOverride)) as T;
+      (await custom.call(
+        uiRecord,
+        (tui: unknown, theme: unknown, keybindings: unknown, done: (result: T) => void) =>
+          factory(canonicalTui(tui), canonicalTheme(theme), canonicalKeybindings(keybindings), done),
+        optionsOverride,
+      )) as T;
   }
   if (typeof uiRecord.notify === "function") {
     const notify = uiRecord.notify;

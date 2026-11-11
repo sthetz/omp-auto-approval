@@ -2680,6 +2680,30 @@ async function run(): Promise<void> {
     assert.deepEqual(await hostCtx.modelRegistry?.getAvailable?.(), []);
     assert.deepEqual(await hostCtx.modelRegistry?.getApiKeyAndHeaders?.({}), { ok: false, headers: { good: "value" } });
 
+    // A custom component's factory gets OMP's TUI objects checked the same way.
+    const seen: string[] = [];
+    const tuiHost = {
+      requestRender() {
+        seen.push(this === tuiHost ? "render" : "render without its object");
+      },
+    };
+    const customCtx = canonicalContext({
+      ui: {
+        custom: (factory: (...args: unknown[]) => unknown) => {
+          factory(tuiHost, { fg: () => 42 }, { matches: "not a function" }, () => undefined);
+          return Promise.resolve("picked");
+        },
+      },
+    });
+    const picked = await customCtx?.ui?.custom?.<string>((tui, theme, keybindings) => {
+      tui.requestRender?.();
+      seen.push(theme.fg?.("accent", "text") ?? "no fg");
+      seen.push(keybindings.matches === undefined ? "no matches" : "matches");
+      return {};
+    });
+    assert.equal(picked, "picked");
+    assert.deepEqual(seen, ["render", "text", "no matches"]);
+
     const missingName = await evaluateToolCall(
       null,
       hostCtx,
@@ -3447,7 +3471,7 @@ async function run(): Promise<void> {
               usedCustom = true;
               const component = factory(
                 { requestRender: () => {} },
-                { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+                { fg: (_name: string, text: string) => text },
                 {},
                 resolve,
               ) as { render: (width: number) => string[]; handleInput: (data: string) => void };
@@ -3511,7 +3535,7 @@ async function run(): Promise<void> {
             new Promise((resolve) => {
               const component = factory(
                 { requestRender: () => {} },
-                { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+                { fg: (_name: string, text: string) => text },
                 {},
                 resolve,
               ) as { render: (width: number) => string[]; handleInput: (data: string) => void };

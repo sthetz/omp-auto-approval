@@ -104,7 +104,7 @@ async function run(): Promise<void> {
     items,
     ctx,
     config,
-    { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+    { fg: (_name: string, text: string) => text },
     {},
     piLikeTextUtils,
     () => {},

@@ -1,19 +1,6 @@
-import type { ClearanceConfig, ExtensionContextLike } from "./types.js";
+import type { ClearanceConfig, ExtensionContextLike, KeybindingsLike, ThemeLike, TuiLike } from "./types.js";
 
 const ANSI_SGR_PATTERN = /(\x1b\[[0-9;]*m)/g;
-
-type ThemeLike = {
-  fg?: (name: string, text: string) => string;
-  bold?: (text: string) => string;
-};
-
-type KeybindingsLike = {
-  matches?: (data: string, key: string) => boolean;
-};
-
-type TuiLike = {
-  requestRender?: () => void;
-};
 
 type TuiTextUtils = {
   visibleWidth: (text: string) => number;

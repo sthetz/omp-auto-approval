@@ -13,7 +13,6 @@ export default defineConfig(
 
       // Rules the code doesn't pass yet. Each is turned on in its own
       // commit, with its fixes.
-      "@typescript-eslint/no-base-to-string": "off",
       "@typescript-eslint/no-confusing-void-expression": "off",
       "@typescript-eslint/no-deprecated": "off",
       "@typescript-eslint/no-dynamic-delete": "off",

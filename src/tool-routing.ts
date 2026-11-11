@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   canonicalPath,
   getString,
+  isRecord,
   relativePathWithin,
   resolvePathForCwd,
   sha256,
@@ -235,6 +236,22 @@ export function isWorkspaceReadFastPath(input: unknown, roots: ReadRoots): boole
     (key) => record[key],
   );
   return targets.every((target) => isReadTarget(target, roots));
+}
+
+/**
+ * The agent can call a tool by writing its JSON arguments to `xd://<tool>`.
+ * OMP then runs that tool as a call of its own, which reaches this extension
+ * as a separate `tool_call` (the inner call has another tool name, so OMP's
+ * wrapper emits it). For `lsp`, decide on that inner call and let the
+ * outer write through. Only `xd://lsp`: other devices include `bash`.
+ */
+export function isLspDispatch(input: unknown): boolean {
+  return (
+    isRecord(input) &&
+    input.path === "xd://lsp" &&
+    typeof input.content === "string" &&
+    Object.keys(input).every((key) => key === "path" || key === "content")
+  );
 }
 
 export function getPathFromInput(input: unknown): string | null {

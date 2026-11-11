@@ -293,6 +293,7 @@ await test("name-based fast paths apply only to the host's builtin tools", async
     { toolName: "todo", input: { op: "done", task: "x" } },
     { toolName: "wait", input: {} },
     { toolName: "ask", input: { question: "Continue?" } },
+    { toolName: "write", input: { path: "xd://lsp", content: '{"action":"status"}' } },
   ];
   for (const source of ["extension", "sdk", "mcp"]) {
     for (const event of cases) {
@@ -616,6 +617,45 @@ await test("workspace write fast path rejects protected entries, rewritten path 
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test("write xd://lsp goes through, other xd devices and shapes do not", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-lsp-"));
+  try {
+    const route = (input: unknown, toolName = "lsp") =>
+      staticRoute(toolName, input, { cwd: workspace, config: config(), tools: [], hasUI: false });
+    assert.equal(route({ path: "xd://lsp", content: '{"action":"rename","new_name":"y"}' }, "write"), "lsp_dispatch");
+    for (const input of [
+      { path: "xd://bash", content: '{"command":"id"}' },
+      { path: "xd://lsp/", content: "{}" },
+      { path: "XD://lsp", content: "{}" },
+      { path: "xd://lsp", content: {} },
+      { path: "xd://lsp", content: "{}", file_path: "notes.txt" },
+    ]) {
+      assert.equal(route(input, "write"), null, JSON.stringify(input));
+    }
+    assert.equal(route({ path: "xd://lsp", content: "{}" }, "edit"), null);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+await test("letting write xd://lsp through does not reset the denial count", async () => {
+  for (const cfg of [
+    config({ reviewer: "ai", maxConsecutiveDenials: 5 }),
+    // Exempting write lets it through by another route; that must not reset the count either.
+    config({ reviewer: "ai", maxConsecutiveDenials: 5, reviewExemptTools: ["write"] }),
+  ]) {
+    const store = new SessionApprovalStore();
+    const dispatch = { toolName: "write", input: { path: "xd://lsp", content: '{"action":"reload"}' } };
+    const inner = { toolName: "lsp", input: { action: "reload" } };
+    for (let round = 1; round <= 2; round += 1) {
+      assert.deepEqual(await evaluateToolCall(dispatch, ctx(), cfg, store, classifierDenyOptions()), {});
+      const denied = await evaluateToolCall(inner, ctx(), cfg, store, classifierDenyOptions());
+      assert.deepEqual(denied, { block: true, reason: CLASSIFIER_DENY_REASON });
+      assert.equal(store.consecutiveDenialCount, round);
+    }
   }
 });
 

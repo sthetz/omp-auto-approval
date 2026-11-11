@@ -52,6 +52,7 @@ const ROUTE_EXPLANATIONS: Record<Decision["route"], string> = {
   readonly:
     "allowed without review: read-only builtin tool, every target is a non-sensitive path in the workspace or readRoots",
   workspace_write: "allowed without review: write inside the workspace, outside protected entries",
+  lsp_dispatch: "allowed without review: dispatches an lsp call, which is decided on its own",
   safe_command: "allowed without review: every command is read-only by the command rules",
   manual_unavailable: "blocked: manual review needs an interactive UI, but none is available",
   manual_only: "needs manual approval: this tool cannot be auto-approved",

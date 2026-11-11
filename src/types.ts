@@ -31,13 +31,14 @@ export interface ClassifierDecision {
 
 export interface ExtensionContextLike {
   cwd?: string;
-  mode?: "tui" | "rpc" | "print" | string;
+  /** "tui", "rpc", "print", or a mode added by a later OMP. */
+  mode?: string;
   hasUI?: boolean;
   ui?: {
     select?: (title: string, options: string[], optionsOverride?: unknown) => Promise<string | undefined>;
     input?: (title: string, placeholder?: string, optionsOverride?: unknown) => Promise<string | undefined>;
     custom?: <T>(
-      factory: (tui: any, theme: any, keybindings: any, done: (result: T) => void) => unknown | Promise<unknown>,
+      factory: (tui: any, theme: any, keybindings: any, done: (result: T) => void) => unknown,
       optionsOverride?: unknown,
     ) => Promise<T>;
     notify?: (message: string, type?: "info" | "warning" | "error") => void;

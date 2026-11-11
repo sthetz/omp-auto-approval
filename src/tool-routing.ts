@@ -335,7 +335,7 @@ export function isManualOnlyTool(toolName: string, toolDefinition?: unknown): bo
   );
 }
 
-export function findToolDefinition(toolName: string, tools: unknown[]): unknown | undefined {
+export function findToolDefinition(toolName: string, tools: unknown[]): unknown {
   return tools.find((tool) => {
     const record = toRecord(tool);
     return record.name === toolName || record.toolName === toolName;

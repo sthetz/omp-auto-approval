@@ -10,7 +10,7 @@ import { reviewerStatePath } from "../src/reviewer-state.js";
 import type { ExtensionContextLike } from "../src/types.js";
 
 type CommandHandler = (args: string, ctx: ExtensionContextLike) => Promise<void> | void;
-type EventHandler = (event: unknown, ctx: ExtensionContextLike) => Promise<unknown> | unknown;
+type EventHandler = (event: unknown, ctx: ExtensionContextLike) => unknown;
 
 interface AuditRecord {
   timestamp?: string;

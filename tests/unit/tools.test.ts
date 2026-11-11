@@ -4,7 +4,8 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { isWorkspaceWriteFastPath, resolveReadRoots } from "../../src/tool-routing.js";
 import { logPath, normalizeConfig } from "../../src/extension-config.js";
-import { evaluateToolCall } from "../../src/omp-host.js";
+import { evaluateToolCall, reviewToolResult } from "../../src/omp-host.js";
+import { unreadableLspLocation } from "../../src/lsp-results.js";
 import { defaultRules, type CommandRules } from "../../src/command-rules.js";
 import { SessionApprovalStore } from "../../src/session-approval-store.js";
 import { test } from "node:test";
@@ -293,6 +294,8 @@ await test("name-based fast paths apply only to the host's builtin tools", async
     { toolName: "todo", input: { op: "done", task: "x" } },
     { toolName: "wait", input: {} },
     { toolName: "ask", input: { question: "Continue?" } },
+    { toolName: "lsp", input: { action: "hover", file: "a.ts", line: 1, symbol: "x" } },
+    { toolName: "write", input: { path: "xd://lsp", content: '{"action":"status"}' } },
   ];
   for (const source of ["extension", "sdk", "mcp"]) {
     for (const event of cases) {
@@ -616,6 +619,169 @@ await test("workspace write fast path rejects protected entries, rewritten path 
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test("lsp queries and edit previews skip review; applied edits, builds and raw requests do not", async () => {
+  const root = mkdtempSync(join(tmpdir(), "omp-clearance-lsp-"));
+  const workspace = join(root, "workspace");
+  mkdirSync(join(workspace, "src"), { recursive: true });
+  mkdirSync(join(root, "outside"));
+  writeFileSync(join(workspace, "src", "a.ts"), "export const x = 1;\n");
+  try {
+    const route = (input: unknown, toolName = "lsp") =>
+      staticRoute(toolName, input, { cwd: workspace, config: config(), tools: [], hasUI: false });
+    const file = "src/a.ts";
+    const skip = [
+      { action: "status" },
+      { action: "capabilities" },
+      { action: "symbols", file: "*", query: "Config" },
+      { action: "symbols", file },
+      { action: "hover", file, line: 1, symbol: "x" },
+      { action: "definition", file, line: 1, symbol: "x", timeout: 30 },
+      { action: "references", file: join(workspace, file), line: 1, symbol: "x" },
+      { action: "type_definition", file, line: 1 },
+      { action: "implementation", file, line: 1 },
+      { action: "diagnostics", file },
+      { action: "rename", file, line: 1, symbol: "x", new_name: "y", apply: false },
+      { action: "rename_file", file, new_name: "src/b.ts", apply: false },
+      { action: "code_actions", file, line: 1 },
+      { action: "code_actions", file, line: 1, query: "quickfix", apply: false },
+    ];
+    for (const input of skip) {
+      assert.equal(route(input), "lsp_read", JSON.stringify(input));
+    }
+    const reviewed = [
+      // Runs cargo check, npx tsc, go build or pyright in the workspace.
+      { action: "diagnostics", file: "*" },
+      // A glob can match files the read fast path would not read.
+      { action: "diagnostics", file: "src/*.ts" },
+      // Applied edits: the language server picks the files.
+      { action: "rename", file, line: 1, symbol: "x", new_name: "y" },
+      { action: "rename", file, line: 1, symbol: "x", new_name: "y", apply: true },
+      { action: "rename_file", file, new_name: "src/b.ts" },
+      { action: "code_actions", file, line: 1, query: "0", apply: true },
+      { action: "reload" },
+      { action: "request", file, query: "workspace/executeCommand", payload: "{}" },
+      // Paths the read fast path would not read.
+      { action: "hover", file: ".env", line: 1 },
+      { action: "hover", file: "../outside/a.ts", line: 1 },
+      { action: "rename_file", file, new_name: "../outside/b.ts", apply: false },
+      { action: "symbols", file: "~/.ssh/config" },
+      { action: "hover", file: 42 },
+      { action: "capabilities", file: "*" },
+      { action: "code_actions", file: "*" },
+      { action: "rename_file", file, new_name: "*", apply: false },
+      // Fields and values outside the tool's schema.
+      { action: "hover", file, payload: "{}" },
+      { action: "hover", file, extra: true },
+      { action: "rename", file, new_name: "y", apply: "false" },
+      { action: "HOVER", file },
+      { file },
+      "hover",
+    ];
+    for (const input of reviewed) {
+      assert.equal(route(input), null, JSON.stringify(input));
+    }
+
+    assert.equal(route({ path: "xd://lsp", content: '{"action":"rename","new_name":"y"}' }, "write"), "lsp_dispatch");
+    for (const input of [
+      { path: "xd://bash", content: '{"command":"id"}' },
+      { path: "xd://lsp/", content: "{}" },
+      { path: "XD://lsp", content: "{}" },
+      { path: "xd://lsp", content: {} },
+      { path: "xd://lsp", content: "{}", file_path: "notes.txt" },
+    ]) {
+      assert.equal(route(input, "write"), null, JSON.stringify(input));
+    }
+    assert.equal(route({ path: "xd://lsp", content: "{}" }, "edit"), null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test("lsp results that show source lines from unreadable files are withheld", async () => {
+  const root = mkdtempSync(join(tmpdir(), "omp-clearance-lsp-result-"));
+  const workspace = join(root, "workspace");
+  const library = join(root, "library");
+  mkdirSync(join(workspace, "src"), { recursive: true });
+  mkdirSync(library);
+  try {
+    const roots = resolveReadRoots(workspace, [library]);
+    const text = (...lines: string[]) => [{ type: "text", text: lines.join("\n") }];
+    const check = (content: unknown) => unreadableLspLocation(content, roots);
+    // OMP's own output, as printed for definition and references.
+    assert.equal(
+      check(text("Found 1 definition(s):", "  src/a.ts:1:14", "    1: export const x = 1;", "    2: ")),
+      null,
+    );
+    assert.equal(
+      check(text("Found 1 definition(s):", `  ${join(library, "b.ts")}:3:1`, "    2: a", "    3: b", "    4: c")),
+      null,
+    );
+    const outside = join(root, "secret.ts");
+    assert.equal(
+      check(text("Found 1 definition(s):", `  ${outside}:1:14`, '    1: export const TOKEN = "sk";')),
+      outside,
+    );
+    assert.equal(
+      check(text("Found 2 reference(s):", "  src/a.ts:1:1", "    1: x", "  .env:2:1", "    2: KEY=v")),
+      ".env",
+    );
+    // A location without source lines shows only a path and position.
+    assert.equal(check(text("Found 1 reference(s):", `  ${outside}:4:2`)), null);
+    // A symbol list's `name @ path` never vouches for source lines.
+    assert.equal(check(text("  Constant x @ src/a.ts:1:1", "    1: x")), "Constant x @ src/a.ts");
+    assert.equal(check(text("  src/a.ts:2:1", "    1: a", "    2:", "    3: c")), null);
+    // Source lines need a readable location right above them.
+    assert.equal(check(text("    1: KEY=v")), "(source lines under no location)");
+    assert.equal(
+      check(text("  src/a.ts:1:1", "    1: x", "Found 1 more:", "    7: KEY=v")),
+      "(source lines under no location)",
+    );
+    // Paths and names without source lines are let through.
+    assert.equal(check(text(`Found 1 symbol(s) matching "TOKEN":`, `  Constant TOKEN @ ${outside}:1:14`)), null);
+    assert.equal(check(text("Rename preview:", `  ${outside}: 2 edits`)), null);
+    assert.equal(check(text("```typescript", 'const TOKEN: "sk"', "```")), null);
+    assert.equal(check([{ type: "image", data: "" }, ...text("  src/a.ts:1:1", "    1: x")]), null);
+    assert.equal(check("not a list"), null);
+
+    const withheld = await reviewToolResult(
+      { toolName: "lsp", input: { action: "definition" }, content: text(`  ${outside}:1:14`, "    1: s") },
+      ctx({ cwd: workspace }),
+      config({ readRoots: [library] }),
+    );
+    assert.ok(withheld);
+    assert.equal(withheld.isError, true);
+    assert.match(withheld.content[0]?.text ?? "", /withheld this lsp result: it shows source lines from .*secret\.ts/);
+    assert.equal(
+      await reviewToolResult(
+        { toolName: "read", content: text(`  ${outside}:1:14`, "    1: s") },
+        ctx({ cwd: workspace }),
+        config(),
+      ),
+      undefined,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test("letting write xd://lsp through does not reset the denial count", async () => {
+  for (const cfg of [
+    config({ reviewer: "ai", maxConsecutiveDenials: 5 }),
+    // Exempting write lets it through by another route; that must not reset the count either.
+    config({ reviewer: "ai", maxConsecutiveDenials: 5, reviewExemptTools: ["write"] }),
+  ]) {
+    const store = new SessionApprovalStore();
+    const dispatch = { toolName: "write", input: { path: "xd://lsp", content: '{"action":"reload"}' } };
+    const inner = { toolName: "lsp", input: { action: "reload" } };
+    for (let round = 1; round <= 2; round += 1) {
+      assert.deepEqual(await evaluateToolCall(dispatch, ctx(), cfg, store, classifierDenyOptions()), {});
+      const denied = await evaluateToolCall(inner, ctx(), cfg, store, classifierDenyOptions());
+      assert.deepEqual(denied, { block: true, reason: CLASSIFIER_DENY_REASON });
+      assert.equal(store.consecutiveDenialCount, round);
+    }
   }
 });
 

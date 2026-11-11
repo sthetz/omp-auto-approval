@@ -2,7 +2,13 @@ import type { ClearanceConfig, ExtensionContextLike, Reviewer } from "./src/type
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, saveConfig } from "./src/extension-config.js";
 import { defaultRulesPath, userRulesPath, type CommandRules } from "./src/command-rules.js";
 import { decide, sessionKey, snapshotDecisionState, type Decision } from "./src/decision.js";
-import { canonicalContext, canonicalTools, evaluateToolCall } from "./src/omp-host.js";
+import {
+  canonicalContext,
+  canonicalToolCall,
+  canonicalTools,
+  evaluateToolCall,
+  reviewToolResult,
+} from "./src/omp-host.js";
 import { describeRule, rulesOverview } from "./src/rules-report.js";
 import { toRecord } from "./src/common.js";
 import { findToolDefinition } from "./src/tool-routing.js";
@@ -52,6 +58,9 @@ const ROUTE_EXPLANATIONS: Record<Decision["route"], string> = {
   readonly:
     "allowed without review: read-only builtin tool, every target is a non-sensitive path in the workspace or readRoots",
   workspace_write: "allowed without review: write inside the workspace, outside protected entries",
+  lsp_read:
+    "allowed without review: an lsp query or edit preview about non-sensitive paths in the workspace or readRoots",
+  lsp_dispatch: "allowed without review: dispatches an lsp call, which is decided on its own",
   safe_command: "allowed without review: every command is read-only by the command rules",
   manual_unavailable: "blocked: manual review needs an interactive UI, but none is available",
   manual_only: "needs manual approval: this tool cannot be auto-approved",
@@ -442,6 +451,30 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
       return {
         block: true,
         reason: `omp-clearance failed to decide this tool call: ${reason}. Do not retry; report this error to the user.`,
+      };
+    }
+  });
+
+  // A result OMP is about to pass to the agent. Only lsp results are checked
+  // (see reviewToolResult); a failure withholds the result rather than
+  // passing on what could not be checked.
+  omp.on("tool_result", async (event: unknown, context: unknown) => {
+    if (canonicalToolCall(event).toolName !== "lsp") {
+      return undefined;
+    }
+    try {
+      const ctx = canonicalContext(context) ?? lastContext;
+      if (!ctx) {
+        throw new Error("OMP supplied an invalid extension context");
+      }
+      return await reviewToolResult(event, ctx, config);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return {
+        content: [
+          { type: "text" as const, text: `omp-clearance withheld this lsp result: checking it failed (${reason}).` },
+        ],
+        isError: true as const,
       };
     }
   });

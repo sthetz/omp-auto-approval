@@ -24,6 +24,8 @@ import {
   findToolDefinition,
   isBuiltinTool,
   isLocalStateTool,
+  isLspDispatch,
+  isLspReadFastPath,
   isInteractiveUiOnlyTool,
   isManualOnlyTool,
   isReadOnlyTool,
@@ -226,6 +228,16 @@ function evaluateStatic(call: CanonicalToolCall & { toolName: string }, state: D
     isWorkspaceWriteFastPath(call.input, state.cwd, [configPath(), userRulesPath(), ...rules.files])
   ) {
     return verdict("allow", "workspace_write");
+  }
+  if (
+    builtin &&
+    call.toolName === "lsp" &&
+    isLspReadFastPath(call.input, resolveReadRoots(state.cwd, config.readRoots))
+  ) {
+    return verdict("allow", "lsp_read");
+  }
+  if (builtin && call.toolName === "write" && isLspDispatch(call.input)) {
+    return verdict("allow", "lsp_dispatch");
   }
   if (isManualOnlyTool(call.toolName, toolDefinition)) {
     return verdict("ask", "manual_only");
@@ -483,7 +495,12 @@ async function applyFinal(
     decision.outcome === "allow" &&
     decision.plan !== null &&
     (decision.plan.command !== toRecord(decision.call.input).command || Boolean(decision.plan.cwd));
-  if (decision.outcome === "allow") {
+  // Letting `write xd://lsp` through runs nothing yet: the inner `lsp` call
+  // is decided next, and only its outcome counts. Resetting here would keep
+  // a run of denied lsp calls from ever reaching maxConsecutiveDenials. This
+  // holds whichever route let the write through (reviewExemptTools too).
+  const dispatchesLsp = decision.call.toolName === "write" && isLspDispatch(decision.call.input);
+  if (decision.outcome === "allow" && !dispatchesLsp) {
     store.recordNonDenial();
   }
   if (decision.outcome === "allow" && decision.staticVerdict?.route === "safe_command" && decision.plan) {

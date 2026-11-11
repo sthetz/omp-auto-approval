@@ -11,6 +11,9 @@ import type { ClassifierClient } from "./classifier.js";
 import type { CommandRules } from "./command-rules.js";
 import { getString, toRecord } from "./common.js";
 import { runDecision, type CanonicalToolCall, type Decision } from "./decision.js";
+import { writeAudit } from "./logging.js";
+import { unreadableLspLocation, withheldLspResultText } from "./lsp-results.js";
+import { createReviewSubject, resolveReadRoots } from "./tool-routing.js";
 import type { SessionApprovalStore } from "./session-approval-store.js";
 
 /** OMP runs the call on an empty object and blocks it on `block: true`. */
@@ -232,6 +235,33 @@ export function ompToolCallResponse(decision: Decision): ToolCallDecision {
     return { block: true, reason: decision.reason ?? "Tool call was blocked." };
   }
   throw new Error(`Decision still needs ${decision.outcome}; apply() must finish it before OMP gets a response.`);
+}
+
+/** What a `tool_result` handler returns to replace the result OMP passes on. */
+export type ToolResultReplacement = { content: { type: "text"; text: string }[]; isError: true } | undefined;
+
+/**
+ * Check an OMP `tool_result` event: an `lsp` result that shows source lines
+ * from a file the read fast path would not read is replaced, so the agent
+ * never sees them. Every event field is untrusted.
+ */
+export async function reviewToolResult(
+  event: unknown,
+  ctx: ExtensionContextLike,
+  config: ClearanceConfig,
+): Promise<ToolResultReplacement> {
+  const { toolName, input } = canonicalToolCall(event);
+  if (toolName !== "lsp") {
+    return undefined;
+  }
+  const cwd = ctx.cwd || process.cwd();
+  const path = unreadableLspLocation(toRecord(event).content, resolveReadRoots(cwd, config.readRoots));
+  if (path === null) {
+    return undefined;
+  }
+  const { actionSummary, actionHash } = createReviewSubject(toolName, input, cwd);
+  await writeAudit(config, { event: "result_withheld", toolName, actionSummary, actionHash, path });
+  return { content: [{ type: "text", text: withheldLspResultText(path) }], isError: true };
 }
 
 /** Run the canonical pipeline for an OMP event and adapt its final response. */

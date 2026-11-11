@@ -100,6 +100,8 @@ export type RouteName =
   | "tool_allowlist"
   | "readonly"
   | "workspace_write"
+  | "lsp_read"
+  | "lsp_dispatch"
   | "safe_command"
   | "session_approval"
   | "classifier_cache"
@@ -131,6 +133,16 @@ export interface AuditEntry {
   ruleId?: string;
   ruleSource?: string;
   durationMs?: number;
+}
+
+/** An lsp result was replaced because it showed source lines the agent may not read without review. */
+export interface ResultWithheldEntry {
+  event: "result_withheld";
+  toolName: string;
+  actionSummary: string;
+  actionHash: string;
+  // The path whose source lines the result showed.
+  path: string;
 }
 
 /** An approved bash command turned the session's bash fast path off (see shellHook). */

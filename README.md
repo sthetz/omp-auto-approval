@@ -84,7 +84,7 @@ The first row that applies decides. `/clearance explain` runs the same decision 
 | 3 | A bash command matches an **ask** rule | You are asked, without the classifier, unless you already chose "Allow Always This Exact Action" for it; denied without a UI | `ask_rule` |
 | 4 | OMP's own `todo` or `wait`, or an `ask` form with no links | Allowed | `local_state`, `ui_only` |
 | 5 | The tool is listed in `reviewExemptTools` | Allowed | `tool_allowlist` |
-| 6 | A read inside the workspace or `readRoots`, or a write inside the workspace, that touches no sensitive path | Allowed | `readonly`, `workspace_write` |
+| 6 | A read inside the workspace or `readRoots`, a write inside the workspace, or a language server query or edit preview, that touches no sensitive path; a `write` to `xd://lsp`, whose `lsp` call is decided on its own | Allowed | `readonly`, `workspace_write`, `lsp_read`, `lsp_dispatch` |
 | 7 | A tool that needs a human: computer use, browser clicks and typing, plugin installs, MCP or permission settings | You are asked in every reviewer mode; denied without a UI | `manual_only` |
 | 8 | A bash command made only of read-only programs, or ones your allow rules name | Allowed, with every program run by its absolute path | `safe_command` |
 | 9 | You chose "Allow Always This Exact Action" for this exact call earlier | Allowed | `session_approval` |
@@ -201,7 +201,7 @@ Every decision is appended as a line of JSON to `logs/omp-clearance.jsonl` in th
 - the rule that decided (`ruleId`, `ruleSource`), or for a fast-pathed command the entries that let it through (`ruleIds`);
 - the command as actually run, if pinning rewrote it (`pinnedCommand`, `pinnedCwd`).
 
-A `shell_latch` event records when the bash fast path turned off for a session. The log holds the commands and paths your agent used, so treat it as private.
+A `shell_latch` event records when the bash fast path turned off for a session, and a `result_withheld` event an `lsp` result the agent did not see because it showed source lines from a file it may not read without review ([details](docs/fast-paths.md#language-server-queries)). The log holds the commands and paths your agent used, so treat it as private.
 
 ## Development
 

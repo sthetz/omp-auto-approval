@@ -67,7 +67,7 @@
 //     that starts with the prefix skips review (see "Allow rules" in
 //     docs/command-rules.md). Otherwise, rules send matching bash commands
 //     to review ("review"), to the user without the classifier ("ask";
-//     denied in auto mode or without a UI), or to a block ("block"). Among the rules that match, the most
+//     denied without a UI), or to a block ("block"). Among the rules that match, the most
 //     restrictive decides, and any of them overrides the programs above.
 //     "match" is a pattern or a list: "/regex/flags" on the whole command,
 //     or words, a program and then words that follow it in order within one

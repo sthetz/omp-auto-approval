@@ -1,7 +1,7 @@
 // An example user rules file. Copy it to rules.jsonc next to config.jsonc
-// (or set CLEARANCE_RULES_PATH) and edit it. It is read at session
-// start and on any /clearance command; /clearance status shows
-// which files are in use, or what is wrong with them.
+// (or set CLEARANCE_RULES_PATH) and edit it. Default, main and included
+// files are checked on every tool call and reload when they change;
+// /clearance status shows which files are in use, or what is wrong.
 //
 // Entries only say what may skip review. Everything they don't list is
 // reviewed as before, and the checks in code still apply to every command:
@@ -10,8 +10,8 @@
 // also explains option kinds and operand checks).
 //
 // If this file, or one it includes, has any error, no rules are used and
-// every bash command asks you first until it is fixed (denied in auto
-// mode); OMP shows an error at session start.
+// every bash command is blocked in every reviewer mode until it is fixed.
+// OMP reports the error and recovery; fixing the file reloads it.
 {
   "$schema": "../schemas/rules.schema.json",
 
@@ -70,8 +70,8 @@
 
   // Rules for commands the programs above don't settle. Among the rules a
   // command matches, the most restrictive decides: "block" (never runs),
-  // "ask" (you decide, without the classifier; denied in auto mode), then
-  // "review" (the classifier, then you, as for any reviewed command). Any of
+  // "ask" (you decide, without the classifier; denied without a UI), then
+  // "review" (handled by the session reviewer). Any of
   // them overrides the programs above, allow rules and reviewExemptTools.
   // They match the command's text, also inside loops and `sh -c '…'`, and a
   // program named by a variable (`$k delete --all`) counts as any program.

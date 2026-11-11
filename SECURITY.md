@@ -11,7 +11,7 @@ Report privately through GitHub: the repository's **Security** tab, **Report a v
 Include:
 
 - the version or commit;
-- the tool call or command, and the mode (`fallback` or `auto`);
+- the tool call or command, and the reviewer (`ai`, `manual` or `off`);
 - what happened and what should have happened, with `/clearance explain` output where it helps;
 - relevant audit log lines, with secrets and private paths removed.
 

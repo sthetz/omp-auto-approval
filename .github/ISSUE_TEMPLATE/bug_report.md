@@ -30,7 +30,7 @@ What happened instead? `/clearance explain <tool> <args>` output helps for routi
 
 - OMP version (`omp --version`):
 - omp-clearance version or commit:
-- Mode (`fallback` or `auto`):
+- Reviewer (`ai`, `manual` or `off`):
 - OS:
 
 ## Logs

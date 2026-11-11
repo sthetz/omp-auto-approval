@@ -4,12 +4,12 @@ An [OMP](https://github.com/can1357/oh-my-pi) extension that decides, for every 
 
 - **Fast paths** let routine work through at once: reads and writes inside the workspace, and read-only shell commands such as `git status`, `grep -rn TODO src` or `ls | wc -l`, checked option by option.
 - **Command rules** stop what should never happen without you: a forced `git push` is blocked, `sudo` asks you, `terraform apply` goes to review. You can add your own.
-- **The classifier**, inspired by Claude Code auto mode and Codex Auto-review, judges everything else against what you asked for in the conversation. In `fallback` mode you decide when it says no; in `auto` mode its no is final.
+- **The classifier**, inspired by Claude Code auto mode and Codex Auto-review, judges review outcomes against what you asked for in the conversation when the reviewer is `ai`. The `manual` reviewer asks you directly; `off` lets review outcomes run without a classifier.
 
 ## Limits
 
 - **It is not a sandbox.** An allowed command runs with your permissions. Fast paths and rules read commands as text, conservatively: what they cannot read exactly goes to review, but a determined agent can still hide a command from a rule, for example in a script it writes first.
-- **The classifier is a model.** It can be wrong, and it reads text the agent wrote, though [it treats that text as untrusted](#the-classifier). `fallback` keeps you in the loop for every no; `auto` trusts every yes.
+- **The classifier is a model.** It can be wrong, and it reads text the agent wrote, though [it treats that text as untrusted](#the-classifier). `manual` asks you about every review outcome without calling the classifier; `ai` trusts its allow verdicts.
 - **Only OMP is supported.** The extension loads OMP's own packages, and its fast paths know OMP's tools.
 
 ## Installation
@@ -20,10 +20,10 @@ omp plugin install https://github.com/sthetz/omp-clearance
 omp plugin install github:sthetz/omp-clearance#v0.4.1
 ```
 
-Restart OMP, then turn it on in the recommended mode:
+Restart OMP, then choose the reviewer recommended for interactive use (the default is `off`):
 
 ```text
-/clearance fallback
+/clearance ai
 ```
 
 To remove it: `omp plugin uninstall omp-clearance`.
@@ -34,13 +34,21 @@ Don't run omp-clearance alongside pi-auto-approval or omp-auto-approval: each re
 
 **Upgrading from omp-auto-approval.** Before 0.4.0 this project was called omp-auto-approval. Uninstall it (`omp plugin uninstall omp-auto-approval`), rename the environment variables `PI_AUTO_APPROVAL_CONFIG_PATH`, `PI_AUTO_APPROVAL_RULES_PATH` and `PI_AUTO_APPROVAL_LOGS_DIR` to `CLEARANCE_CONFIG_PATH`, `CLEARANCE_RULES_PATH` and `CLEARANCE_LOGS_DIR`, and move `config.jsonc` and `rules.jsonc` along if they lived in the old extension directory. The command is now `/clearance`, and the audit log is written to `omp-clearance.jsonl`. The old `safeCommandAllowlist` and `blockCommands` settings are no longer read: write them as [allow and block rules](docs/command-rules.md#allow-review-ask-and-block-rules). Delete `"classifierTimeoutSeconds": 90` if your config has it: versions before 0.3.0 wrote it there, and it is no longer read as 25, so OMP's 30 s limit would stop the classifier first.
 
-## Modes
+**Upgrading modes to reviewers.** `enabled` and `mode` are no longer read, and the default reviewer is `off`, so an existing `fallback` user would lose the classifier with only a notice. Map `fallback` to `ai` (a classifier denial now goes back to the agent first; you are asked on classifier failure or at the denial limit), `auto` to `ai`, and `off` to `off`, which now still enforces block and ask rules. Run `/clearance ai` once to preserve classifier behavior, or set `"reviewer"` in `config.jsonc` and delete the old keys; the config value applies only while `reviewer-state.json` does not exist.
 
-| Mode | Fast paths and rules | When the classifier says no, fails or times out |
+## Reviewers
+
+The reviewer is the only thing that changes between modes. Fast paths, allow and review rules, ask rules, blocks, the denial counter and the shell latch are active in all three.
+
+| Reviewer | A `review` outcome, including an unmatched call | If the classifier fails or times out |
 | --- | --- | --- |
-| `off` | not used | OMP behaves as if the extension weren't installed. |
-| `fallback` | used | You are asked. Recommended for interactive use. |
-| `auto` | used | The call is denied. Ask rules deny too. For trusted, unattended runs only. |
+| `off` | Runs without a classifier. Default. | The classifier is not called. |
+| `manual` | You approve every review outcome without an LLM. | The classifier is not called. |
+| `ai` | The classifier decides: allow runs; deny goes back to the agent. Recommended for interactive use. | You are asked when a UI is available; otherwise the call is denied. |
+
+Ask rules and manual-only tools still ask you under `off` and `ai`. Any approval prompt that cannot be shown because no UI is available becomes a denial. Block rules and broken-rules blocks always deny without asking.
+
+The reviewer is shared by every OMP session and subagent. `/clearance ai`, `manual` or `off` writes `reviewer-state.json` next to `config.jsonc`, never the config itself, and running sessions notice the change on their next tool call. The config's `reviewer` key is only the starting value while that state file does not exist. Old `enabled` and `mode` keys produce a notice and are not migrated.
 
 When you are asked, the prompt shows the action, the classifier's reason or the rule's, and offers:
 
@@ -51,7 +59,7 @@ When you are asked, the prompt shows the action, the classifier's reason or the 
 
 The cursor starts on **Reject**, and no answer within `approvalTimeoutSeconds` (default 30) rejects.
 
-While the extension is on, a short note in the system prompt asks the agent to report a blocked call to you instead of retrying it in another form. If it keeps trying anyway, an automatic denial that makes `maxConsecutiveDenials` denials in a row (default 3, counting your rejections) also ends the agent's turn.
+A short note in the system prompt asks the agent to report a blocked call to you instead of retrying it in another form. Every call that runs resets the consecutive denial count; your rejections and automatic denials increment it, and switching reviewers does not reset it. At `maxConsecutiveDenials` (default 3), an `ai` classifier denial shows you the approval prompt with the classifier's reason when a UI is available. Any other automatic denial at the threshold stops the turn; ordinary user rejections only increment the counter.
 
 ## Commands
 
@@ -59,29 +67,29 @@ While the extension is on, a short note in the system prompt asks the agent to r
 
 | Command | Effect |
 | --- | --- |
-| `/clearance off`, `fallback`, `auto` | Switch mode. |
-| `/clearance status` | Mode, classifier model, config, rules and audit log paths, and any problems with them. |
+| `/clearance off`, `manual`, `ai` | Switch the shared reviewer, writing `reviewer-state.json` rather than `config.jsonc`. |
+| `/clearance status` | Reviewer, classifier model, config and reviewer-state paths, rules and audit log paths, and any problems with them. |
 | `/clearance model` | Choose the classifier model. `/clearance model current` uses the session's model. |
 | `/clearance rules [program \| rule id]` | List the command rules in use and the file each comes from, or show one. |
 | `/clearance explain <tool> [args]` | Show what would happen to a tool call, without running it. `args` is a path, a JSON object, or a bash command: `/clearance explain read ~/.ssh/id_ed25519`, `/clearance explain ls -la`. |
 
 ## How a tool call is decided
 
-The first row that applies decides. `/clearance explain` shows which one a given call would hit, and the audit log records it as `route`; when you are asked, the log records your answer with route `human`.
+The first row that applies decides. `/clearance explain` runs the same decision function and prints its selected route; the audit log records that route. When you are asked, the log records your answer with route `human`.
 
 | | When | What happens | `route` |
 | --- | --- | --- | --- |
-| 1 | The extension is off | OMP decides as usual | |
+| 1 | Any default, user or included rules file is broken | Every bash call is denied, in every reviewer mode; other tools continue | `blocked_command` |
 | 2 | A bash command matches a **block** rule | Denied, without asking anyone | `blocked_command` |
-| 3 | A bash command matches an **ask** rule, or any bash command while the rules files have an error | You are asked, without the classifier, unless you already chose "Allow Always This Exact Action" for it; denied in `auto` mode or without a UI | `ask_rule` |
+| 3 | A bash command matches an **ask** rule | You are asked, without the classifier, unless you already chose "Allow Always This Exact Action" for it; denied without a UI | `ask_rule` |
 | 4 | OMP's own `todo` or `wait`, or an `ask` form with no links | Allowed | `local_state`, `ui_only` |
 | 5 | The tool is listed in `reviewExemptTools` | Allowed | `tool_allowlist` |
 | 6 | A read inside the workspace or `readRoots`, or a write inside the workspace, that touches no sensitive path | Allowed | `readonly`, `workspace_write` |
-| 7 | A tool that needs a human: computer use, browser clicks and typing, plugin installs, MCP or permission settings | You are asked; denied in `auto` mode | `manual_only` |
+| 7 | A tool that needs a human: computer use, browser clicks and typing, plugin installs, MCP or permission settings | You are asked in every reviewer mode; denied without a UI | `manual_only` |
 | 8 | A bash command made only of read-only programs, or ones your allow rules name | Allowed, with every program run by its absolute path | `safe_command` |
 | 9 | You chose "Allow Always This Exact Action" for this exact call earlier | Allowed | `session_approval` |
-| 10 | The classifier already judged this exact call in this session | Its earlier answer is reused; a no still goes to you in `fallback` mode | `classifier_cache` |
-| 11 | Anything else | The classifier decides; see [Modes](#modes) for a no | `classifier` |
+| 10 | Under `ai`, the classifier already judged this exact call in this session | Its earlier answer is reused | `classifier_cache` |
+| 11 | Anything else, including a **review** rule | Handled by the reviewer: run under `off`, ask under `manual`, classify under `ai` | `reviewer_off`, `human`, `manual_unavailable`, `classifier` |
 
 A bash command that matches a **review** rule skips rows 5 and 8. Row 8 is also skipped for the rest of a session once a bash command may have changed how the shell runs later commands, as a `trap` or an `eval` can ([details](docs/fast-paths.md#when-the-bash-fast-path-turns-off)).
 
@@ -104,15 +112,15 @@ Bash commands are checked against rules before anything else. The built-in ones 
 ```
 
 - `allow` lets a command that starts with `prefix` through without review, unless it uses an option that runs programs or writes files, or names a path outside the workspace.
-- `review` always sends it to the classifier.
+- `review` sends it to the session reviewer, never a fast path.
 - `ask` asks you directly, without the classifier.
 - `block` denies it outright.
 
 The most restrictive matching rule wins, and `why` is shown in the denial, in the prompt, and to the classifier. Patterns match commands as bash reads them, so `git push --force` matches `cd repo && git push origin main --force` and `bash -c "git push --force"`, while a commit message that mentions it is only sent to review. Rules are a tripwire, not a sandbox: a script or an alias can get past them, and is then reviewed as usual.
 
-[`config/rules.example.jsonc`](config/rules.example.jsonc) is a commented example of the format: a table for `docker ps`, `images` and `logs`, rules by words, glob and regex, and changes to built-in entries. [`config/examples/`](config/examples) holds ready-made policies to include, such as [`kubectl.jsonc`](config/examples/kubectl.jsonc), which lets reads through, sends changes to the classifier, asks before deletes and drains, and blocks deleting namespaces. [docs/command-rules.md](docs/command-rules.md) is the full format, including pattern syntax and program tables.
+[`config/rules.example.jsonc`](config/rules.example.jsonc) is a commented example of the format: a table for `docker ps`, `images` and `logs`, rules by words, glob and regex, and changes to built-in entries. [`config/examples/`](config/examples) holds ready-made policies to include, such as [`kubectl.jsonc`](config/examples/kubectl.jsonc), which lets reads through, sends changes to review, asks before deletes and drains, and blocks deleting namespaces. [docs/command-rules.md](docs/command-rules.md) is the full format, including pattern syntax and program tables.
 
-If a rules file has an error, no rules are used. Since it might have held block or ask rules, every bash command then asks you first until the file is fixed (and is denied in `auto` mode), and OMP shows the error at session start. There are no per-project rules files, since a cloned repository could ship one.
+If any default, user or included rules file has an error, no rules are used. Since it might have held block or ask rules, every bash call is then blocked in every reviewer mode, including `off`; other tools are unaffected. OMP emits an error notification, shows a red status entry, and includes the file and location in the block reason. The files are checked on every tool call, so fixing one reloads it automatically and emits a recovery notification. There are no per-project rules files, since a cloned repository could ship one.
 
 ### Built-in rules
 
@@ -132,7 +140,7 @@ These cover commands that are rarely right for an agent to run on its own, in an
 | `database-drop` | ask | `DROP` or `TRUNCATE` of a database, schema or table through `psql`, `mysql`, `sqlite3`, … |
 | `infrastructure` | review | `terraform`/`tofu apply`/`destroy`, `pulumi up`/`destroy`, `kubectl delete`/`drain`, `helm uninstall` |
 
-`infrastructure` is reviewed rather than asked about, since infrastructure work runs these often and the classifier can judge them from the conversation. To change a built-in rule, disable it and add your own: `"disable": ["infrastructure"], "rules": [{ "id": "infrastructure-ask", "match": "kubectl delete|drain", "outcome": "ask" }]`.
+`infrastructure` is reviewed rather than asked about, since infrastructure work runs these often and the session reviewer can judge it in context. To change a built-in rule, disable it and add your own: `"disable": ["infrastructure"], "rules": [{ "id": "infrastructure-ask", "match": "kubectl delete|drain", "outcome": "ask" }]`.
 
 ## Other tools
 
@@ -156,19 +164,19 @@ It does not see tool output (file contents, command output, fetched pages), sinc
 
 An answer that allows a `high`-risk action without `high` user authorization, or a `critical` one without it at all, counts as a denial. `allow`, `deny` and `environment` in `config.jsonc` add your own guidance to its prompt; they are advice to the classifier, not rules.
 
-**Timeout.** OMP blocks a tool call outright when an extension takes longer than `extensionHandlers.toolCallTimeoutMs` (30 s by default) to decide, even in `fallback` mode. `classifierTimeoutSeconds` (default 25) stops the classifier first, so that `fallback` can still ask you. For a slower classifier model, raise both, keeping `classifierTimeoutSeconds` below OMP's limit; `/clearance status` warns when it is 30 or more. According to OMP's description of the setting, time spent in its own dialogs, such as the approval prompt, doesn't count.
+**Timeout.** OMP blocks a tool call outright when an extension takes longer than `extensionHandlers.toolCallTimeoutMs` (30 s by default) to decide. Under `ai`, `classifierTimeoutSeconds` (default 25) stops the classifier first, so its failure can still ask you when a UI is available. For a slower classifier model, raise both, keeping `classifierTimeoutSeconds` below OMP's limit; `/clearance status` warns when it is 30 or more. According to OMP's description of the setting, time spent in its own dialogs, such as the approval prompt, doesn't count.
 
 ## Configuration
 
-`config.jsonc` lives in the extension's directory, or at `CLEARANCE_CONFIG_PATH`. Only values that differ from the defaults are saved, so later changes to defaults take effect. `/clearance status` reports unknown keys. See the [schema](schemas/config.schema.json) and an [annotated example](config/config.example.jsonc).
+`config.jsonc` lives in the extension's directory, or at `CLEARANCE_CONFIG_PATH`. Only values that differ from the defaults are saved, so later changes to defaults take effect. `/clearance status` reports unknown keys. The shared `reviewer-state.json` beside it holds the current reviewer and is re-read on change; `reviewer` in config applies only while no state file exists. See the [schema](schemas/config.schema.json) and an [annotated example](config/config.example.jsonc).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled`, `mode` | `false`, `"fallback"` | Set by `/clearance off`, `fallback`, `auto`. |
+| `reviewer` | `"off"` | Starting reviewer (`"ai"`, `"manual"` or `"off"`) while `reviewer-state.json` does not exist. |
 | `classifierModel` | `null` | `provider/model`, or `null` for the session's model. |
 | `classifierTimeoutSeconds` | `25` | See [the classifier](#the-classifier). |
 | `approvalTimeoutSeconds` | `30` | How long the approval prompt waits before rejecting. |
-| `maxConsecutiveDenials` | `3` | Automatic denials in a row before the turn is stopped. |
+| `maxConsecutiveDenials` | `3` | Consecutive denials before the classifier prompt or turn stop described under [Reviewers](#reviewers). |
 | `readRoots` | `[]` | Directories outside the workspace that may be read without review. |
 | `reviewExemptTools` | `[]` | Tools that skip review entirely. |
 | `allow`, `deny` | `[]` | Guidance lines for the classifier. |

@@ -118,8 +118,11 @@ async function pool<T, R>(items: T[], jobs: number, work: (item: T) => Promise<R
       while (next < items.length) {
         const index = next;
         next += 1;
-        // In range: index < items.length, checked just above.
-        results[index] = await work(items[index] as T);
+        const item = items[index];
+        if (item === undefined) {
+          throw new Error(`pool(): no item ${index}`);
+        }
+        results[index] = await work(item);
       }
     }),
   );

@@ -542,6 +542,16 @@ await test("workspace write fast path rejects protected entries, rewritten path 
       { toolName: "write", input: { path: ".idea/workspace.xml" } },
       { toolName: "write", input: { path: ".cursor/mcp.json" } },
       { toolName: "write", input: { path: ".devcontainer/devcontainer.json" } },
+      { toolName: "write", input: { path: ".codex/config.toml" } },
+      { toolName: "write", input: { path: ".codex/tools/probe.ts" } },
+      { toolName: "write", input: { path: ".gemini/settings.json" } },
+      { toolName: "write", input: { path: ".opencode/plugins/probe.js" } },
+      { toolName: "write", input: { path: ".windsurf/mcp_config.json" } },
+      { toolName: "write", input: { path: "mcp.json" } },
+      { toolName: "write", input: { path: "opencode.json" } },
+      { toolName: "write", input: { path: "opencode.jsonc" } },
+      { toolName: "write", input: { path: "ssh.json" } },
+      { toolName: "write", input: { path: ".ssh.json" } },
       { toolName: "write", input: { path: ".env" } },
       { toolName: "edit", input: { path: "config/.env.production" } },
       { toolName: "write", input: { path: "certs/server.pem" } },
@@ -573,6 +583,7 @@ await test("workspace write fast path rejects protected entries, rewritten path 
       { toolName: "write", input: { path: ".gitignore" } },
       { toolName: "write", input: { path: ".env.example" } },
       { toolName: "write", input: { path: "docs/claude.md" } },
+      { toolName: "write", input: { path: "docs/mcp.json.md" } },
     ];
     for (const event of allowed) {
       const result = await evaluateToolCall(

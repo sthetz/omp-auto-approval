@@ -23,7 +23,9 @@ Tools are matched by name only when the host reports them as its own (`sourceInf
 Calls to OMP's own `write` and `edit` tools whose every destination, including `edit` renames, is a plain path inside the working directory. These always go to the session reviewer instead:
 
 - paths that OMP rewrites before use (`[path]`, `~/…`, `scheme://…`);
-- protected entries at any depth, after resolving symlinks: `.git`, `.omp`, `.pi`, `.claude`, `.mcp.json`, `.cursor`, `.envrc`, `.vscode`, `.idea`, `.husky`, `.devcontainer`. Their contents are executed or trusted later without review: `core.fsmonitor` in `.git/config` runs on `git status`, and Claude Code hooks in `.claude/settings.json` run shell commands;
+- protected entries at any depth, after resolving symlinks. Their contents are executed or trusted later without a call this extension could review:
+  - git: `.git`, `.husky`. `core.fsmonitor` in `.git/config` runs on `git status`;
+  - agent and editor settings: `.omp`, `.pi`, `.claude`, `.codex`, `.gemini`, `.opencode`, `.cursor`, `.windsurf`, `.mcp.json`, `mcp.json`, `opencode.json`, `opencode.jsonc`, `ssh.json`, `.ssh.json`, `.envrc`, `.vscode`, `.idea`, `.devcontainer`. OMP reads the project config of several agents and starts the MCP servers it names when a session starts, and Claude Code hooks in `.claude/settings.json` run shell commands;
 - the credential-like files listed above for reads, such as `.env` or `*.pem`;
 - writes that create or change a program: content starting with `#!` (OMP's `write` tool makes such a file executable) or a destination that is already executable. A program in the workspace can shadow a command on the shell's PATH.
 

@@ -201,7 +201,7 @@ async function run(): Promise<void> {
   }
 }
 
-run().catch((error) => {
+run().catch((error: unknown) => {
   console.error(error);
   process.exitCode = 1;
 });

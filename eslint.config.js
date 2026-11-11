@@ -29,7 +29,6 @@ export default defineConfig(
       "@typescript-eslint/no-unsafe-return": "off",
       "@typescript-eslint/require-await": "off",
       "@typescript-eslint/unbound-method": "off",
-      "@typescript-eslint/use-unknown-in-catch-callback-variable": "off",
     },
   },
   {

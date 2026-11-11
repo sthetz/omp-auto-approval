@@ -129,7 +129,7 @@ async function run(): Promise<void> {
   console.log("[PASS] the host TUI width engine is used when it loads");
 }
 
-run().catch((error) => {
+run().catch((error: unknown) => {
   console.error(error);
   process.exitCode = 1;
 });

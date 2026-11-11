@@ -5,6 +5,7 @@ import { commandSegments, compileCommandPattern, type CommandPattern } from "./c
 import { allowPrefixProblem } from "./allow-prefix.js";
 import { configPath, extensionRoot } from "./extension-config.js";
 import { parseJsonc } from "./jsonc.js";
+import { dictionary } from "./common.js";
 
 /**
  * Command rules: which programs, options and operands the bash fast path
@@ -201,7 +202,7 @@ function compileRuleList(value: unknown, source: string, where: string, seen: Se
     if (object.why !== undefined && typeof object.why !== "string") {
       throw new RulesError(`${at}.why: expected text`);
     }
-    const why = (object.why as string | undefined) ?? null;
+    const why = object.why ?? null;
     if (object.outcome === "allow") {
       // A prefix of the command as written (see matchesAllowEntry in safe-command.ts).
       if (object.match !== undefined) {
@@ -226,7 +227,7 @@ function compileRuleList(value: unknown, source: string, where: string, seen: Se
     if (!Array.isArray(match) || !match.length || !match.every((pattern) => typeof pattern === "string")) {
       throw new RulesError(`${at}.match: expected a pattern or a list of patterns`);
     }
-    const patterns = (match as string[]).map((pattern) => {
+    const patterns = match.map((pattern) => {
       try {
         return compileCommandPattern(pattern);
       } catch (error) {
@@ -235,7 +236,7 @@ function compileRuleList(value: unknown, source: string, where: string, seen: Se
     });
     return {
       id,
-      match: match as string[],
+      match,
       patterns,
       outcome: object.outcome as RuleOutcome,
       prefix: null,
@@ -371,10 +372,10 @@ function compileEntry(
     anyOptions: false,
     except: [...context.inheritedExcept],
     flags: "",
-    values: Object.create(null),
+    values: dictionary(),
     long: [],
-    longValues: Object.create(null),
-    aliases: Object.create(null),
+    longValues: dictionary(),
+    aliases: dictionary(),
     numeric: false,
     stopAtOperand: boolean(object.stopAtOperand, `${where}.stopAtOperand`),
     opensNoFiles: boolean(object.opensNoFiles, `${where}.opensNoFiles`),
@@ -773,7 +774,8 @@ function mergeEntry(
         `${where}.options`,
       );
     } else if (key === "except" && Array.isArray(value) && Array.isArray(base.except)) {
-      merged.except = [...base.except, ...value.filter((option) => !(base.except as unknown[]).includes(option))];
+      const baseExcept = base.except as unknown[];
+      merged.except = [...baseExcept, ...(value as unknown[]).filter((option) => !baseExcept.includes(option))];
     } else if (key === "subcommands" && base.subcommands !== undefined) {
       const subcommands = subcommandsByName(base.subcommands, `${where}.subcommands`);
       for (const [userKey, entry] of Object.entries(record(value, `${where}.subcommands`))) {
@@ -851,10 +853,7 @@ export function loadCommandRules(path = userRulesPath(), freshDefaults = false):
   try {
     readUserFile(path, layer, []);
     // Without a prototype, so that a program named `__proto__` is just a name.
-    const programs: Record<string, unknown> = Object.assign(
-      Object.create(null),
-      record(document.programs ?? {}, "programs"),
-    );
+    const programs: Record<string, unknown> = Object.assign(dictionary(), record(document.programs ?? {}, "programs"));
     const rules = [...base.rules];
     for (const { id, file } of layer.disable) {
       if (!id.startsWith("program:")) {
@@ -866,7 +865,12 @@ export function loadCommandRules(path = userRulesPath(), freshDefaults = false):
         rules.splice(index, 1);
         continue;
       }
-      const [, name, subcommand] = PROGRAM_ID.exec(id)!;
+      const programId = PROGRAM_ID.exec(id);
+      if (!programId) {
+        // Ids were checked against PROGRAM_ID or RULE_NAME, which has no colon.
+        throw new Error(`internal error: disable id "${id}" is not a program id`);
+      }
+      const [, name, subcommand] = programId;
       const entry = Object.hasOwn(programs, name) ? record(programs[name], name) : undefined;
       if (!entry) {
         throw new RulesError(`${file}: disable: no built-in rule "${id}"`);

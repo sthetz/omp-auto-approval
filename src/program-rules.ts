@@ -99,7 +99,7 @@ export function parseOptions(spec: OptionTable, words: ShellWord[]): ParsedComma
     const text = word.text;
     if (endOfOptions || text === "-" || !text.startsWith("-")) {
       operands.push(word);
-      endOfOptions ||= spec.stopAtOperand === true;
+      endOfOptions ||= spec.stopAtOperand;
       continue;
     }
     if (text === "--") {
@@ -154,7 +154,11 @@ export function parseOptions(spec: OptionTable, words: ShellWord[]): ParsedComma
     for (let position = 1; position < text.length; position += 1) {
       const letter = text[position];
       if (spec.numeric && /[0-9]/.test(letter)) {
-        const digits = /^[0-9]+/.exec(text.slice(position))![0];
+        let end = position + 1;
+        while (end < text.length && /[0-9]/.test(text[end])) {
+          end += 1;
+        }
+        const digits = text.slice(position, end);
         options.push({ name: "#", kind: "number", value: digits, word });
         position += digits.length - 1;
         continue;
@@ -397,7 +401,16 @@ export function isSafeSedScript(script: string): boolean {
 
 function checkSed(command: ParsedCommand, context: RuleContext): boolean {
   const operands = [...command.operands];
-  const scripts = command.options.filter((option) => option.name === "expression").map((option) => option.value!);
+  const scripts: string[] = [];
+  for (const option of command.options) {
+    if (option.name === "expression") {
+      // The option table gives "expression" a value.
+      if (option.value === undefined) {
+        throw new Error("internal error: sed expression without a script");
+      }
+      scripts.push(option.value);
+    }
+  }
   if (!scripts.length) {
     const script = operands.shift();
     if (!script || script.expands) {
@@ -675,7 +688,10 @@ function isSafeWithSubcommand(
     }
     index += 1;
   }
-  const subcommand = entry.subcommands!.get(words[index]?.text ?? "");
+  if (!entry.subcommands) {
+    throw new Error(`internal error: ${entry.id} has no subcommand table`);
+  }
+  const subcommand = entry.subcommands.get(words[index]?.text ?? "");
   return subcommand !== undefined && isSafeByEntry(subcommand, words.slice(index), place, used);
 }
 
@@ -712,7 +728,10 @@ function isSafeByEntry(
       return false;
     }
   }
-  const rule = entry.operands!;
+  const rule = entry.operands;
+  if (!rule) {
+    throw new Error(`internal error: ${entry.id} has no operand rule`);
+  }
   if (!OPERAND_CHECK_FUNCTIONS[rule.check](command, context, rule, args)) {
     return false;
   }

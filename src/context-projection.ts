@@ -67,7 +67,8 @@ function extractRoleAndData(entry: unknown): { role: string; data: unknown } | n
   }
 
   const message = toRecord(record.message);
-  const role = String(message.role ?? record.role ?? record.type ?? "");
+  const rawRole = message.role ?? record.role ?? record.type;
+  const role = typeof rawRole === "string" ? rawRole : "";
 
   if (!role) {
     return null;

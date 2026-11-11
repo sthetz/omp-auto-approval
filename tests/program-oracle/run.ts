@@ -400,7 +400,7 @@ function traceProblems(trace: string, expected: Set<string>, bash: string, root:
 }
 
 async function pool<T, R>(items: T[], jobs: number, work: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = new Array(items.length);
+  const results = new Array<R>(items.length);
   let next = 0;
   await Promise.all(
     Array.from({ length: jobs }, async () => {
@@ -494,7 +494,7 @@ async function main(): Promise<void> {
     commands.add(generate(rng));
   }
   const planned = [...commands].map((command) => ({ command, plan: planSafeCommand(command, config, { workspace }) }));
-  const accepted = planned.filter((item) => item.plan);
+  const accepted = planned.flatMap(({ command, plan }) => (plan ? [{ command, plan }] : []));
   const started = Date.now();
   try {
     const findings = (
@@ -502,8 +502,8 @@ async function main(): Promise<void> {
         accepted,
         Number(option("--jobs") ?? availableParallelism()),
         async ({ command, plan }): Promise<Finding | null> => {
-          const expected = new Set([...plan!.command.matchAll(/(?:^|\s)(\/\S+)/g)].map((match) => match[1]));
-          const trace = await runTraced(env, strace, root, workspace, plan!.command);
+          const expected = new Set([...plan.command.matchAll(/(?:^|\s)(\/\S+)/g)].map((match) => match[1]));
+          const trace = await runTraced(env, strace, root, workspace, plan.command);
           if (process.env.PROGRAM_ORACLE_DEBUG && command.startsWith(process.env.PROGRAM_ORACLE_DEBUG)) {
             console.log(trace);
           }

@@ -29,15 +29,31 @@ export interface ClassifierDecision {
   rationale?: string;
 }
 
+/** OMP's TUI handle as the model selector uses it, checked in omp-host.ts. */
+export interface TuiLike {
+  requestRender?: () => void;
+}
+
+/** OMP's theme as the model selector uses it, checked in omp-host.ts. */
+export interface ThemeLike {
+  fg?: (name: string, text: string) => string;
+}
+
+/** OMP's keybindings as the model selector uses them, checked in omp-host.ts. */
+export interface KeybindingsLike {
+  matches?: (data: string, key: string) => boolean | undefined;
+}
+
 export interface ExtensionContextLike {
   cwd?: string;
-  mode?: "tui" | "rpc" | "print" | string;
+  /** "tui", "rpc", "print", or a mode added by a later OMP. */
+  mode?: string;
   hasUI?: boolean;
   ui?: {
     select?: (title: string, options: string[], optionsOverride?: unknown) => Promise<string | undefined>;
     input?: (title: string, placeholder?: string, optionsOverride?: unknown) => Promise<string | undefined>;
     custom?: <T>(
-      factory: (tui: any, theme: any, keybindings: any, done: (result: T) => void) => unknown | Promise<unknown>,
+      factory: (tui: TuiLike, theme: ThemeLike, keybindings: KeybindingsLike, done: (result: T) => void) => unknown,
       optionsOverride?: unknown,
     ) => Promise<T>;
     notify?: (message: string, type?: "info" | "warning" | "error") => void;

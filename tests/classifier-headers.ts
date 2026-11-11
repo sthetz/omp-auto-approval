@@ -66,7 +66,7 @@ async function run(): Promise<void> {
   console.log("[PASS] classifier requests carry only the model registry's headers");
 }
 
-run().catch((error) => {
+run().catch((error: unknown) => {
   console.error(error);
   process.exitCode = 1;
 });

@@ -374,7 +374,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
     },
   });
 
-  omp.on("session_start", async (_event: unknown, context: unknown) => {
+  omp.on("session_start", (_event: unknown, context: unknown) => {
     approvals.clear();
     agentMessage = undefined;
     const ctx = canonicalContext(context);
@@ -384,11 +384,11 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
   });
 
   // OMP passes the system prompt as an array of sections.
-  omp.on("before_agent_start", async (event: unknown) => {
+  omp.on("before_agent_start", (event: unknown) => {
     agentMessage = undefined;
     const systemPrompt = toRecord(event).systemPrompt;
     if (Array.isArray(systemPrompt)) {
-      return { systemPrompt: [...systemPrompt, SYSTEM_PROMPT_NOTE] };
+      return { systemPrompt: [...(systemPrompt as unknown[]), SYSTEM_PROMPT_NOTE] };
     }
     if (typeof systemPrompt === "string") {
       return { systemPrompt: `${systemPrompt}\n\n${SYSTEM_PROMPT_NOTE}` };
@@ -396,11 +396,11 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
     return undefined;
   });
 
-  omp.on("resources_discover", async (_event: unknown, context: unknown) => {
+  omp.on("resources_discover", (_event: unknown, context: unknown) => {
     refresh(canonicalContext(context) ?? lastContext ?? undefined);
   });
 
-  omp.on("session_shutdown", async () => {
+  omp.on("session_shutdown", () => {
     approvals.clear();
     lastContext?.ui?.setStatus?.(STATUS_KEY, undefined);
     lastContext = null;
@@ -449,7 +449,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
   // OMP fires tool_call while the assistant message that issued it is still
   // streaming (before message_end), so track its text from message_update.
   // A message with only tool calls keeps the previous text.
-  const trackAgentMessage = async (event: unknown) => {
+  const trackAgentMessage = (event: unknown) => {
     const message = toRecord(toRecord(event).message);
     if (message.role === "assistant") {
       agentMessage = assistantText(message.content) ?? agentMessage;

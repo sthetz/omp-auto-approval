@@ -36,7 +36,6 @@ import {
   evaluateToolCall,
   type ToolCallDecision,
 } from "../src/omp-host.js";
-import { columnWidth, truncateVisible } from "../src/model-selector.js";
 import { planSafeCommand } from "../src/safe-command.js";
 import { isSafeSedScript } from "../src/program-rules.js";
 import {
@@ -119,6 +118,19 @@ function isSafeReadOnlyCommand(command: string, cfg: TestConfig, cwd: string): b
 /** The command a fast-pathed command runs as, or null when it is reviewed. */
 function pinnedCommand(command: string, cfg: TestConfig, workspace: string, searchPath = TEST_PATH): string | null {
   return planSafeCommand(command, cfg, { workspace, searchPath, rules: cfg.rules })?.command ?? null;
+}
+
+/** `value`, which the test has set up to be there; fails the test if it isn't. */
+function required<T>(value: T | null | undefined, what: string): T {
+  assert.ok(value !== null && value !== undefined, `${what} is missing`);
+  return value;
+}
+
+/** The reason of a tool_call response, or "" when it has none. */
+function reasonOf(response: unknown): string {
+  const reason: unknown =
+    response && typeof response === "object" ? (response as { reason?: unknown }).reason : undefined;
+  return typeof reason === "string" ? reason : "";
 }
 
 function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -222,6 +234,12 @@ async function run(): Promise<void> {
       assert.equal(legacy.config.reviewer, "off");
       assert.match(legacy.notice ?? "", /enabled is no longer read/);
       assert.match(legacy.notice ?? "", /mode is no longer read/);
+      for (const notAnObject of ["null", "[]", "5", '"ai"']) {
+        writeFileSync(legacyPath, notAnObject);
+        const loaded = loadConfig(legacyPath);
+        assert.deepEqual(loaded.config, DEFAULT_CONFIG, notAnObject);
+        assert.match(loaded.warning ?? "", /expected an object of settings; using defaults/, notAnObject);
+      }
     } finally {
       rmSync(legacyDir, { recursive: true, force: true });
     }
@@ -485,7 +503,7 @@ async function run(): Promise<void> {
     ]);
 
     // Each command's span runs from its first word or redirection to its last, redirection targets included.
-    const spans = recognizeShell("  2>/dev/null git status && ls -l > out # note")!
+    const spans = required(recognizeShell("  2>/dev/null git status && ls -l > out # note"), "recognized script")
       .pipelines.flat()
       .map(({ start, end }) => [start, end]);
     assert.deepEqual(spans, [
@@ -493,7 +511,8 @@ async function run(): Promise<void> {
       [28, 39],
     ]);
 
-    const words = recognizeShell("  \"git\" ~/x a=~/k 'a'=~ *.ts X=1")!.pipelines[0][0].words;
+    const words = required(recognizeShell("  \"git\" ~/x a=~/k 'a'=~ *.ts X=1"), "recognized script").pipelines[0][0]
+      .words;
     assert.deepEqual(
       words.map(({ text, expands, quoted, assignment, start, end }) => [text, expands, quoted, assignment, start, end]),
       [
@@ -1000,7 +1019,18 @@ async function run(): Promise<void> {
   });
 
   await test("the rules schema names the same kinds, checks and parsers as the code", () => {
-    const schema = JSON.parse(readFileSync(new URL("../schemas/rules.schema.json", import.meta.url), "utf8"));
+    // The parts of the schema this test reads; a different shape fails the test.
+    type RulesSchema = {
+      $defs: {
+        operandCheck: { enum: string[] };
+        entry: { properties: { arguments: { enum: string[] } } };
+        rule: { oneOf: { properties: { outcome: { enum: string[] } } }[] };
+        kind: { enum: string[] };
+      };
+    };
+    const schema = JSON.parse(
+      readFileSync(new URL("../schemas/rules.schema.json", import.meta.url), "utf8"),
+    ) as RulesSchema;
     assert.deepEqual([...schema.$defs.operandCheck.enum].sort(), Object.keys(OPERAND_CHECKS).sort());
     assert.deepEqual(schema.$defs.entry.properties.arguments.enum, [...ARGUMENT_PARSERS]);
     assert.deepEqual(schema.$defs.rule.oneOf[0].properties.outcome.enum, [...RULE_OUTCOMES]);
@@ -1644,7 +1674,7 @@ async function run(): Promise<void> {
       );
 
       // Session start shows an error and keeps the problem in the status line.
-      const handlers = new Map<string, (...args: any[]) => any>();
+      const handlers = new Map<string, (event: unknown, context?: unknown) => unknown>();
       ompClearanceExtension({
         on: (event, handler) => {
           handlers.set(event, handler);
@@ -1665,7 +1695,7 @@ async function run(): Promise<void> {
           },
         },
       });
-      await handlers.get("session_start")!({}, sessionCtx);
+      await required(handlers.get("session_start"), "session_start handler")({}, sessionCtx);
       assert.ok(
         notices.some(
           ([message, type]) =>
@@ -1681,7 +1711,10 @@ async function run(): Promise<void> {
       // Fixing the main file is enough: the next call reloads it and runs safely.
       writeFileSync(join(workspace, "rules.jsonc"), "{}");
       utimesSync(join(workspace, "rules.jsonc"), 60, 60);
-      assert.deepEqual(await handlers.get("tool_call")!(bash("git status"), sessionCtx), {});
+      assert.deepEqual(
+        await required(handlers.get("tool_call"), "tool_call handler")(bash("git status"), sessionCtx),
+        {},
+      );
       assert.doesNotMatch(statuses.at(-1) ?? "", /rules error/);
       assert.equal(
         notices.filter(
@@ -1717,7 +1750,7 @@ async function run(): Promise<void> {
     process.env.CLEARANCE_RULES_PATH = main;
     process.env.CLEARANCE_CONFIG_PATH = join(workspace, "config.jsonc");
     writeFileSync(process.env.CLEARANCE_CONFIG_PATH, JSON.stringify({ reviewer: "off" }));
-    const handlers = new Map<string, (...args: any[]) => any>();
+    const handlers = new Map<string, (event: unknown, context?: unknown) => unknown>();
     const notices: string[] = [];
     const sessionCtx = ctx({
       cwd: workspace,
@@ -1736,15 +1769,19 @@ async function run(): Promise<void> {
         getAllTools: () => [],
         registerCommand: () => {},
       });
-      const call = () => handlers.get("tool_call")!({ toolName: "bash", input: { command: "whoami" } }, sessionCtx);
+      const call = () =>
+        required(handlers.get("tool_call"), "tool_call handler")(
+          { toolName: "bash", input: { command: "whoami" } },
+          sessionCtx,
+        );
       assert.deepEqual(await call(), {});
 
       writeFileSync(included, "{ broken");
       utimesSync(included, 70, 70);
-      await handlers.get("resources_discover")!({}, sessionCtx);
+      await required(handlers.get("resources_discover"), "resources_discover handler")({}, sessionCtx);
       assert.match(notices.at(-1) ?? "", /included\.jsonc/);
       const blocked = await call();
-      assert.match("reason" in blocked ? blocked.reason : "", /included\.jsonc:\d+:\d+: expected a key/);
+      assert.match(reasonOf(blocked), /included\.jsonc:\d+:\d+: expected a key/);
       assert.equal(notices.length, 1);
 
       writeFileSync(included, validInclude);
@@ -1754,10 +1791,7 @@ async function run(): Promise<void> {
       writeFileSync(included, '{ "programs": { "x": {} } }');
       utimesSync(included, 90, 90);
       const invalid = await call();
-      assert.match(
-        "reason" in invalid ? invalid.reason : "",
-        /included\.jsonc:\d+:\d+: programs\["x"\]: missing "operands"/,
-      );
+      assert.match(reasonOf(invalid), /included\.jsonc:\d+:\d+: programs\["x"\]: missing "operands"/);
 
       for (const [seconds, document, message] of [
         [
@@ -2675,6 +2709,50 @@ async function run(): Promise<void> {
     assert.deepEqual(await hostCtx.modelRegistry?.getAvailable?.(), []);
     assert.deepEqual(await hostCtx.modelRegistry?.getApiKeyAndHeaders?.({}), { ok: false, headers: { good: "value" } });
 
+    // A custom component's factory gets OMP's TUI objects checked the same way.
+    const seen: string[] = [];
+    const tuiHost = {
+      requestRender() {
+        seen.push(this === tuiHost ? "render" : "render without its object");
+      },
+    };
+    const customCtx = canonicalContext({
+      ui: {
+        custom: (factory: (...args: unknown[]) => unknown) => {
+          factory(tuiHost, { fg: () => 42 }, { matches: "not a function" }, () => undefined);
+          return Promise.resolve("picked");
+        },
+      },
+    });
+    const picked = await customCtx?.ui?.custom?.<string>((tui, theme, keybindings) => {
+      tui.requestRender?.();
+      seen.push(theme.fg?.("accent", "text") ?? "no fg");
+      seen.push(keybindings.matches === undefined ? "no matches" : "matches");
+      return {};
+    });
+    assert.equal(picked, "picked");
+    assert.deepEqual(seen, ["render", "text", "no matches"]);
+    // A key match counts by truthiness; only no answer falls back to the built-in keys.
+    for (const [answer, expected] of [
+      [{ action: "confirm" }, true],
+      [0, false],
+      [null, undefined],
+      [undefined, undefined],
+    ] as const) {
+      const keysCtx = canonicalContext({
+        ui: {
+          custom: (factory: (...args: unknown[]) => unknown) => {
+            factory({}, {}, { matches: () => answer }, () => undefined);
+            return Promise.resolve(undefined);
+          },
+        },
+      });
+      await keysCtx?.ui?.custom?.((_tui, _theme, keybindings) => {
+        assert.equal(keybindings.matches?.("\t", "tui.select.confirm"), expected, JSON.stringify(answer));
+        return {};
+      });
+    }
+
     const missingName = await evaluateToolCall(
       null,
       hostCtx,
@@ -3442,7 +3520,7 @@ async function run(): Promise<void> {
               usedCustom = true;
               const component = factory(
                 { requestRender: () => {} },
-                { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+                { fg: (_name: string, text: string) => text },
                 {},
                 resolve,
               ) as { render: (width: number) => string[]; handleInput: (data: string) => void };
@@ -3484,17 +3562,6 @@ async function run(): Promise<void> {
   });
 
   await test("model selector truncates every rendered line to the terminal width", async () => {
-    // truncateVisible unit checks: ellipsis reserved, ANSI preserved + reset,
-    // CJK counted as two columns.
-    assert.equal(truncateVisible("abcdef", 3), "abc");
-    assert.equal(truncateVisible("abcdef", 5), "ab...");
-    assert.equal(truncateVisible("abcdef", 10), "abcdef");
-    assert.equal(truncateVisible("\u001b[31mabcdef\u001b[0m", 5), "\u001b[31mab\u001b[0m...");
-    assert.equal(truncateVisible("中文ab", 5), "中...");
-    assert.equal(truncateVisible("中文ab", 4), "...");
-    assert.equal(truncateVisible("", 10), "");
-    assert.equal(truncateVisible("abcdef", 0), "");
-
     const dir = mkdtempSync(join(tmpdir(), "omp-clearance-config-"));
     const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
     process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
@@ -3517,7 +3584,7 @@ async function run(): Promise<void> {
             new Promise((resolve) => {
               const component = factory(
                 { requestRender: () => {} },
-                { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+                { fg: (_name: string, text: string) => text },
                 {},
                 resolve,
               ) as { render: (width: number) => string[]; handleInput: (data: string) => void };
@@ -3542,6 +3609,22 @@ async function run(): Promise<void> {
       }),
     );
 
+    // Wide East Asian ranges count two columns, everything else one.
+    const columnWidth = (char: string): number => {
+      const code = char.codePointAt(0) ?? 0;
+      const wide = [
+        [0x1100, 0x115f],
+        [0x2e80, 0xa4cf],
+        [0xac00, 0xd7a3],
+        [0xf900, 0xfaff],
+        [0xfe30, 0xfe4f],
+        [0xff00, 0xff60],
+        [0xffe0, 0xffe6],
+        [0x20000, 0x2fffd],
+        [0x30000, 0x3fffd],
+      ];
+      return wide.some(([low, high]) => code >= low && code <= high) ? 2 : 1;
+    };
     const lineWidth = (line: string): number => {
       let width = 0;
       for (const part of line.split(/\x1b\[[0-9;]*m/)) {
@@ -3790,7 +3873,7 @@ async function run(): Promise<void> {
     });
     const say = async (args: string) => {
       messages.length = 0;
-      await handler!(args, commandCtx);
+      await required(handler, "/clearance handler")(args, commandCtx);
       return messages.join("\n");
     };
     try {
@@ -3897,10 +3980,8 @@ async function run(): Promise<void> {
       writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, reviewer: "manual" }));
       assert.match(await routeFor("read ~/.ssh/id_ed25519"), /route: blocked: manual review needs an interactive UI/);
       writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, reviewer: "ai" }));
-      writeFileSync(
-        process.env.CLEARANCE_RULES_PATH!,
-        '{ "rules": [{ "id": "no-apply", "match": "terraform apply", "outcome": "block" }] }',
-      );
+      const rulesPath = required(process.env.CLEARANCE_RULES_PATH, "CLEARANCE_RULES_PATH");
+      writeFileSync(rulesPath, '{ "rules": [{ "id": "no-apply", "match": "terraform apply", "outcome": "block" }] }');
       try {
         assert.match(
           await routeFor("bash terraform apply -auto-approve"),
@@ -3911,7 +3992,7 @@ async function run(): Promise<void> {
           /route: blocked: [^\n]*\nrule: force-push \(block, default\)\nwhy: A force push rewrites history/,
         );
       } finally {
-        rmSync(process.env.CLEARANCE_RULES_PATH!, { force: true });
+        rmSync(rulesPath, { force: true });
       }
       assert.match(await routeFor(""), /Usage: \/clearance explain/);
     } finally {
@@ -3931,7 +4012,7 @@ async function run(): Promise<void> {
     try {
       for (const reviewer of ["ai", "manual", "off"] as const) {
         writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, reviewer }));
-        const handlers = new Map<string, (...args: any[]) => any>();
+        const handlers = new Map<string, (event: unknown, context?: unknown) => unknown>();
         ompClearanceExtension({
           on: (event, handler) => {
             handlers.set(event, handler);
@@ -3974,7 +4055,7 @@ async function run(): Promise<void> {
         rmSync(freshConfigFile, { force: true });
       }
 
-      const handlers = new Map<string, (...args: any[]) => any>();
+      const handlers = new Map<string, (event: unknown, context?: unknown) => unknown>();
       ompClearanceExtension({
         on: (event, handler) => {
           handlers.set(event, handler);
@@ -4565,7 +4646,7 @@ async function run(): Promise<void> {
       { toolName: "bash", input: { command: "pwd" }, cwd: "/tmp", actionSummary: "bash: pwd", actionHash: "x" },
       async (model, _context, options) => {
         capturedModel = model;
-        capturedOptions = options as Record<string, unknown>;
+        capturedOptions = options;
         return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
       },
     );
@@ -4598,7 +4679,7 @@ async function run(): Promise<void> {
       config({ classifierModel: "my-cf/some-model" }),
       { toolName: "bash", input: { command: "pwd" }, cwd: "/tmp", actionSummary: "bash: pwd", actionHash: "x" },
       async (_model, _context, options) => {
-        capturedOptions = options as Record<string, unknown>;
+        capturedOptions = options;
         return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
       },
     );
@@ -4644,7 +4725,7 @@ async function run(): Promise<void> {
       config({}),
       { toolName: "bash", input: { command: "pwd" }, cwd: "/tmp", actionSummary: "bash: pwd", actionHash: "x" },
       async (_model, _context, options) => {
-        capturedOptions = options as Record<string, unknown>;
+        capturedOptions = options;
         return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
       },
     );
@@ -4682,7 +4763,7 @@ async function run(): Promise<void> {
       config({ classifierModel: "my-proxy/my-model" }),
       { toolName: "bash", input: { command: "pwd" }, cwd: "/tmp", actionSummary: "bash: pwd", actionHash: "x" },
       async (_model, _context, options) => {
-        capturedOptions = options as Record<string, unknown>;
+        capturedOptions = options;
         return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
       },
     );
@@ -5659,7 +5740,7 @@ async function run(): Promise<void> {
   });
 }
 
-run().catch((error) => {
+run().catch((error: unknown) => {
   console.error(error);
   process.exitCode = 1;
 });

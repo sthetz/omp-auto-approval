@@ -10,7 +10,7 @@ import { reviewerStatePath } from "../src/reviewer-state.js";
 import type { ExtensionContextLike } from "../src/types.js";
 
 type CommandHandler = (args: string, ctx: ExtensionContextLike) => Promise<void> | void;
-type EventHandler = (event: unknown, ctx: ExtensionContextLike) => Promise<unknown> | unknown;
+type EventHandler = (event: unknown, ctx: ExtensionContextLike) => unknown;
 
 interface AuditRecord {
   timestamp?: string;
@@ -104,7 +104,7 @@ async function run(): Promise<void> {
 
     await harness.command("ai", commandCtx);
     assert.equal(loadConfig().config.reviewer, "off");
-    assert.equal(JSON.parse(readFileSync(reviewerStatePath(), "utf8")).reviewer, "ai");
+    assert.equal((JSON.parse(readFileSync(reviewerStatePath(), "utf8")) as { reviewer?: unknown }).reviewer, "ai");
     assert.ok(notifications.includes("omp-clearance reviewer: ai."));
     assert.deepEqual(statuses.at(-1), ["omp-clearance", "clearance:ai"]);
 
@@ -133,7 +133,7 @@ async function run(): Promise<void> {
     await harness.command("manual", commandCtx);
     const aiConfig = loadConfig().config;
     assert.equal(aiConfig.reviewer, "off");
-    assert.equal(JSON.parse(readFileSync(reviewerStatePath(), "utf8")).reviewer, "manual");
+    assert.equal((JSON.parse(readFileSync(reviewerStatePath(), "utf8")) as { reviewer?: unknown }).reviewer, "manual");
     assert.ok(notifications.includes("omp-clearance reviewer: manual."));
     assert.deepEqual(statuses.at(-1), ["omp-clearance", "clearance:manual"]);
 
@@ -201,7 +201,7 @@ async function run(): Promise<void> {
   }
 }
 
-run().catch((error) => {
+run().catch((error: unknown) => {
   console.error(error);
   process.exitCode = 1;
 });

@@ -1,11 +1,20 @@
-import type { AuthResolution, ClearanceConfig, ExtensionContextLike, Reviewer } from "./types.js";
+import type {
+  AuthResolution,
+  ClearanceConfig,
+  ExtensionContextLike,
+  KeybindingsLike,
+  Reviewer,
+  ThemeLike,
+  TuiLike,
+} from "./types.js";
 import type { ClassifierClient } from "./classifier.js";
 import type { CommandRules } from "./command-rules.js";
 import { getString, toRecord } from "./common.js";
 import { runDecision, type CanonicalToolCall, type Decision } from "./decision.js";
 import type { SessionApprovalStore } from "./session-approval-store.js";
 
-export type ToolCallDecision = {} | { block: true; reason: string };
+/** OMP runs the call on an empty object and blocks it on `block: true`. */
+export type ToolCallDecision = Record<string, never> | { block: true; reason: string };
 
 /** OMP event → canonical tool call. Every event field is untrusted. */
 export function canonicalToolCall(event: unknown): CanonicalToolCall {
@@ -39,6 +48,46 @@ function canonicalAuthResolution(value: unknown): AuthResolution {
     ...(env ? { env } : {}),
     ...(error ? { error } : {}),
   };
+}
+
+/** The TUI handle OMP passes to a custom component's factory. */
+function canonicalTui(value: unknown): TuiLike {
+  const record = toRecord(value);
+  const requestRender = record.requestRender;
+  return typeof requestRender === "function"
+    ? {
+        requestRender: () => {
+          requestRender.call(record);
+        },
+      }
+    : {};
+}
+
+function canonicalTheme(value: unknown): ThemeLike {
+  const record = toRecord(value);
+  const fg = record.fg;
+  return typeof fg === "function"
+    ? {
+        fg: (name, text) => {
+          const styled: unknown = fg.call(record, name, text);
+          return typeof styled === "string" ? styled : text;
+        },
+      }
+    : {};
+}
+
+function canonicalKeybindings(value: unknown): KeybindingsLike {
+  const record = toRecord(value);
+  const matches = record.matches;
+  return typeof matches === "function"
+    ? {
+        matches: (data, key) => {
+          // As before: only no answer falls back to the built-in keys.
+          const matched: unknown = matches.call(record, data, key);
+          return matched === undefined || matched === null ? undefined : Boolean(matched);
+        },
+      }
+    : {};
 }
 
 /**
@@ -81,11 +130,16 @@ export function canonicalContext(value: unknown): ExtensionContextLike | null {
   if (typeof uiRecord.custom === "function") {
     const custom = uiRecord.custom;
     ui.custom = async <T>(
-      factory: Parameters<NonNullable<NonNullable<ExtensionContextLike["ui"]>["custom"]>>[0],
+      factory: (tui: TuiLike, theme: ThemeLike, keybindings: KeybindingsLike, done: (result: T) => void) => unknown,
       optionsOverride?: unknown,
     ): Promise<T> =>
       // The extension-supplied factory, not OMP, determines this result type.
-      (await custom.call(uiRecord, factory, optionsOverride)) as T;
+      (await custom.call(
+        uiRecord,
+        (tui: unknown, theme: unknown, keybindings: unknown, done: (result: T) => void) =>
+          factory(canonicalTui(tui), canonicalTheme(theme), canonicalKeybindings(keybindings), done),
+        optionsOverride,
+      )) as T;
   }
   if (typeof uiRecord.notify === "function") {
     const notify = uiRecord.notify;
@@ -149,7 +203,7 @@ export function canonicalContext(value: unknown): ExtensionContextLike | null {
     const getAvailable = registryRecord.getAvailable;
     modelRegistry.getAvailable = async () => {
       const available: unknown = await getAvailable.call(registryRecord);
-      return Array.isArray(available) ? available : [];
+      return Array.isArray(available) ? (available as unknown[]) : [];
     };
   }
   if (typeof registryRecord.getApiKeyAndHeaders === "function") {

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ClearanceConfig, Reviewer } from "./types.js";
-import { toRecord } from "./common.js";
+import { isRecord, toRecord } from "./common.js";
 
 export const EXTENSION_ID = "omp-clearance";
 
@@ -150,7 +150,11 @@ export function loadConfig(path = configPath()): {
   }
 
   try {
-    const parsed = JSON.parse(stripJsonComments(readFileSync(path, "utf-8")));
+    const raw: unknown = JSON.parse(stripJsonComments(readFileSync(path, "utf-8")));
+    if (!isRecord(raw)) {
+      throw new Error("expected an object of settings");
+    }
+    const parsed = raw;
     const config = normalizeConfig(parsed);
     const notices = configNotices(path, parsed, config);
     return {

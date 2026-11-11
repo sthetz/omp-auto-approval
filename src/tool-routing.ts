@@ -17,7 +17,7 @@ export { resolveReadRoots, type ReadRoots } from "./common.js";
 import { isSensitivePath } from "./sensitive-paths.js";
 import type { ReviewSubject } from "./types.js";
 
-const LOCAL_STATE_TOOLS: Record<string, true> = { todo: true, wait: true };
+const LOCAL_STATE_TOOLS = new Set(["todo", "wait"]);
 
 // Host tools that only read. They skip review only when every target they
 // name passes isWorkspaceReadFastPath. `web_search` is deliberately absent:
@@ -70,7 +70,7 @@ const PROTECTED_WORKSPACE_ENTRIES = new Set([
 ]);
 
 export function isLocalStateTool(toolName: string): boolean {
-  return LOCAL_STATE_TOOLS[toolName.trim().toLowerCase()] === true;
+  return LOCAL_STATE_TOOLS.has(toolName.trim().toLowerCase());
 }
 
 const NAMED_ENTITIES: Record<string, string> = {
@@ -312,7 +312,7 @@ export function isManualOnlyTool(toolName: string, toolDefinition?: unknown): bo
   const record = toRecord(toolDefinition);
   if (typeof record.requiresUserInteraction === "function") {
     try {
-      if (record.requiresUserInteraction()) {
+      if ((record as { requiresUserInteraction: () => unknown }).requiresUserInteraction()) {
         return true;
       }
     } catch {
@@ -335,7 +335,7 @@ export function isManualOnlyTool(toolName: string, toolDefinition?: unknown): bo
   );
 }
 
-export function findToolDefinition(toolName: string, tools: unknown[]): unknown | undefined {
+export function findToolDefinition(toolName: string, tools: unknown[]): unknown {
   return tools.find((tool) => {
     const record = toRecord(tool);
     return record.name === toolName || record.toolName === toolName;

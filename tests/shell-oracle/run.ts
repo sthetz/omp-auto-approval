@@ -111,7 +111,7 @@ async function check(env: OracleEnvironment, parser: ShellParser, item: Item): P
 }
 
 async function pool<T, R>(items: T[], jobs: number, work: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = new Array(items.length);
+  const results = new Array<R>(items.length);
   let next = 0;
   await Promise.all(
     Array.from({ length: Math.min(jobs, items.length) }, async () => {

@@ -10,11 +10,12 @@ async function loadCompleteSimple(): Promise<ClassifierClient> {
   // The specifier must stay a string literal: OMP serves its bundled host
   // packages only for imports it can see statically. A computed
   // `import(name)` bypasses that and needs a separately installed copy.
-  const mod = await import("@oh-my-pi/pi-ai");
-  if (typeof mod.completeSimple !== "function") {
+  const mod: unknown = await import("@oh-my-pi/pi-ai");
+  const completeSimple = toRecord(mod).completeSimple;
+  if (typeof completeSimple !== "function") {
     throw new Error("Could not load completeSimple from @oh-my-pi/pi-ai.");
   }
-  return mod.completeSimple as ClassifierClient;
+  return completeSimple as ClassifierClient;
 }
 
 function extractAssistantText(message: unknown): string | undefined {
@@ -95,23 +96,20 @@ export function applyDecisionPolicy(decision: ClassifierDecision): ClassifierDec
   };
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, controller?: AbortController): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, controller?: AbortController): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
       controller?.abort();
       reject(new Error(`classifier timed out after ${timeoutMs}ms`));
     }, timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
   });
+  try {
+    // A rejection of the classifier call comes through race() unchanged.
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function splitModelRef(modelRef: string, currentModel: Record<string, unknown>): { provider?: string; id: string } {
@@ -136,9 +134,8 @@ function resolveClassifierModel(ctx: ExtensionContextLike, config: ClearanceConf
 
   const currentModelRecord = toRecord(currentModel);
   const { provider, id } = splitModelRef(config.classifierModel, currentModelRecord);
-  const registry = toRecord(ctx.modelRegistry);
-  if (provider && typeof registry.find === "function") {
-    const found = registry.find(provider, id);
+  if (provider) {
+    const found = ctx.modelRegistry?.find?.(provider, id);
     if (found) {
       return found;
     }
@@ -163,30 +160,22 @@ async function resolveRequestAuth(
   ctx: ExtensionContextLike,
   model: unknown,
 ): Promise<{ apiKey?: string; headers?: Record<string, string>; env?: Record<string, string> }> {
-  const registry = toRecord(ctx.modelRegistry);
-  if (typeof registry.getApiKeyAndHeaders !== "function") {
+  // OMP's result was already checked at the boundary (canonicalAuthResolution).
+  const registry = ctx.modelRegistry;
+  if (!registry?.getApiKeyAndHeaders) {
     return {};
   }
   const result = await registry.getApiKeyAndHeaders(model);
-  const record = toRecord(result);
-  if (record.ok !== true) {
-    const error =
-      typeof record.error === "string" && record.error.trim()
-        ? record.error.trim()
-        : "auth resolution reported failure with no error message";
+  if (!result.ok) {
+    const error = result.error?.trim() || "auth resolution reported failure with no error message";
     throw new Error(`Could not resolve classifier model auth: ${error}`);
   }
-  const auth: { apiKey?: string; headers?: Record<string, string>; env?: Record<string, string> } = {};
-  if (typeof record.apiKey === "string") {
-    auth.apiKey = record.apiKey;
-  }
-  if (record.headers && typeof record.headers === "object") {
-    auth.headers = record.headers as Record<string, string>;
-  }
-  if (record.env && typeof record.env === "object") {
-    auth.env = record.env as Record<string, string>;
-  }
-  return auth;
+  const { apiKey, headers, env } = result;
+  return {
+    ...(apiKey !== undefined ? { apiKey } : {}),
+    ...(headers ? { headers } : {}),
+    ...(env ? { env } : {}),
+  };
 }
 
 export async function classifyAction(

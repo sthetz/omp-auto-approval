@@ -107,8 +107,9 @@ function resolveExpansions(lines: string[][]): string[][] {
     }
     return words.flatMap((word) => {
       const variable = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(word);
-      if (variable && literals.has(variable[1])) {
-        return literals.get(variable[1])!.split(/\s+/).filter(Boolean);
+      const value = variable ? literals.get(variable[1]) : undefined;
+      if (value !== undefined) {
+        return value.split(/\s+/).filter(Boolean);
       }
       return EXPANSION.test(word) && !ASSIGNMENT.test(word) ? [`${EXPANDED}${word}`] : [word];
     });

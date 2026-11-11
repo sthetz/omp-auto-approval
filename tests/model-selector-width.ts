@@ -33,7 +33,7 @@ function testVisibleWidth(text: string): number {
 let truncateCalls = 0;
 const piLikeTextUtils = {
   visibleWidth: testVisibleWidth,
-  truncateToWidth(text: string, maxWidth: number): string {
+  truncateToWidth: (text: string, maxWidth: number): string => {
     truncateCalls += 1;
     if (testVisibleWidth(text) <= maxWidth) return text;
     const clean = text.replace(ANSI_SGR_PATTERN, "");
@@ -104,7 +104,7 @@ async function run(): Promise<void> {
     items,
     ctx,
     config,
-    { fg: (_name: string, text: string) => text, bold: (text: string) => text },
+    { fg: (_name: string, text: string) => text },
     {},
     piLikeTextUtils,
     () => {},
@@ -129,7 +129,7 @@ async function run(): Promise<void> {
   console.log("[PASS] the host TUI width engine is used when it loads");
 }
 
-run().catch((error) => {
+run().catch((error: unknown) => {
   console.error(error);
   process.exitCode = 1;
 });

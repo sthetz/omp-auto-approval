@@ -15,7 +15,8 @@ function versionFor(main: string, included: string[]): string {
         const stats = statSync(path);
         return `${path}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.ino}:${stats.size}`;
       } catch (error) {
-        return `${path}:missing-or-unreadable:${String(toRecord(error).code ?? "unknown")}`;
+        const code = toRecord(error).code;
+        return `${path}:missing-or-unreadable:${typeof code === "string" ? code : "unknown"}`;
       }
     })
     .join("\n");

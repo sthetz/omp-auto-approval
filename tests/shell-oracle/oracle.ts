@@ -348,11 +348,12 @@ function matches(command: ParsedCommand, fds: string[], record: OracleRecord): b
   }
   // A word the shell rewrites can become any text, or several words; the
   // program, unless it is one of them, must still match.
-  if (command.words.some((word) => word.expands)) {
-    return command.words[0].expands || record.argv[0] === command.words[0].text;
+  const program = command.words[0];
+  if (program && command.words.some((word) => word.expands)) {
+    return program.expands || record.argv[0] === program.text;
   }
   return (
-    record.argv.length === command.words.length && record.argv.every((arg, index) => arg === command.words[index].text)
+    record.argv.length === command.words.length && record.argv.every((arg, index) => arg === command.words[index]?.text)
   );
 }
 
@@ -369,6 +370,10 @@ export function compareRun(script: ParsedScript, status: number, run: OracleRun)
   const problems: string[] = [];
   for (const index of pipelinesRun(script, status)) {
     const pipeline = script.pipelines[index];
+    if (!pipeline) {
+      // pipelinesRun only yields the script's own indexes.
+      throw new Error(`oracle error: the script has no pipeline ${index}`);
+    }
     const batch = records.splice(0, pipeline.length);
     const unmatched = [...batch];
     pipeline.forEach((command, position) => {

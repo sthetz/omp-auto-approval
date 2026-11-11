@@ -117,7 +117,13 @@ const REDIRECTS = [
 
 export function fuzzCommands(count: number, seed: number): string[] {
   const random = mulberry32(seed);
-  const pick = <T>(items: T[]): T => items[Math.floor(random() * items.length)];
+  const pick = <T>(items: T[]): T => {
+    const item = items[Math.floor(random() * items.length)];
+    if (item === undefined) {
+      throw new Error("pick() from an empty list");
+    }
+    return item;
+  };
   const quoted = (): string => {
     const inner = Array.from({ length: 1 + Math.floor(random() * 4) }, () =>
       random() < 0.5 ? pick(PLAIN) : pick(SPECIAL),

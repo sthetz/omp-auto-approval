@@ -1,3 +1,5 @@
+import { itemAt } from "./common.js";
+
 /**
  * What an allow rule's `prefix` may name. A prefix allows every option of
  * the program it names, so these programs are never allowed that way.
@@ -61,5 +63,5 @@ export function prefixAllowsProgram(prefix: string, program: string): boolean {
     return true;
   }
   const words = wholeWords(prefix);
-  return words.length >= 2 && programName(words[0]) === program;
+  return words.length >= 2 && programName(itemAt(words, 0)) === program;
 }

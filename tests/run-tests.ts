@@ -1,3 +1,4 @@
+import { group, itemAt } from "../src/common.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
@@ -221,6 +222,25 @@ function classifierDenyOptions(reason = "needs review"): {
 }
 
 async function run(): Promise<void> {
+  await test("itemAt and group return what is there and throw on anything else", () => {
+    assert.equal(itemAt(["a", "b"], 1), "b");
+    assert.equal(itemAt([undefined, "b"], 0), undefined);
+    for (const index of [-1, 2, 0.5, Number.NaN]) {
+      assert.throws(() => itemAt(["a", "b"], index), /internal error: index .* is outside a list of 2/, String(index));
+    }
+    const match = /^(a)(x)?$/.exec("a");
+    assert.ok(match);
+    assert.equal(group(match, 1), "a");
+    const long = `a${"b".repeat(100)}`;
+    const longMatch = /^(a)(x)?/.exec(long);
+    assert.ok(longMatch);
+    assert.throws(
+      () => group(longMatch, 2),
+      (error: unknown) =>
+        error instanceof Error && error.message.length < 120 && !error.message.includes("b".repeat(50)),
+    );
+  });
+
   await test("normalizeConfig defaults to off and reads reviewer as the starting value", () => {
     assert.deepEqual(normalizeConfig({}), DEFAULT_CONFIG);
     assert.equal(normalizeConfig({ reviewer: "ai" }).reviewer, "ai");
@@ -487,13 +507,13 @@ async function run(): Promise<void> {
         [{ words: ["pwd"], redirects: [] }],
       ],
     });
-    assert.deepEqual(shape("make &>/dev/null")?.pipelines[0][0].redirects, ["1write:/dev/null", "2duplicate:1"]);
-    assert.deepEqual(shape("ls a2>x 2>>log >&2 <in")?.pipelines[0][0], {
+    assert.deepEqual(shape("make &>/dev/null")?.pipelines[0]?.[0]?.redirects, ["1write:/dev/null", "2duplicate:1"]);
+    assert.deepEqual(shape("ls a2>x 2>>log >&2 <in")?.pipelines[0]?.[0], {
       words: ["ls", "a2"],
       redirects: ["1write:x", "2append:log", "1duplicate:2", "0read:in"],
     });
     // Quoting: single quotes keep everything; inside double quotes a backslash escapes only $ ` " \\ and newline.
-    assert.deepEqual(shape(`echo 'a\\b' "src\\/x" "q\\"q" a\\ b a#b`)?.pipelines[0][0].words, [
+    assert.deepEqual(shape(`echo 'a\\b' "src\\/x" "q\\"q" a\\ b a#b`)?.pipelines[0]?.[0]?.words, [
       "echo",
       "a\\b",
       "src\\/x",
@@ -511,8 +531,10 @@ async function run(): Promise<void> {
       [28, 39],
     ]);
 
-    const words = required(recognizeShell("  \"git\" ~/x a=~/k 'a'=~ *.ts X=1"), "recognized script").pipelines[0][0]
-      .words;
+    const words = required(
+      recognizeShell("  \"git\" ~/x a=~/k 'a'=~ *.ts X=1")?.pipelines[0]?.[0],
+      "recognized command",
+    ).words;
     assert.deepEqual(
       words.map(({ text, expands, quoted, assignment, start, end }) => [text, expands, quoted, assignment, start, end]),
       [
@@ -1033,7 +1055,7 @@ async function run(): Promise<void> {
     ) as RulesSchema;
     assert.deepEqual([...schema.$defs.operandCheck.enum].sort(), Object.keys(OPERAND_CHECKS).sort());
     assert.deepEqual(schema.$defs.entry.properties.arguments.enum, [...ARGUMENT_PARSERS]);
-    assert.deepEqual(schema.$defs.rule.oneOf[0].properties.outcome.enum, [...RULE_OUTCOMES]);
+    assert.deepEqual(schema.$defs.rule.oneOf[0]?.properties.outcome.enum, [...RULE_OUTCOMES]);
     const kinds = new Set<string>();
     for (const entry of defaultRules().programs.values()) {
       for (const sub of [entry, ...(entry.subcommands?.values() ?? [])]) {
@@ -1327,7 +1349,7 @@ async function run(): Promise<void> {
       }
       const decided = (command: string) => {
         const escalation = escalateCommand(command, rules);
-        return escalation && `${escalation.outcome} ${escalation.rule?.id}`;
+        return escalation && `${escalation.outcome} ${escalation.rule.id}`;
       };
       assert.equal(decided("docker ps"), null);
       assert.equal(decided("docker run --privileged x"), "ask docker-privileged");
@@ -1358,7 +1380,7 @@ async function run(): Promise<void> {
       const decide = (command: string) => {
         const escalation = escalateCommand(command, rules);
         if (escalation) {
-          return `${escalation.outcome} ${escalation.rule?.id}`;
+          return `${escalation.outcome} ${escalation.rule.id}`;
         }
         return planSafeCommand(command, config(), { workspace, searchPath: TEST_PATH, rules }) ? "fast" : "classifier";
       };
@@ -2289,7 +2311,7 @@ async function run(): Promise<void> {
             initialIndex?: number;
           };
           timeouts.push(timeout);
-          highlighted.push(options[initialIndex ?? 0]);
+          highlighted.push(required(options[initialIndex ?? 0], "highlighted option"));
           onTimeout?.();
           return "Allow Once";
         },
@@ -2705,7 +2727,7 @@ async function run(): Promise<void> {
     assert.equal(await hostCtx.ui?.select?.("question", []), undefined);
     assert.equal(hostCtx.ui?.notify, undefined);
     assert.deepEqual(hostCtx.sessionManager?.getBranch?.(), []);
-    assert.equal(hostCtx.sessionManager?.getSessionId?.(), "");
+    assert.equal(hostCtx.sessionManager.getSessionId?.(), "");
     assert.deepEqual(await hostCtx.modelRegistry?.getAvailable?.(), []);
     assert.deepEqual(await hostCtx.modelRegistry?.getApiKeyAndHeaders?.({}), { ok: false, headers: { good: "value" } });
 
@@ -3612,7 +3634,7 @@ async function run(): Promise<void> {
     // Wide East Asian ranges count two columns, everything else one.
     const columnWidth = (char: string): number => {
       const code = char.codePointAt(0) ?? 0;
-      const wide = [
+      const wide: [number, number][] = [
         [0x1100, 0x115f],
         [0x2e80, 0xa4cf],
         [0xac00, 0xd7a3],
@@ -4277,7 +4299,7 @@ async function run(): Promise<void> {
       assert.equal(entries.length, 2);
       assert.equal(entries[0]?.route, "human");
       assert.equal(entries[1]?.route, "session_approval");
-      assert.equal(entries[1]?.classifierDecision, undefined);
+      assert.equal(entries[1].classifierDecision, undefined);
     } finally {
       if (previousLogsDir === undefined) {
         delete process.env.CLEARANCE_LOGS_DIR;
@@ -4361,8 +4383,9 @@ async function run(): Promise<void> {
     assert.equal("block" in (await run("logger checking\nrm -rf demo-target")), true);
     assert.equal(seen.length, 2);
     // The reviewer saw the newline (escaped once per JSON layer), not a space.
-    assert.match(seen[1], /logger checking\\+nrm -rf demo-target/);
-    assert.ok(!seen[1].includes("logger checking rm"));
+    const reviewed = required(seen[1], "second reviewed action");
+    assert.match(reviewed, /logger checking\\+nrm -rf demo-target/);
+    assert.ok(!reviewed.includes("logger checking rm"));
   });
 
   await test("bash calls with fields that change how they run are not fast-pathed", () => {
@@ -4400,7 +4423,7 @@ async function run(): Promise<void> {
     writeFileSync(join(dir, "outer.sh"), "source ./setup.sh\n");
     spawnSync("mkfifo", [join(dir, "fifo")]);
     try {
-      for (const [command, reason] of [
+      const cases: [string, string][] = [
         ["trap 'x' DEBUG", "`trap`"],
         ["builtin trap x ERR", "`trap`"],
         ["t''rap x RETURN", "`trap`"],
@@ -4435,7 +4458,8 @@ async function run(): Promise<void> {
         ["source fifo", "`source` of a file that could not be read"],
         ["source /dev/zero", "`source` of a file that could not be read"],
         [". /dev/stdin", "`.` of a file that could not be read"],
-      ]) {
+      ];
+      for (const [command, reason] of cases) {
         assert.equal(shellHook(command, dir), reason, command);
       }
       for (const command of [
@@ -4652,9 +4676,9 @@ async function run(): Promise<void> {
     );
     assert.equal(decision.outcome, "allow");
     assert.equal(capturedOptions?.temperature, 0);
-    assert.equal(capturedOptions?.apiKey, "test-key-from-models-json");
-    assert.deepEqual(capturedOptions?.headers, { "X-Custom-Header": "yes" });
-    assert.deepEqual(capturedOptions?.env, { PROXY_REGION: "eu" });
+    assert.equal(capturedOptions.apiKey, "test-key-from-models-json");
+    assert.deepEqual(capturedOptions.headers, { "X-Custom-Header": "yes" });
+    assert.deepEqual(capturedOptions.env, { PROXY_REGION: "eu" });
     assert.equal((capturedModel as { provider?: string }).provider, "my-proxy");
   });
 
@@ -4732,20 +4756,16 @@ async function run(): Promise<void> {
     assert.equal(decision.outcome, "allow");
     assert.equal(capturedOptions?.temperature, 0);
     assert.equal(
-      "apiKey" in (capturedOptions ?? {}),
+      "apiKey" in capturedOptions,
       false,
       "apiKey must not be present when registry lacks getApiKeyAndHeaders",
     );
     assert.equal(
-      "headers" in (capturedOptions ?? {}),
+      "headers" in capturedOptions,
       false,
       "headers must not be present when registry lacks getApiKeyAndHeaders",
     );
-    assert.equal(
-      "env" in (capturedOptions ?? {}),
-      false,
-      "env must not be present when registry lacks getApiKeyAndHeaders",
-    );
+    assert.equal("env" in capturedOptions, false, "env must not be present when registry lacks getApiKeyAndHeaders");
   });
 
   await test("classifier tolerates auth resolution returning empty fields", async () => {
@@ -4769,9 +4789,9 @@ async function run(): Promise<void> {
     );
     assert.equal(decision.outcome, "allow");
     assert.equal(capturedOptions?.temperature, 0);
-    assert.equal("apiKey" in (capturedOptions ?? {}), false);
-    assert.equal("headers" in (capturedOptions ?? {}), false);
-    assert.equal("env" in (capturedOptions ?? {}), false);
+    assert.equal("apiKey" in capturedOptions, false);
+    assert.equal("headers" in capturedOptions, false);
+    assert.equal("env" in capturedOptions, false);
   });
 
   await test("ai reviewer end-to-end allow with injected custom provider auth", async () => {
@@ -5126,7 +5146,7 @@ async function run(): Promise<void> {
     }
     assert.equal(aborts, 1);
     assert.equal(reasons[1], CLASSIFIER_DENY_REASON);
-    assert.match(reasons[2], /rejected 3 actions in a row and stopped the turn/);
+    assert.match(required(reasons[2], "third reason"), /rejected 3 actions in a row and stopped the turn/);
     assert.equal(reasons[3], CLASSIFIER_DENY_REASON);
 
     const withoutAbort = new SessionApprovalStore();
@@ -5239,8 +5259,8 @@ async function run(): Promise<void> {
           .map((line) => JSON.parse(line) as Record<string, unknown>);
         assert.equal(entries.length, 2);
         assert.equal(entries[1]?.route, testCase.route);
-        assert.equal(entries[1]?.reason, entries[0]?.reason);
-        assert.doesNotMatch(String(entries[1]?.reason), /rejected 2 actions in a row/);
+        assert.equal(entries[1].reason, entries[0]?.reason);
+        assert.doesNotMatch(String(entries[1].reason), /rejected 2 actions in a row/);
       }
     } finally {
       if (previousLogsDir === undefined) {
@@ -5620,7 +5640,7 @@ async function run(): Promise<void> {
       for (const command of ["rgx", "rg x /etc/passwd", "rg --pre=cat x", "rg x .env"]) {
         assert.equal(plan(command), null, command);
       }
-      assert.equal(escalateCommand("rg --pre=cat x", rules)?.rule?.id, "no-rg-pre");
+      assert.equal(escalateCommand("rg --pre=cat x", rules)?.rule.id, "no-rg-pre");
       assert.equal(escalateCommand("rg x", rules), null);
     } finally {
       rmSync(workspace, { recursive: true, force: true });

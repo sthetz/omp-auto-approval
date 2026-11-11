@@ -138,7 +138,8 @@ function main(): void {
   const args = process.argv.slice(2);
   const option = (name: string, fallback: string) => {
     const index = args.indexOf(name);
-    return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
+    const value = index >= 0 ? args[index + 1] : undefined;
+    return value || fallback;
   };
   const out = option("--out", DEFAULT_CORPUS);
   const sources: [Agent, string][] = [

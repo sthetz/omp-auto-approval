@@ -7,6 +7,7 @@
  * list. The paths refer to the workspace made by run.ts.
  */
 import type { CommandRules, ProgramEntry } from "../../src/command-rules.js";
+import { itemAt } from "../../src/common.js";
 
 const FILES = [
   "notes.txt",
@@ -213,9 +214,9 @@ export function syntheticCommands(rules: CommandRules): string[] {
         out.add([program, ...operand, ...form].join(" "));
       }
     }
-    for (let index = 0; index < forms.length; index += 1) {
-      const other = forms[(index * 7 + 3) % forms.length];
-      out.add([program, ...forms[index], ...other, ...(operands[1] ?? [])].join(" "));
+    for (const [index, form] of forms.entries()) {
+      const other = itemAt(forms, (index * 7 + 3) % forms.length);
+      out.add([program, ...form, ...other, ...(operands[1] ?? [])].join(" "));
     }
   }
   const git = rules.programs.get("git");

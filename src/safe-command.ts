@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
-import { relativePathWithin, resolvePathForCwd, resolveReadRoots, type ReadRoots } from "./common.js";
+import { itemAt, relativePathWithin, resolvePathForCwd, resolveReadRoots, type ReadRoots } from "./common.js";
 import { boundedGlobMatches, isTreeClean } from "./path-expansion.js";
 import { defaultRules, type CommandRules } from "./command-rules.js";
 import { allowPrefixProblem, prefixAllowsProgram } from "./allow-prefix.js";
@@ -73,7 +73,8 @@ function hasUnsafeOption(program: string, args: string[]): boolean {
       return true;
     }
     if (arg.startsWith("--")) {
-      const name = arg.split("=", 1)[0];
+      const equals = arg.indexOf("=");
+      const name = equals < 0 ? arg : arg.slice(0, equals);
       return (
         unsafe.prefixes?.some((option) => name.startsWith(option) || (name.length > 2 && option.startsWith(name))) ??
         false
@@ -195,7 +196,9 @@ function isAllowedByRule(words: ShellWord[], check: Check): boolean {
   // Entries match the command as written, quotes included, without its
   // redirections.
   const written = normalizeCommand(words.map((word) => check.source.slice(word.start, word.end)).join(" "));
-  const [first, ...args] = words;
+  // The parser gives every command a first word.
+  const first = itemAt(words, 0);
+  const args = words.slice(1);
   const program = programName(first.text);
   const entry = check.rules.rules.find(
     (rule) =>
@@ -371,7 +374,7 @@ function ruleContext(check: Check, place = check.place): RuleContext {
  * pinned (see planSafeCommand).
  */
 function isSafeCommand(words: ShellWord[], check: Check): boolean {
-  const [program] = words;
+  const program = itemAt(words, 0);
   if (program.expands) {
     return false;
   }
@@ -468,9 +471,9 @@ export function planSafeCommand(
   while (
     first < script.pipelines.length - 1 &&
     script.connectors[first] !== "||" &&
-    script.pipelines[first].length === 1
+    itemAt(script.pipelines, first).length === 1
   ) {
-    const directory = cdTarget(script.pipelines[first][0], place);
+    const directory = cdTarget(itemAt(itemAt(script.pipelines, first), 0), place);
     if (directory === null) {
       break;
     }
@@ -501,5 +504,5 @@ export function planSafeCommand(
   }
   return first === 0
     ? { command: pinned, rules: check.used }
-    : { command: pinned.slice(commands[0].start), cwd: place.directory, rules: check.used };
+    : { command: pinned.slice(itemAt(commands, 0).start), cwd: place.directory, rules: check.used };
 }

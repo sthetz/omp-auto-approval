@@ -1,7 +1,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { resolvePathForCwd } from "./common.js";
+import { group, itemAt, resolvePathForCwd } from "./common.js";
 
 /**
  * Bash commands that can leave the session's persistent shell running code
@@ -109,7 +109,7 @@ export function commandLines(text: string, heredocBodies?: string[]): string[][]
     started = true;
   };
   for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
+    const char = text.charAt(index);
     const next = text[index + 1] ?? "";
     if (quote === "'") {
       word += char;
@@ -153,7 +153,7 @@ export function commandLines(text: string, heredocBodies?: string[]): string[][]
     if (char === "<" && next === "<" && text[index + 2] !== "<") {
       const heredoc = /^<<(-?)[ \t]*(['"]?)([^\s'";&|<>()]+)\2/.exec(text.slice(index));
       if (heredoc) {
-        heredocs.push({ delimiter: heredoc[3], stripTabs: heredoc[1] === "-" });
+        heredocs.push({ delimiter: group(heredoc, 3), stripTabs: heredoc[1] === "-" });
         endWord();
         index += heredoc[0].length - 1;
         continue;
@@ -242,7 +242,10 @@ export function shellHook(command: string, directory: string, depth = 0): string
       return `\`${value}\``;
     }
     let position = 0;
-    while (position < plain.length && (PREFIX_WORDS.has(plain[position]) || ASSIGNMENT.test(plain[position]))) {
+    while (
+      position < plain.length &&
+      (PREFIX_WORDS.has(itemAt(plain, position)) || ASSIGNMENT.test(itemAt(plain, position)))
+    ) {
       position += 1;
     }
     const name = plain[position];
@@ -257,27 +260,31 @@ export function shellHook(command: string, directory: string, depth = 0): string
     for (const word of setters) {
       const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(word);
       if (assignment) {
-        if (/[$`]/.test(assignment[2])) {
-          literals.delete(assignment[1]);
+        const variableName = group(assignment, 1);
+        const value = group(assignment, 2);
+        if (/[$`]/.test(value)) {
+          literals.delete(variableName);
         } else {
-          literals.set(assignment[1], unquote(assignment[2]));
+          literals.set(variableName, unquote(value));
         }
       }
     }
     if (!name) {
       continue;
     }
-    if (/[$`]/.test(words[position])) {
-      const variable = /^"?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?$/.exec(words[position]);
-      const value = variable ? literals.get(variable[1]) : undefined;
+    // `plain` is `words` unquoted, so a name at `position` has its word there.
+    const commandWord = itemAt(words, position);
+    if (/[$`]/.test(commandWord)) {
+      const variable = /^"?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?$/.exec(commandWord);
+      const value = variable ? literals.get(group(variable, 1)) : undefined;
       // Unquoted, the value splits into words and the first is the program.
       const program =
-        value === undefined ? undefined : words[position].startsWith('"') ? value : value.trim().split(/\s+/)[0];
+        value === undefined ? undefined : commandWord.startsWith('"') ? value : itemAt(value.trim().split(/\s+/), 0);
       if (program === undefined) {
-        return `a command named by a ${words[position].includes("$(…)") ? "command substitution" : "variable"} (\`${words[position].slice(0, 40)}\`)`;
+        return `a command named by a ${commandWord.includes("$(…)") ? "command substitution" : "variable"} (\`${commandWord.slice(0, 40)}\`)`;
       }
       if (HOOK_COMMANDS.has(program)) {
-        return `\`${program}\` (through \`${words[position].slice(0, 40)}\`)`;
+        return `\`${program}\` (through \`${commandWord.slice(0, 40)}\`)`;
       }
       continue;
     }

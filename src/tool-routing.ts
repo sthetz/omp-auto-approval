@@ -173,7 +173,8 @@ function isReadTarget(value: unknown, roots: ReadRoots, depth = 0): boolean {
   }
   // A colon before the first path separator may name a scheme (`https:/x`,
   // `ssh:host`) rather than a file; Windows drive letters are the exception.
-  const beforeSeparator = trimmed.split(/[\\/]/, 1)[0];
+  const separator = trimmed.search(/[\\/]/);
+  const beforeSeparator = separator < 0 ? trimmed : trimmed.slice(0, separator);
   if (beforeSeparator.includes(":") && !/^[a-z]:$/i.test(beforeSeparator) && !/\.[^:]*:/.test(beforeSeparator)) {
     return false;
   }

@@ -118,7 +118,7 @@ async function run(): Promise<void> {
       `rendered line exceeds Pi-style width: ${JSON.stringify(line)}`,
     );
   }
-  assert.equal(piLikeTextUtils.visibleWidth(rendered[0]), 20);
+  assert.equal(piLikeTextUtils.visibleWidth(rendered[0] ?? ""), 20);
   assert.equal(piLikeTextUtils.visibleWidth(rendered.at(-1) ?? ""), 20);
 
   console.log(

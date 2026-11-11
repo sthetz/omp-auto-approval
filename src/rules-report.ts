@@ -1,3 +1,4 @@
+import { itemAt } from "./common.js";
 import {
   defaultRulesPath,
   type CommandRule,
@@ -124,7 +125,9 @@ export function rulesOverview(rules: CommandRules): string {
 /** One program's entry, or one rule, or null when there is neither. */
 export function describeRule(rules: CommandRules, name: string): string | null {
   // `git`, `program:git`, or `program:git status`, as explain and the audit log name them.
-  const [programName, subcommandName] = name.replace(/^program:/, "").split(/\s+/);
+  const parts = name.replace(/^program:/, "").split(/\s+/);
+  const programName = itemAt(parts, 0);
+  const subcommandName = parts[1];
   const program = rules.programs.get(programName);
   const entry = subcommandName === undefined ? program : program?.subcommands?.get(subcommandName);
   if (entry) {

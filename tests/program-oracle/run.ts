@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { group, itemAt } from "../../src/common.js";
 import { DEFAULT_CONFIG } from "../../src/extension-config.js";
 import { programTables } from "../../src/program-rules.js";
 import { planSafeCommand } from "../../src/safe-command.js";
@@ -162,7 +163,7 @@ function random(seed: number) {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-  const pick = <T>(list: readonly T[]): T => list[Math.floor(next() * list.length)];
+  const pick = <T>(list: readonly T[]): T => itemAt(list, Math.floor(next() * list.length));
   return { next, pick, chance: (p: number) => next() < p };
 }
 
@@ -172,8 +173,7 @@ function quote(word: string): string {
 
 function generate(rng: ReturnType<typeof random>): string {
   const tables = programTables();
-  const program = rng.pick(Object.keys(tables));
-  const spec = tables[program];
+  const [program, spec] = rng.pick(Object.entries(tables));
   const args: string[] = [];
   // Values by the option as written, else by the name it is reported as.
   const value = (name: string, kind: string, alias?: string): string => {
@@ -185,10 +185,10 @@ function generate(rng: ReturnType<typeof random>): string {
   };
   for (let count = Math.floor(rng.next() * 4); count > 0; count -= 1) {
     const choices: (() => void)[] = [];
-    for (const letter of spec.flags ?? "") {
+    for (const letter of spec.flags) {
       choices.push(() => args.push(`-${letter}`));
     }
-    for (const [letter, kind] of Object.entries(spec.values ?? {})) {
+    for (const [letter, kind] of Object.entries(spec.values)) {
       const alias = spec.aliases[letter];
       choices.push(() =>
         kind === "optional"
@@ -196,10 +196,10 @@ function generate(rng: ReturnType<typeof random>): string {
           : args.push(`-${letter}`, value(letter, kind, alias)),
       );
     }
-    for (const name of spec.long ?? []) {
+    for (const name of spec.long) {
       choices.push(() => args.push(`--${name}`));
     }
-    for (const [name, kind] of Object.entries(spec.longValues ?? {})) {
+    for (const [name, kind] of Object.entries(spec.longValues)) {
       choices.push(() => {
         if (kind === "optional") {
           args.push(rng.chance(0.5) ? `--${name}=${value(name, kind)}` : `--${name}`);
@@ -359,37 +359,40 @@ function traceProblems(trace: string, expected: Set<string>, bash: string, root:
     const call = line.replace(/^\d+\s+/, "");
     const exec = /^execve\("([^"]*)"/.exec(call);
     if (exec) {
-      if (exec[1] !== bash && !expected.has(exec[1]) && !call.endsWith("= -1 ENOENT (No such file or directory)")) {
-        problems.push(`ran ${exec[1]}`);
+      const path = group(exec, 1);
+      if (path !== bash && !expected.has(path) && !call.endsWith("= -1 ENOENT (No such file or directory)")) {
+        problems.push(`ran ${path}`);
       }
       continue;
     }
-    const open =
+    const openMatch =
       /^(open|openat2?)\((?:AT_FDCWD|\d+), "([^"]*)", ([^)]*)/.exec(call) ?? /^(open)\("([^"]*)", ([^)]*)/.exec(call);
+    const open = openMatch ? { path: group(openMatch, 2), flags: group(openMatch, 3) } : null;
     // sort keeps temporary files of its own in TMPDIR, created exclusively and removed.
-    if (open && SORT_TEMPORARY.test(open[2]) && (open[3].includes("O_EXCL") || !WRITE_FLAGS.test(open[3]))) {
+    if (open && SORT_TEMPORARY.test(open.path) && (open.flags.includes("O_EXCL") || !WRITE_FLAGS.test(open.flags))) {
       continue;
     }
-    if (/^unlink\("([^"]*)"/.exec(call)?.[1].match(SORT_TEMPORARY)) {
+    const unlink = /^unlink\("([^"]*)"/.exec(call);
+    if (unlink && SORT_TEMPORARY.test(group(unlink, 1))) {
       continue;
     }
     // A successful read outside the sandbox's workspace and system directories.
     // O_PATH gives a handle that cannot read (file opens `/` for its sandbox).
     if (
       open &&
-      !WRITE_FLAGS.test(open[3]) &&
-      !open[3].includes("O_PATH") &&
-      open[2].startsWith("/") &&
+      !WRITE_FLAGS.test(open.flags) &&
+      !open.flags.includes("O_PATH") &&
+      open.path.startsWith("/") &&
       !/= -1 /.test(call) &&
       ![root, ...SYSTEM_DIRECTORIES, "/proc/", "/dev/", "/sys/"].some(
-        (prefix) => open[2] === prefix || open[2].startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`),
+        (prefix) => open.path === prefix || open.path.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`),
       )
     ) {
-      problems.push(`read ${open[2]}`);
+      problems.push(`read ${open.path}`);
       continue;
     }
-    if (open && WRITE_FLAGS.test(open[3]) && !["/dev/null", "/dev/tty"].includes(open[2])) {
-      problems.push(`opened ${open[2]} with ${open[3]}`);
+    if (open && WRITE_FLAGS.test(open.flags) && !["/dev/null", "/dev/tty"].includes(open.path)) {
+      problems.push(`opened ${open.path} with ${open.flags}`);
       continue;
     }
     if (CHANGES.test(call)) {
@@ -407,7 +410,7 @@ async function pool<T, R>(items: T[], jobs: number, work: (item: T) => Promise<R
       while (next < items.length) {
         const index = next;
         next += 1;
-        results[index] = await work(items[index]);
+        results[index] = await work(itemAt(items, index));
       }
     }),
   );
@@ -476,7 +479,7 @@ async function main(): Promise<void> {
     ]) {
       const problems = traceProblems(
         await runTraced(env, strace, root, workspace, command),
-        new Set([command.split(" ")[0]]),
+        new Set([itemAt(command.split(" "), 0)]),
         env.bash,
         root,
       );
@@ -502,7 +505,7 @@ async function main(): Promise<void> {
         accepted,
         Number(option("--jobs") ?? availableParallelism()),
         async ({ command, plan }): Promise<Finding | null> => {
-          const expected = new Set([...plan.command.matchAll(/(?:^|\s)(\/\S+)/g)].map((match) => match[1]));
+          const expected = new Set([...plan.command.matchAll(/(?:^|\s)(\/\S+)/g)].map((match) => group(match, 1)));
           const trace = await runTraced(env, strace, root, workspace, plan.command);
           if (process.env.PROGRAM_ORACLE_DEBUG && command.startsWith(process.env.PROGRAM_ORACLE_DEBUG)) {
             console.log(trace);

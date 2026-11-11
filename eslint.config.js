@@ -20,11 +20,11 @@ export default defineConfig(
       // String spreads here split into code points on purpose (glob characters,
       // option letters), not user-facing text; other misused spreads stay errors.
       "@typescript-eslint/no-misused-spread": ["error", { allow: [{ from: "lib", name: "string" }] }],
-
-      // Without noUncheckedIndexedAccess, arr[i] and record[key] are typed as
-      // always present, so this rule calls the checks on them unnecessary.
-      // It is turned on together with that flag.
-      "@typescript-eslint/no-unnecessary-condition": "off",
+      // `while (true)` is a loop that returns from inside.
+      "@typescript-eslint/no-unnecessary-condition": [
+        "error",
+        { allowConstantLoopConditions: "only-allowed-literals" },
+      ],
     },
   },
   {

@@ -1,3 +1,5 @@
+import { itemAt } from "./common.js";
+
 /**
  * A recognizer for a small, safe subset of bash (5.3, non-interactive).
  *
@@ -358,10 +360,10 @@ function buildScript(tokens: Token[]): ShellScript {
   let continuing = false;
 
   const finishCommand = () => {
-    if (!command.words.length) {
+    const first = command.words[0];
+    if (!first) {
       throw new Reject();
     }
-    const first = command.words[0];
     // A command word starting with `%`, quoted or not, is a job: bash runs `fg`.
     if (first.assignment || first.text.startsWith("%") || (!first.quoted && RESERVED_WORDS.has(first.text))) {
       throw new Reject();
@@ -377,7 +379,7 @@ function buildScript(tokens: Token[]): ShellScript {
   const empty = () => !command.words.length && !command.redirects.length && !pipeline.length;
 
   for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
+    const token = itemAt(tokens, index);
     if (token.type === "word") {
       command.words.push(token.word);
       extend(token);

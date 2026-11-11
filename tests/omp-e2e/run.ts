@@ -404,6 +404,48 @@ const SCENARIOS: Scenario[] = [
       return problems;
     },
   },
+  {
+    // The agent calls lsp by writing its arguments to xd://lsp. OMP runs the
+    // lsp call as a call of its own, which this extension decides; the write
+    // itself goes through. If OMP stopped emitting the inner call, the
+    // decisions below would be missing.
+    name: "an lsp query skips review, an lsp edit is reviewed as its own call",
+    reviewer: "ai",
+    verdict: "deny",
+    steps: [
+      { name: "write", arguments: { path: "xd://lsp", content: '{"action":"status"}' } },
+      {
+        name: "write",
+        arguments: {
+          path: "xd://lsp",
+          content: '{"action":"rename","file":"notes.txt","line":1,"symbol":"notes","new_name":"renamed"}',
+        },
+      },
+    ],
+    check(result) {
+      const problems: string[] = [];
+      const routes = decisions(result).map(
+        (line) => `${line.actionSummary?.split(":")[0]} ${line.route}/${line.outcome}`,
+      );
+      const wanted = [
+        "write lsp_dispatch/allow",
+        "lsp lsp_read/allow",
+        "write lsp_dispatch/allow",
+        "lsp classifier/deny",
+      ];
+      expect(
+        problems,
+        JSON.stringify(routes) === JSON.stringify(wanted),
+        `decisions ${JSON.stringify(routes)}, wanted ${JSON.stringify(wanted)}`,
+      );
+      expect(
+        problems,
+        result.model.classifier.length === 1,
+        `classifier called ${result.model.classifier.length} times, wanted once`,
+      );
+      return problems;
+    },
+  },
 ];
 
 const NO_AUDIT = "no audit log";

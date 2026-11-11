@@ -2,7 +2,7 @@
 
 A fast path allows a tool call at once, without the classifier or you. Each is deliberately narrow: anything it cannot read exactly, or that touches a sensitive path, goes to review instead. This page lists what each one accepts; the [README](../README.md#how-a-tool-call-is-decided) shows where they sit among the other checks, and `/clearance explain` shows which one a given call would take.
 
-There are three: [workspace reads](#workspace-reads), [workspace writes](#workspace-writes) and [safe bash commands](#safe-bash-commands).
+There are four: [workspace reads](#workspace-reads), [workspace writes](#workspace-writes), [language server queries](#language-server-queries) and [safe bash commands](#safe-bash-commands).
 
 ## Workspace reads
 
@@ -30,7 +30,23 @@ Calls to OMP's own `write` and `edit` tools whose every destination, including `
 - the credential-like files listed above for reads, such as `.env` or `*.pem`;
 - writes that create or change a program: content starting with `#!` (OMP's `write` tool makes such a file executable) or a destination that is already executable. A program in the workspace can shadow a command on the shell's PATH.
 
-Not covered: language servers that run ordinary project files, which this fast path lets the agent write. The ESLint server loads `eslint.config.js`, rust-analyzer runs `build.rs` and proc macros, and the servers for Tailwind, Svelte, Gradle, sbt, Elixir, Zig and Nix (nixd) load or evaluate project code. OMP starts the server for a file type when a file of that type is written, so a write can make code run later without review. If such a server is installed, turn off `lsp.diagnosticsOnWrite` in OMP's settings (it is on by default) and leave `lsp.diagnosticsOnEdit` and `lsp.formatOnWrite` off (their default). Language servers then start only through the `lsp` tool, which is reviewed.
+Not covered: language servers that run ordinary project files, which this fast path lets the agent write. The ESLint server loads `eslint.config.js`, rust-analyzer runs `build.rs` and proc macros, and the servers for Tailwind, Svelte, Gradle, sbt, Elixir, Zig and Nix (nixd) load or evaluate project code. OMP starts the server for a file type when a file of that type is written, and when the agent asks it a question (see below), so a write can make code run later without review. If you have such a server installed and don't want that, disable it in OMP's user-level `~/.omp/agent/lsp.json`, for example `{"eslint": {"disabled": true}, "rust-analyzer": {"disabled": true}}`; the names are those of OMP's server list (`lsp` `status` shows the ones configured for a project).
+
+## Language server queries
+
+Calls to OMP's own `lsp` tool that only ask the language server a question or preview an edit:
+
+- `definition`, `type_definition`, `implementation`, `references`, `hover`, `symbols`, `status`, `capabilities`, and `diagnostics` on a file;
+- `rename` and `rename_file` with `apply: false`, and `code_actions` without `apply: true`, which list what would change without changing it.
+
+Every path the call names (`file`, and `new_name` for `rename_file`) must pass the [workspace read](#workspace-reads) checks; `*` (the whole workspace) is accepted for `symbols`. These always go to the session reviewer instead:
+
+- applied edits: `rename` and `rename_file` (they apply unless `apply` is false) and `code_actions` with `apply: true`. The language server decides which files an edit changes only after this decision, and OMP writes them without checking where they are; a code action can also run a command inside the server;
+- `diagnostics` on `*`, which runs the project's own checker (`cargo check`, `npx tsc`, `go build` or `pyright`), and `diagnostics` on a glob;
+- `reload` and `request` (any raw LSP method);
+- fields outside the tool's schema.
+
+The agent often calls `lsp` by writing its arguments to `xd://lsp` with the `write` tool. OMP then runs the `lsp` call as a separate tool call, which is decided as above, so that write is let through (route `lsp_dispatch`). This applies to `xd://lsp` only; other `xd://` devices, such as `xd://bash`, stay reviewed. Letting the write through does not reset the count of [consecutive denials](../README.md#reviewers).
 
 ## Safe bash commands
 

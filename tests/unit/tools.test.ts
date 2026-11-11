@@ -293,6 +293,7 @@ await test("name-based fast paths apply only to the host's builtin tools", async
     { toolName: "todo", input: { op: "done", task: "x" } },
     { toolName: "wait", input: {} },
     { toolName: "ask", input: { question: "Continue?" } },
+    { toolName: "lsp", input: { action: "hover", file: "a.ts", line: 1, symbol: "x" } },
     { toolName: "write", input: { path: "xd://lsp", content: '{"action":"status"}' } },
   ];
   for (const source of ["extension", "sdk", "mcp"]) {
@@ -620,11 +621,68 @@ await test("workspace write fast path rejects protected entries, rewritten path 
   }
 });
 
-await test("write xd://lsp goes through, other xd devices and shapes do not", async () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-lsp-"));
+await test("lsp queries and edit previews skip review; applied edits, builds and raw requests do not", async () => {
+  const root = mkdtempSync(join(tmpdir(), "omp-clearance-lsp-"));
+  const workspace = join(root, "workspace");
+  mkdirSync(join(workspace, "src"), { recursive: true });
+  mkdirSync(join(root, "outside"));
+  writeFileSync(join(workspace, "src", "a.ts"), "export const x = 1;\n");
   try {
     const route = (input: unknown, toolName = "lsp") =>
       staticRoute(toolName, input, { cwd: workspace, config: config(), tools: [], hasUI: false });
+    const file = "src/a.ts";
+    const skip = [
+      { action: "status" },
+      { action: "capabilities" },
+      { action: "symbols", file: "*", query: "Config" },
+      { action: "symbols", file },
+      { action: "hover", file, line: 1, symbol: "x" },
+      { action: "definition", file, line: 1, symbol: "x", timeout: 30 },
+      { action: "references", file: join(workspace, file), line: 1, symbol: "x" },
+      { action: "type_definition", file, line: 1 },
+      { action: "implementation", file, line: 1 },
+      { action: "diagnostics", file },
+      { action: "rename", file, line: 1, symbol: "x", new_name: "y", apply: false },
+      { action: "rename_file", file, new_name: "src/b.ts", apply: false },
+      { action: "code_actions", file, line: 1 },
+      { action: "code_actions", file, line: 1, query: "quickfix", apply: false },
+    ];
+    for (const input of skip) {
+      assert.equal(route(input), "lsp_read", JSON.stringify(input));
+    }
+    const reviewed = [
+      // Runs cargo check, npx tsc, go build or pyright in the workspace.
+      { action: "diagnostics", file: "*" },
+      // A glob can match files the read fast path would not read.
+      { action: "diagnostics", file: "src/*.ts" },
+      // Applied edits: the language server picks the files.
+      { action: "rename", file, line: 1, symbol: "x", new_name: "y" },
+      { action: "rename", file, line: 1, symbol: "x", new_name: "y", apply: true },
+      { action: "rename_file", file, new_name: "src/b.ts" },
+      { action: "code_actions", file, line: 1, query: "0", apply: true },
+      { action: "reload" },
+      { action: "request", file, query: "workspace/executeCommand", payload: "{}" },
+      // Paths the read fast path would not read.
+      { action: "hover", file: ".env", line: 1 },
+      { action: "hover", file: "../outside/a.ts", line: 1 },
+      { action: "rename_file", file, new_name: "../outside/b.ts", apply: false },
+      { action: "symbols", file: "~/.ssh/config" },
+      { action: "hover", file: 42 },
+      { action: "capabilities", file: "*" },
+      { action: "code_actions", file: "*" },
+      { action: "rename_file", file, new_name: "*", apply: false },
+      // Fields and values outside the tool's schema.
+      { action: "hover", file, payload: "{}" },
+      { action: "hover", file, extra: true },
+      { action: "rename", file, new_name: "y", apply: "false" },
+      { action: "HOVER", file },
+      { file },
+      "hover",
+    ];
+    for (const input of reviewed) {
+      assert.equal(route(input), null, JSON.stringify(input));
+    }
+
     assert.equal(route({ path: "xd://lsp", content: '{"action":"rename","new_name":"y"}' }, "write"), "lsp_dispatch");
     for (const input of [
       { path: "xd://bash", content: '{"command":"id"}' },
@@ -637,7 +695,7 @@ await test("write xd://lsp goes through, other xd devices and shapes do not", as
     }
     assert.equal(route({ path: "xd://lsp", content: "{}" }, "edit"), null);
   } finally {
-    rmSync(workspace, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

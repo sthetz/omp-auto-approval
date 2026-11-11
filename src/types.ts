@@ -100,6 +100,7 @@ export type RouteName =
   | "tool_allowlist"
   | "readonly"
   | "workspace_write"
+  | "lsp_read"
   | "lsp_dispatch"
   | "safe_command"
   | "session_approval"

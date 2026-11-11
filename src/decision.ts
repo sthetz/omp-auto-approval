@@ -25,6 +25,7 @@ import {
   isBuiltinTool,
   isLocalStateTool,
   isLspDispatch,
+  isLspReadFastPath,
   isInteractiveUiOnlyTool,
   isManualOnlyTool,
   isReadOnlyTool,
@@ -227,6 +228,13 @@ function evaluateStatic(call: CanonicalToolCall & { toolName: string }, state: D
     isWorkspaceWriteFastPath(call.input, state.cwd, [configPath(), userRulesPath(), ...rules.files])
   ) {
     return verdict("allow", "workspace_write");
+  }
+  if (
+    builtin &&
+    call.toolName === "lsp" &&
+    isLspReadFastPath(call.input, resolveReadRoots(state.cwd, config.readRoots))
+  ) {
+    return verdict("allow", "lsp_read");
   }
   if (builtin && call.toolName === "write" && isLspDispatch(call.input)) {
     return verdict("allow", "lsp_dispatch");

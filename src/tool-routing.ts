@@ -238,6 +238,68 @@ export function isWorkspaceReadFastPath(input: unknown, roots: ReadRoots): boole
   return targets.every((target) => isReadTarget(target, roots));
 }
 
+// OMP's `lsp` actions that only ask a language server a question. OMP lists
+// the same ones as its read-only set. `diagnostics` on `*` is the exception:
+// it runs the project's checker (`cargo check`, `npx tsc`, `go build`,
+// `pyright`) in the workspace, so it is reviewed below.
+const LSP_QUERY_ACTIONS = new Set([
+  "definition",
+  "type_definition",
+  "implementation",
+  "references",
+  "hover",
+  "symbols",
+  "status",
+  "capabilities",
+  "diagnostics",
+]);
+
+// The `lsp` tool's parameters in OMP 18.18.8, except `payload`, which only
+// `request` (a raw LSP method) uses. Anything else is reviewed.
+const LSP_QUERY_FIELDS = new Set(["action", "file", "line", "symbol", "query", "new_name", "apply", "timeout"]);
+
+/**
+ * A path an `lsp` call names: one plain path the read fast path accepts. OMP
+ * takes it literally for most actions but as a glob for `diagnostics`, so
+ * glob characters are reviewed.
+ */
+function isLspTarget(value: unknown, roots: ReadRoots): boolean {
+  return value === undefined || (typeof value === "string" && !/[*?[\]{}]/.test(value) && isReadTarget(value, roots));
+}
+
+/**
+ * LSP read fast path: an `lsp` call that only asks the language server a
+ * question, or previews an edit without applying it, about files the read
+ * fast path could read anyway. `rename` and `rename_file` apply unless
+ * `apply` is false; `code_actions` applies only when `apply` is true. Applied
+ * edits are reviewed: the language server picks the files they change, after
+ * this decision, and OMP writes them without any path check.
+ */
+export function isLspReadFastPath(input: unknown, roots: ReadRoots): boolean {
+  if (!isRecord(input) || Object.keys(input).some((key) => !LSP_QUERY_FIELDS.has(key) && input[key] !== undefined)) {
+    return false;
+  }
+  const { action, file, apply } = input;
+  if (apply !== undefined && typeof apply !== "boolean") {
+    return false;
+  }
+  const isPreview =
+    ((action === "rename" || action === "rename_file") && apply === false) ||
+    (action === "code_actions" && apply !== true);
+  if (typeof action !== "string" || !(LSP_QUERY_ACTIONS.has(action) || isPreview)) {
+    return false;
+  }
+  // `*` means the whole workspace. For `symbols` that is a symbol search;
+  // `diagnostics` on `*` runs the project's checker, and the other actions
+  // have no use for it.
+  if (file === "*" && action === "symbols") {
+    return true;
+  }
+  // rename_file's new_name is a path; rename's is the new symbol name.
+  const targets = action === "rename_file" ? [file, input.new_name] : [file];
+  return targets.every((target) => isLspTarget(target, roots));
+}
+
 /**
  * The agent can call a tool by writing its JSON arguments to `xd://<tool>`.
  * OMP then runs that tool as a call of its own, which reaches this extension

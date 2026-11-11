@@ -200,7 +200,7 @@ function readsFiles(command: ParsedCommand, context: RuleContext, operands = com
  * operand, or one that bash may drop (a glob, under nullglob), the search
  * covers the working directory too.
  */
-function recursiveReadIsClean(command: ParsedCommand, context: RuleContext, operands: ShellWord[], paths: string[], filter?: FileFilter): boolean {
+function recursiveReadIsClean(context: RuleContext, operands: ShellWord[], paths: string[], filter?: FileFilter): boolean {
   const roots = !operands.length || operands.some((word) => word.expands) ? [...paths, context.directory] : paths;
   return roots.every((path) => context.treeIsClean(path, filter));
 }
@@ -239,7 +239,7 @@ function checkGrep(command: ParsedCommand, context: RuleContext): boolean {
   // working directory instead.
   const filter = grepFilter(command);
   return has(command, "recursive")
-    ? recursiveReadIsClean(command, context, operands, paths, filter)
+    ? recursiveReadIsClean(context, operands, paths, filter)
     : paths.every((path) => context.treeIsClean(path, filter));
 }
 

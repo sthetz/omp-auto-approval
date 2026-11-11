@@ -17,7 +17,6 @@ export default defineConfig(
       "@typescript-eslint/no-confusing-void-expression": "off",
       "@typescript-eslint/no-deprecated": "off",
       "@typescript-eslint/no-dynamic-delete": "off",
-      "@typescript-eslint/no-empty-object-type": "off",
       "@typescript-eslint/no-explicit-any": "off",
       "@typescript-eslint/no-misused-spread": "off",
       "@typescript-eslint/no-non-null-assertion": "off",

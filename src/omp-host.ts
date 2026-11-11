@@ -5,7 +5,8 @@ import { getString, toRecord } from "./common.js";
 import { runDecision, type CanonicalToolCall, type Decision } from "./decision.js";
 import type { SessionApprovalStore } from "./session-approval-store.js";
 
-export type ToolCallDecision = {} | { block: true; reason: string };
+/** OMP runs the call on an empty object and blocks it on `block: true`. */
+export type ToolCallDecision = Record<string, never> | { block: true; reason: string };
 
 /** OMP event → canonical tool call. Every event field is untrusted. */
 export function canonicalToolCall(event: unknown): CanonicalToolCall {

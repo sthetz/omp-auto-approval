@@ -3,6 +3,11 @@ import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 
+/** An empty record with no prototype, so that a key such as `__proto__` is just a key. */
+export function dictionary<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
 export function toRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }

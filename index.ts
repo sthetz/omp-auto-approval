@@ -388,7 +388,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
     agentMessage = undefined;
     const systemPrompt = toRecord(event).systemPrompt;
     if (Array.isArray(systemPrompt)) {
-      return { systemPrompt: [...systemPrompt, SYSTEM_PROMPT_NOTE] };
+      return { systemPrompt: [...(systemPrompt as unknown[]), SYSTEM_PROMPT_NOTE] };
     }
     if (typeof systemPrompt === "string") {
       return { systemPrompt: `${systemPrompt}\n\n${SYSTEM_PROMPT_NOTE}` };

@@ -5,6 +5,7 @@ import { commandSegments, compileCommandPattern, type CommandPattern } from "./c
 import { allowPrefixProblem } from "./allow-prefix.js";
 import { configPath, extensionRoot } from "./extension-config.js";
 import { parseJsonc } from "./jsonc.js";
+import { dictionary } from "./common.js";
 
 /**
  * Command rules: which programs, options and operands the bash fast path
@@ -371,10 +372,10 @@ function compileEntry(
     anyOptions: false,
     except: [...context.inheritedExcept],
     flags: "",
-    values: Object.create(null),
+    values: dictionary(),
     long: [],
-    longValues: Object.create(null),
-    aliases: Object.create(null),
+    longValues: dictionary(),
+    aliases: dictionary(),
     numeric: false,
     stopAtOperand: boolean(object.stopAtOperand, `${where}.stopAtOperand`),
     opensNoFiles: boolean(object.opensNoFiles, `${where}.opensNoFiles`),
@@ -773,7 +774,8 @@ function mergeEntry(
         `${where}.options`,
       );
     } else if (key === "except" && Array.isArray(value) && Array.isArray(base.except)) {
-      merged.except = [...base.except, ...value.filter((option) => !(base.except as unknown[]).includes(option))];
+      const baseExcept = base.except as unknown[];
+      merged.except = [...baseExcept, ...(value as unknown[]).filter((option) => !baseExcept.includes(option))];
     } else if (key === "subcommands" && base.subcommands !== undefined) {
       const subcommands = subcommandsByName(base.subcommands, `${where}.subcommands`);
       for (const [userKey, entry] of Object.entries(record(value, `${where}.subcommands`))) {
@@ -851,10 +853,7 @@ export function loadCommandRules(path = userRulesPath(), freshDefaults = false):
   try {
     readUserFile(path, layer, []);
     // Without a prototype, so that a program named `__proto__` is just a name.
-    const programs: Record<string, unknown> = Object.assign(
-      Object.create(null),
-      record(document.programs ?? {}, "programs"),
-    );
+    const programs: Record<string, unknown> = Object.assign(dictionary(), record(document.programs ?? {}, "programs"));
     const rules = [...base.rules];
     for (const { id, file } of layer.disable) {
       if (!id.startsWith("program:")) {

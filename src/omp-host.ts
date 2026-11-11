@@ -202,7 +202,7 @@ export function canonicalContext(value: unknown): ExtensionContextLike | null {
     const getAvailable = registryRecord.getAvailable;
     modelRegistry.getAvailable = async () => {
       const available: unknown = await getAvailable.call(registryRecord);
-      return Array.isArray(available) ? available : [];
+      return Array.isArray(available) ? (available as unknown[]) : [];
     };
   }
   if (typeof registryRecord.getApiKeyAndHeaders === "function") {

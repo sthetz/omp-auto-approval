@@ -312,7 +312,7 @@ export function isManualOnlyTool(toolName: string, toolDefinition?: unknown): bo
   const record = toRecord(toolDefinition);
   if (typeof record.requiresUserInteraction === "function") {
     try {
-      if (record.requiresUserInteraction()) {
+      if ((record as { requiresUserInteraction: () => unknown }).requiresUserInteraction()) {
         return true;
       }
     } catch {

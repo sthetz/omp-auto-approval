@@ -1,3 +1,4 @@
+import { dictionary } from "./common.js";
 /**
  * JSON with comments (`//`, `/* … *\/`) and trailing commas, for files people
  * write by hand. Stricter than JSON.parse in one way: a key repeated in an
@@ -69,7 +70,7 @@ export function parseJsonc(text: string): unknown {
     const char = text[index];
     if (char === "{") {
       index += 1;
-      const object: Record<string, unknown> = Object.create(null);
+      const object = dictionary<unknown>();
       skip();
       while (text[index] !== "}") {
         if (text[index] !== '"') {

@@ -17,7 +17,7 @@ An [OMP](https://github.com/can1357/oh-my-pi) extension that decides, for every 
 ```bash
 omp plugin install https://github.com/sthetz/omp-clearance
 # or a pinned release:
-omp plugin install github:sthetz/omp-clearance#v0.5.1
+omp plugin install github:sthetz/omp-clearance#v0.5.2
 ```
 
 Restart OMP, then choose the reviewer recommended for interactive use (the default is `off`):

@@ -87,7 +87,13 @@ function kind(decision: string, hidden: boolean): string {
 
 function workspaceFixture(root: string): string {
   const workspace = join(root, "work");
-  for (const [path, text] of Object.entries({ "notes.txt": "alpha\n", "src/a.ts": "a\n", "dir/d.txt": "d\n", ".env": "SECRET=1\n", "a b": "x\n" })) {
+  for (const [path, text] of Object.entries({
+    "notes.txt": "alpha\n",
+    "src/a.ts": "a\n",
+    "dir/d.txt": "d\n",
+    ".env": "SECRET=1\n",
+    "a b": "x\n",
+  })) {
     mkdirSync(join(workspace, path, ".."), { recursive: true });
     writeFileSync(join(workspace, path), text);
   }
@@ -117,7 +123,10 @@ async function main(): Promise<void> {
     const sources: { name: string; private: boolean; commands: string[] }[] = [];
     if (source === "all" || source === "synthetic") {
       // From both sides' tables, so that a removed option or program shows too.
-      const commands = new Set([...syntheticCommands(before.rules as never), ...syntheticCommands(after.rules as never)]);
+      const commands = new Set([
+        ...syntheticCommands(before.rules as never),
+        ...syntheticCommands(after.rules as never),
+      ]);
       sources.push({ name: "synthetic", private: false, commands: [...commands] });
     }
     if (source === "all" || source === "corpus") {
@@ -144,7 +153,8 @@ async function main(): Promise<void> {
           continue;
         }
         const [from, to] = [kind(was, hidden), kind(now, hidden)];
-        const key = from === to ? `${to} (${to === "fast path" ? "pinned command" : "error"} changed)` : `${from} → ${to}`;
+        const key =
+          from === to ? `${to} (${to === "fast path" ? "pinned command" : "error"} changed)` : `${from} → ${to}`;
         const list = changes.get(key) ?? [];
         list.push(command);
         changes.set(key, list);

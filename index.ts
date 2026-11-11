@@ -19,7 +19,12 @@ type ExtensionAPI = {
     name: string,
     definition: {
       description: string;
-      getArgumentCompletions?: (argumentPrefix: unknown) => Array<{ value: string; label?: string; description?: string }> | null | Promise<Array<{ value: string; label?: string; description?: string }> | null>;
+      getArgumentCompletions?: (
+        argumentPrefix: unknown,
+      ) =>
+        | Array<{ value: string; label?: string; description?: string }>
+        | null
+        | Promise<Array<{ value: string; label?: string; description?: string }> | null>;
       handler: (args: unknown, ctx: unknown) => Promise<void> | void;
     },
   ) => void;
@@ -44,7 +49,8 @@ const ROUTE_EXPLANATIONS: Record<Decision["route"], string> = {
   local_state: "allowed without review: local session state (todo, wait)",
   ui_only: "allowed without review: interactive ask with no remote content",
   tool_allowlist: "allowed without review: tool is listed in reviewExemptTools",
-  readonly: "allowed without review: read-only builtin tool, every target is a non-sensitive path in the workspace or readRoots",
+  readonly:
+    "allowed without review: read-only builtin tool, every target is a non-sensitive path in the workspace or readRoots",
   workspace_write: "allowed without review: write inside the workspace, outside protected entries",
   safe_command: "allowed without review: every command is read-only by the command rules",
   manual_unavailable: "blocked: manual review needs an interactive UI, but none is available",
@@ -98,7 +104,9 @@ function rulesStatusText(rules: CommandRules): string[] {
   const [main, ...included] = rules.files;
   return [
     `command rules: ${defaultRulesPath()}`,
-    main ? `user rules: ${main}${included.length ? ` (including ${included.join(", ")})` : ""}` : `user rules: none (${userRulesPath()} does not exist)`,
+    main
+      ? `user rules: ${main}${included.length ? ` (including ${included.join(", ")})` : ""}`
+      : `user rules: none (${userRulesPath()} does not exist)`,
   ];
 }
 
@@ -132,14 +140,20 @@ const COMMAND_ARGUMENTS = [
   { value: "model", label: "model", description: "Select approval classifier model" },
   { value: "model current", label: "model current", description: "Use the active OMP session model for approval" },
   { value: "rules", label: "rules", description: "Show the command rules in use: rules [program | rule id]" },
-  { value: "explain", label: "explain", description: "Show how a tool call would be routed: explain <tool> <path | JSON | command>" },
+  {
+    value: "explain",
+    label: "explain",
+    description: "Show how a tool call would be routed: explain <tool> <path | JSON | command>",
+  },
 ];
 
-function getClearanceArgumentCompletions(argumentPrefix: string): Array<{ value: string; label: string; description: string }> | null {
+function getClearanceArgumentCompletions(
+  argumentPrefix: string,
+): Array<{ value: string; label: string; description: string }> | null {
   const normalized = argumentPrefix.trimStart().toLowerCase();
-  const filtered = COMMAND_ARGUMENTS.filter((item) => (
-    item.value.startsWith(normalized) || item.label.includes(normalized)
-  ));
+  const filtered = COMMAND_ARGUMENTS.filter(
+    (item) => item.value.startsWith(normalized) || item.label.includes(normalized),
+  );
   return filtered.length ? filtered : null;
 }
 
@@ -193,7 +207,11 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
   function explain(rest: string, ctx: ExtensionContextLike): void {
     const firstWord = rest.split(/\s+/, 1)[0] ?? "";
     if (!firstWord) {
-      notify(ctx, "Usage: /clearance explain <tool> [path | JSON arguments | bash command], or a bash command", "warning");
+      notify(
+        ctx,
+        "Usage: /clearance explain <tool> [path | JSON arguments | bash command], or a bash command",
+        "warning",
+      );
       return;
     }
     const tools = canonicalTools(omp.getAllTools?.());
@@ -207,28 +225,40 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
     }
     const source = toRecord(toRecord(findToolDefinition(toolName, tools)).sourceInfo).source;
     const call = { toolName, input: parsed.input };
-    const decision = decide(call, snapshotDecisionState(call, ctx, config, approvals, { reviewer: reviewerState.reviewer, tools, rules }));
+    const decision = decide(
+      call,
+      snapshotDecisionState(call, ctx, config, approvals, { reviewer: reviewerState.reviewer, tools, rules }),
+    );
     const plan = decision.plan;
     const escalation = decision.staticVerdict?.escalation;
-    notify(ctx, [
-      ...(asCommand ? [`note: no tool named "${firstWord}" in this session; explained as a bash command`] : []),
-      `reviewer: ${reviewerState.reviewer} (from ${reviewerState.source})`,
-      `tool: ${toolName}${typeof source === "string" ? ` (${source})` : ""}`,
-      `arguments: ${JSON.stringify(parsed.input)}`,
-      `route: ${decisionExplanation(decision)}`,
-      ...(plan && plan.command !== toRecord(parsed.input).command ? [`runs as: ${plan.command}`] : []),
-      ...(plan?.cwd ? [`runs in: ${plan.cwd}`] : []),
-      ...(plan ? [`allowed by: ${plan.rules.map((used) => `${used.id} (${used.source})`).join(", ")}`] : []),
-      ...(plan?.rules.some((used) => used.source !== "default" && used.source !== "config.jsonc")
-        ? ["note: entries from your rules files are not checked by the program oracle, as the built-in ones are"]
-        : []),
-      ...(escalation ? [
-        `rule: ${escalation.rule.id} (${escalation.rule.outcome}, ${escalation.rule.source})${escalation.textOnly ? `; matched only quoted text, so reviewed instead` : ""}`,
-        ...(escalation.rule.why ? [`why: ${escalation.rule.why}`] : []),
-      ] : []),
-      ...(toolName === "bash" && rules.problem ? [rulesProblemText(rules)] : []),
-      ...(toolName === "bash" && approvals.shellLatch(sessionKey(ctx)) ? [`note: the bash fast path is off for this session: an approved command used ${approvals.shellLatch(sessionKey(ctx))}`] : []),
-    ].join("\n"));
+    notify(
+      ctx,
+      [
+        ...(asCommand ? [`note: no tool named "${firstWord}" in this session; explained as a bash command`] : []),
+        `reviewer: ${reviewerState.reviewer} (from ${reviewerState.source})`,
+        `tool: ${toolName}${typeof source === "string" ? ` (${source})` : ""}`,
+        `arguments: ${JSON.stringify(parsed.input)}`,
+        `route: ${decisionExplanation(decision)}`,
+        ...(plan && plan.command !== toRecord(parsed.input).command ? [`runs as: ${plan.command}`] : []),
+        ...(plan?.cwd ? [`runs in: ${plan.cwd}`] : []),
+        ...(plan ? [`allowed by: ${plan.rules.map((used) => `${used.id} (${used.source})`).join(", ")}`] : []),
+        ...(plan?.rules.some((used) => used.source !== "default" && used.source !== "config.jsonc")
+          ? ["note: entries from your rules files are not checked by the program oracle, as the built-in ones are"]
+          : []),
+        ...(escalation
+          ? [
+              `rule: ${escalation.rule.id} (${escalation.rule.outcome}, ${escalation.rule.source})${escalation.textOnly ? `; matched only quoted text, so reviewed instead` : ""}`,
+              ...(escalation.rule.why ? [`why: ${escalation.rule.why}`] : []),
+            ]
+          : []),
+        ...(toolName === "bash" && rules.problem ? [rulesProblemText(rules)] : []),
+        ...(toolName === "bash" && approvals.shellLatch(sessionKey(ctx))
+          ? [
+              `note: the bash fast path is off for this session: an approved command used ${approvals.shellLatch(sessionKey(ctx))}`,
+            ]
+          : []),
+      ].join("\n"),
+    );
   }
 
   function persist(next: ClearanceConfig, ctx: ExtensionContextLike): void {
@@ -292,7 +322,11 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
             notify(ctx, rulesProblemText(rules), "warning");
           }
         } else if (rest) {
-          notify(ctx, describeRule(rules, rest) ?? `No program or rule named "${rest}". /clearance rules lists them.`, "info");
+          notify(
+            ctx,
+            describeRule(rules, rest) ?? `No program or rule named "${rest}". /clearance rules lists them.`,
+            "info",
+          );
         } else {
           notify(ctx, rulesOverview(rules));
         }
@@ -308,13 +342,21 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
             `config: ${configPath()}`,
             `audit log: ${logPath()}`,
             ...rulesStatusText(rules),
-            ...(approvals.shellLatch(sessionKey(ctx)) ? [`bash fast path: off for this session (an approved command used ${approvals.shellLatch(sessionKey(ctx))})`] : []),
+            ...(approvals.shellLatch(sessionKey(ctx))
+              ? [
+                  `bash fast path: off for this session (an approved command used ${approvals.shellLatch(sessionKey(ctx))})`,
+                ]
+              : []),
             ...(loadResult.notice ? [loadResult.notice] : []),
           ].join("\n"),
         );
         break;
       default:
-        notify(ctx, `Unknown /clearance subcommand "${command}". Use status, ai, manual, off, model, rules, or explain.`, "warning");
+        notify(
+          ctx,
+          `Unknown /clearance subcommand "${command}". Use status, ai, manual, off, model, rules, or explain.`,
+          "warning",
+        );
         break;
     }
   }
@@ -397,7 +439,10 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      return { block: true, reason: `omp-clearance failed to decide this tool call: ${reason}. Do not retry; report this error to the user.` };
+      return {
+        block: true,
+        reason: `omp-clearance failed to decide this tool call: ${reason}. Do not retry; report this error to the user.`,
+      };
     }
   });
 

@@ -10,11 +10,15 @@ export async function writeAudit(config: ClearanceConfig, entry: AuditEntry | Sh
   const path = logPath();
   try {
     await mkdir(dirname(path), { recursive: true });
-    await appendFile(path, `${JSON.stringify({
-      timestamp: new Date().toISOString(),
-      extension: "omp-clearance",
-      ...entry,
-    })}\n`, "utf-8");
+    await appendFile(
+      path,
+      `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        extension: "omp-clearance",
+        ...entry,
+      })}\n`,
+      "utf-8",
+    );
   } catch {
     // Audit logging must not affect approval handling.
   }

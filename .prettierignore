@@ -1,0 +1,7 @@
+# Prettier formats the TypeScript only. The rules files in config/ are laid
+# out by hand as option tables (and go away with the DSL); the schemas and
+# Markdown are left as written.
+*.json
+*.jsonc
+*.md
+*.yml

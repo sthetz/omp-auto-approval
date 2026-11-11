@@ -84,7 +84,10 @@ export function loadReviewerState(
 }
 
 /** Persist one reviewer for every current and future OMP extension instance. */
-export function saveReviewerState(reviewer: Reviewer, path = reviewerStatePath()): { success: boolean; error?: string } {
+export function saveReviewerState(
+  reviewer: Reviewer,
+  path = reviewerStatePath(),
+): { success: boolean; error?: string } {
   const tmpPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
     writeFileSync(tmpPath, `${JSON.stringify({ reviewer }, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });

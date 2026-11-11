@@ -9,10 +9,17 @@ export const recognizerParser: ShellParser = (command) => {
   }
   return {
     connectors: script.connectors,
-    pipelines: script.pipelines.map((pipeline) => pipeline.map((shellCommand) => ({
-      words: shellCommand.words.map(({ text, expands }) => ({ text, expands })),
-      redirects: shellCommand.redirects.map(({ fd, kind, target }) => ({ fd, target, duplicate: kind === "duplicate", read: kind === "read" })),
-    }))),
+    pipelines: script.pipelines.map((pipeline) =>
+      pipeline.map((shellCommand) => ({
+        words: shellCommand.words.map(({ text, expands }) => ({ text, expands })),
+        redirects: shellCommand.redirects.map(({ fd, kind, target }) => ({
+          fd,
+          target,
+          duplicate: kind === "duplicate",
+          read: kind === "read",
+        })),
+      })),
+    ),
   };
 };
 

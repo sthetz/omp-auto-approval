@@ -9,6 +9,7 @@ export const SCRIPT_PROGRAMS = new Set(["xargs", "parallel", "sed", "awk", "gawk
 // Shells, interpreters, and wrappers that run another command. Allowing the
 // bare program would allow any code; a prefix must name a specific
 // invocation, such as `python -m pytest` or `npm test`.
+// prettier-ignore
 const CODE_RUNNERS = new Set([
   "sh", "bash", "zsh", "dash", "fish", "ksh",
   "python", "python3", "node", "deno", "bun", "ruby", "perl", "php", "lua", "npx",

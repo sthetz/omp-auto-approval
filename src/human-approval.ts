@@ -19,7 +19,9 @@ function formatDecision(decision?: ClassifierDecision): string {
     decision.risk_level ? `Risk: ${decision.risk_level}` : null,
     decision.user_authorization ? `Authorization: ${decision.user_authorization}` : null,
     decision.rationale ? `Reason: ${decision.rationale}` : null,
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export async function requestHumanApproval(
@@ -57,7 +59,9 @@ export async function requestHumanApproval(
     formatDecision(options.classifierDecision),
     "",
     options.classifierDecision || options.failureReason ? "Override this decision?" : "Allow it?",
-  ].filter((line) => line !== null).join("\n");
+  ]
+    .filter((line) => line !== null)
+    .join("\n");
 
   const choices = [ALLOW_ONCE, ALLOW_EXACT, REJECT, REJECT_WITH_REASON, ...(ctx.abort ? [REJECT_AND_STOP] : [])];
   // The cursor starts on Reject, so Enter without reading rejects. When
@@ -65,11 +69,13 @@ export async function requestHumanApproval(
   // user moved to; it calls onTimeout first, so an answer after that is the
   // timeout's, not the user's, and rejects.
   let timedOut = false;
-  const selected = await ctx.ui.select(
-    `${options.title ?? "omp-clearance"}\n${details}`,
-    choices,
-    { timeout: options.timeoutSeconds * 1000, onTimeout: () => { timedOut = true; }, initialIndex: choices.indexOf(REJECT) },
-  );
+  const selected = await ctx.ui.select(`${options.title ?? "omp-clearance"}\n${details}`, choices, {
+    timeout: options.timeoutSeconds * 1000,
+    onTimeout: () => {
+      timedOut = true;
+    },
+    initialIndex: choices.indexOf(REJECT),
+  });
 
   if (timedOut || !selected) {
     return { approved: false, state: "timeout", reason: "Manual approval timed out." };

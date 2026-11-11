@@ -8,17 +8,17 @@ const ANSI_SGR_PATTERN = /(\x1b\[[0-9;]*m)/g;
  */
 export function columnWidth(char: string): number {
   const code = char.codePointAt(0) ?? 0;
-  return (
-    (code >= 0x1100 && code <= 0x115f)
-    || (code >= 0x2e80 && code <= 0xa4cf)
-    || (code >= 0xac00 && code <= 0xd7a3)
-    || (code >= 0xf900 && code <= 0xfaff)
-    || (code >= 0xfe30 && code <= 0xfe4f)
-    || (code >= 0xff00 && code <= 0xff60)
-    || (code >= 0xffe0 && code <= 0xffe6)
-    || (code >= 0x20000 && code <= 0x2fffd)
-    || (code >= 0x30000 && code <= 0x3fffd)
-  ) ? 2 : 1;
+  return (code >= 0x1100 && code <= 0x115f) ||
+    (code >= 0x2e80 && code <= 0xa4cf) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe30 && code <= 0xfe4f) ||
+    (code >= 0xff00 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6) ||
+    (code >= 0x20000 && code <= 0x2fffd) ||
+    (code >= 0x30000 && code <= 0x3fffd)
+    ? 2
+    : 1;
 }
 
 /** @deprecated See columnWidth(). */
@@ -110,7 +110,6 @@ type ModelItem = {
   model?: unknown;
 };
 
-
 function normalizeRenderWidth(width: number): number {
   return Number.isFinite(width) ? Math.max(1, Math.trunc(width)) : 1;
 }
@@ -169,9 +168,7 @@ async function loadTuiTextUtils(): Promise<TuiTextUtils> {
 
 function fitLineToWidth(line: string, width: number, textUtils: TuiTextUtils): string {
   const maxWidth = normalizeRenderWidth(width);
-  return textUtils.visibleWidth(line) <= maxWidth
-    ? line
-    : textUtils.truncateToWidth(line, maxWidth);
+  return textUtils.visibleWidth(line) <= maxWidth ? line : textUtils.truncateToWidth(line, maxWidth);
 }
 
 function style(theme: ThemeLike, name: string, text: string): string {
@@ -248,7 +245,10 @@ async function loadModelItems(ctx: ExtensionContextLike, config: ClearanceConfig
   await Promise.resolve(ctx.modelRegistry?.refresh?.());
   const available = await Promise.resolve(ctx.modelRegistry?.getAvailable?.() ?? []);
   const currentRef = selectedModelRef(config, ctx.model);
-  return sortModels(available.map(normalizeModel).filter((item): item is ModelItem => Boolean(item)), currentRef);
+  return sortModels(
+    available.map(normalizeModel).filter((item): item is ModelItem => Boolean(item)),
+    currentRef,
+  );
 }
 
 function renderSearchInput(query: string, focused: boolean): string {
@@ -272,7 +272,10 @@ function createSelectorComponent(
     ...items,
   ];
   let query = "";
-  let selectedIndex = Math.max(0, allItems.findIndex((item) => item.value === config.classifierModel));
+  let selectedIndex = Math.max(
+    0,
+    allItems.findIndex((item) => item.value === config.classifierModel),
+  );
   let filtered = allItems;
   let focused = false;
 
@@ -305,11 +308,16 @@ function createSelectorComponent(
       const item = filtered[i];
       if (!item) continue;
       const isSelected = i === selectedIndex;
-      const isCurrent = item.value === config.classifierModel || (config.classifierModel === null && item.value === null);
+      const isCurrent =
+        item.value === config.classifierModel || (config.classifierModel === null && item.value === null);
       const modelText = `${isSelected ? "→ " : "  "}${item.id}`;
       const providerBadge = style(theme, "muted", `[${item.provider}]`);
       const checkmark = isCurrent || item.value === currentRef ? style(theme, "success", " ✓") : "";
-      lines.push(isSelected ? `${style(theme, "accent", modelText)} ${providerBadge}${checkmark}` : `${modelText} ${providerBadge}${checkmark}`);
+      lines.push(
+        isSelected
+          ? `${style(theme, "accent", modelText)} ${providerBadge}${checkmark}`
+          : `${modelText} ${providerBadge}${checkmark}`,
+      );
     }
 
     if (startIndex > 0 || endIndex < filtered.length) {
@@ -387,15 +395,19 @@ async function selectClassifierModelWithTextUtils(
   textUtils: TuiTextUtils,
 ): Promise<string | null | undefined> {
   const items = await loadModelItems(ctx, config);
-  return ctx.ui?.custom?.<string | null | undefined>((tui: TuiLike, theme: ThemeLike, keybindings: KeybindingsLike, done: (value: string | null | undefined) => void) => (
-    createSelectorComponent(tui, items, ctx, config, theme, keybindings, textUtils, (value) => {
-      done(value);
-      tui.requestRender?.();
-    })
-  ));
+  return ctx.ui?.custom?.<string | null | undefined>(
+    (tui: TuiLike, theme: ThemeLike, keybindings: KeybindingsLike, done: (value: string | null | undefined) => void) =>
+      createSelectorComponent(tui, items, ctx, config, theme, keybindings, textUtils, (value) => {
+        done(value);
+        tui.requestRender?.();
+      }),
+  );
 }
 
-export async function selectClassifierModel(ctx: ExtensionContextLike, config: ClearanceConfig): Promise<string | null | undefined> {
+export async function selectClassifierModel(
+  ctx: ExtensionContextLike,
+  config: ClearanceConfig,
+): Promise<string | null | undefined> {
   if (ctx.mode !== undefined && ctx.mode !== "tui") {
     return selectClassifierModelFallback(ctx, config);
   }
@@ -408,7 +420,10 @@ export async function selectClassifierModel(ctx: ExtensionContextLike, config: C
   return selectClassifierModelFallback(ctx, config);
 }
 
-async function selectClassifierModelFallback(ctx: ExtensionContextLike, config: ClearanceConfig): Promise<string | null | undefined> {
+async function selectClassifierModelFallback(
+  ctx: ExtensionContextLike,
+  config: ClearanceConfig,
+): Promise<string | null | undefined> {
   if (!ctx.ui?.select) {
     ctx.ui?.notify?.(`approval classifier model: ${config.classifierModel ?? "current"}`);
     return undefined;

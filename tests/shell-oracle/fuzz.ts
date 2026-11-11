@@ -15,27 +15,117 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-const PLAIN = ["a", "b", "ls", "git", "status", "x.txt", "notes.txt", "dir/d.txt", "-l", "-rf", "--opt", "--opt=v", "2", "1a", "é"];
+const PLAIN = [
+  "a",
+  "b",
+  "ls",
+  "git",
+  "status",
+  "x.txt",
+  "notes.txt",
+  "dir/d.txt",
+  "-l",
+  "-rf",
+  "--opt",
+  "--opt=v",
+  "2",
+  "1a",
+  "é",
+];
 // Characters with a meaning somewhere in bash's grammar.
-const SPECIAL = ["#", "~", "*", "?", "[", "]", "{", "}", ",", "..", "!", "=", ":", "\\", "'", "\"", "$", "`", "(", ")", "<", ">", "&", "|", ";", " ", "\t", "\n", "-", "/", "@", "%", "^"];
+const SPECIAL = [
+  "#",
+  "~",
+  "*",
+  "?",
+  "[",
+  "]",
+  "{",
+  "}",
+  ",",
+  "..",
+  "!",
+  "=",
+  ":",
+  "\\",
+  "'",
+  '"',
+  "$",
+  "`",
+  "(",
+  ")",
+  "<",
+  ">",
+  "&",
+  "|",
+  ";",
+  " ",
+  "\t",
+  "\n",
+  "-",
+  "/",
+  "@",
+  "%",
+  "^",
+];
 const ATOMS = [
-  "~", "~/x", "~root", "a=~/y", "a=x:~/y", "'a'=~", "--x=~/y",
-  "*", "*.ts", "?.txt", "[ab]", "{a,b}", "{1..2}", "{a}",
-  "#c", "a#b", "\\#", "\\ ", "\\\n", "\\\\", "\\'", "\\\"", "\\$x",
-  "$x", "${x}", "$(a)", "`a`", "$'a'", "!", "!a", "=",
+  "~",
+  "~/x",
+  "~root",
+  "a=~/y",
+  "a=x:~/y",
+  "'a'=~",
+  "--x=~/y",
+  "*",
+  "*.ts",
+  "?.txt",
+  "[ab]",
+  "{a,b}",
+  "{1..2}",
+  "{a}",
+  "#c",
+  "a#b",
+  "\\#",
+  "\\ ",
+  "\\\n",
+  "\\\\",
+  "\\'",
+  '\\"',
+  "\\$x",
+  "$x",
+  "${x}",
+  "$(a)",
+  "`a`",
+  "$'a'",
+  "!",
+  "!a",
+  "=",
 ];
 const OPERATORS = [" && ", " || ", "; ", ";", " | ", "|", "\n", " & ", "&&", " ;; "];
-const REDIRECTS = [" 2>/dev/null", " >/dev/null", " 2>&1", " &>/dev/null", " </dev/null", " >x", " <notes.txt", "2>/dev/null", " 1>&2", " a2>/dev/null"];
+const REDIRECTS = [
+  " 2>/dev/null",
+  " >/dev/null",
+  " 2>&1",
+  " &>/dev/null",
+  " </dev/null",
+  " >x",
+  " <notes.txt",
+  "2>/dev/null",
+  " 1>&2",
+  " a2>/dev/null",
+];
 
 export function fuzzCommands(count: number, seed: number): string[] {
   const random = mulberry32(seed);
   const pick = <T>(items: T[]): T => items[Math.floor(random() * items.length)];
   const quoted = (): string => {
-    const inner = Array.from({ length: 1 + Math.floor(random() * 4) }, () => (random() < 0.5 ? pick(PLAIN) : pick(SPECIAL))).join("");
+    const inner = Array.from({ length: 1 + Math.floor(random() * 4) }, () =>
+      random() < 0.5 ? pick(PLAIN) : pick(SPECIAL),
+    ).join("");
     if (random() < 0.5) {
       return `'${inner.replace(/'/g, "")}'`;
     }
-    return `"${inner.replace(/"/g, "\\\"")}"`;
+    return `"${inner.replace(/"/g, '\\"')}"`;
   };
   const piece = (): string => {
     const roll = random();

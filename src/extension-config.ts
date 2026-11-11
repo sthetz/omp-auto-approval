@@ -29,13 +29,11 @@ export function extensionRoot(moduleUrl = import.meta.url): string {
 }
 
 export function configPath(): string {
-  return process.env.CLEARANCE_CONFIG_PATH?.trim()
-    || join(extensionRoot(), "config.jsonc");
+  return process.env.CLEARANCE_CONFIG_PATH?.trim() || join(extensionRoot(), "config.jsonc");
 }
 
 export function logsDir(): string {
-  return process.env.CLEARANCE_LOGS_DIR?.trim()
-    || join(extensionRoot(), "logs");
+  return process.env.CLEARANCE_LOGS_DIR?.trim() || join(extensionRoot(), "logs");
 }
 
 export function logPath(): string {
@@ -43,9 +41,7 @@ export function logPath(): string {
 }
 
 function stripJsonComments(input: string): string {
-  return input
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+  return input.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
 
 function stringArray(value: unknown): string[] {
@@ -64,9 +60,10 @@ export function normalizeConfig(raw: unknown): ClearanceConfig {
   const record = toRecord(raw);
   return {
     reviewer: normalizeReviewer(record.reviewer),
-    classifierModel: typeof record.classifierModel === "string" && record.classifierModel.trim()
-      ? record.classifierModel.trim()
-      : null,
+    classifierModel:
+      typeof record.classifierModel === "string" && record.classifierModel.trim()
+        ? record.classifierModel.trim()
+        : null,
     approvalTimeoutSeconds: positiveNumber(record.approvalTimeoutSeconds, DEFAULT_CONFIG.approvalTimeoutSeconds),
     classifierTimeoutSeconds: positiveNumber(record.classifierTimeoutSeconds, DEFAULT_CONFIG.classifierTimeoutSeconds),
     maxConsecutiveDenials: positiveNumber(record.maxConsecutiveDenials, DEFAULT_CONFIG.maxConsecutiveDenials),
@@ -111,28 +108,40 @@ function configNotices(path: string, raw: unknown, config: ClearanceConfig): str
   }
   for (const key of ["enabled", "mode"]) {
     if (Object.prototype.hasOwnProperty.call(toRecord(raw), key)) {
-      notices.push(`${key} is no longer read: set reviewer in config.jsonc only as the starting value, and use /clearance ai, /clearance manual, or /clearance off for the shared session reviewer.`);
+      notices.push(
+        `${key} is no longer read: set reviewer in config.jsonc only as the starting value, and use /clearance ai, /clearance manual, or /clearance off for the shared session reviewer.`,
+      );
     }
   }
   if (toRecord(raw).reviewer !== undefined && !["ai", "manual", "off"].includes(String(toRecord(raw).reviewer))) {
-    notices.push(`reviewer must be "ai", "manual", or "off"; the invalid value is ignored and the default "off" is used while no reviewer-state.json exists.`);
+    notices.push(
+      `reviewer must be "ai", "manual", or "off"; the invalid value is ignored and the default "off" is used while no reviewer-state.json exists.`,
+    );
   }
   for (const [key, kind] of Object.entries(MOVED_TO_RULES)) {
     const value = toRecord(raw)[key];
     if (Array.isArray(value) && value.length > 0) {
-      notices.push(`${key} is no longer read and its ${value.length} entr${value.length === 1 ? "y is" : "ies are"} ignored: write them as ${kind} rules in rules.jsonc (see config/rules.example.jsonc).`);
+      notices.push(
+        `${key} is no longer read and its ${value.length} entr${value.length === 1 ? "y is" : "ies are"} ignored: write them as ${kind} rules in rules.jsonc (see config/rules.example.jsonc).`,
+      );
     }
   }
   if (config.classifierTimeoutSeconds >= OMP_DEFAULT_HANDLER_TIMEOUT_SECONDS) {
     notices.push(
-      `classifierTimeoutSeconds is ${config.classifierTimeoutSeconds}s, but OMP blocks a tool call whose extension handler runs longer than `
-      + `extensionHandlers.toolCallTimeoutMs (${OMP_DEFAULT_HANDLER_TIMEOUT_SECONDS}s by default). Raise that OMP setting above it, or slow reviews are blocked before the classifier answers and the user cannot be asked.`,
+      `classifierTimeoutSeconds is ${config.classifierTimeoutSeconds}s, but OMP blocks a tool call whose extension handler runs longer than ` +
+        `extensionHandlers.toolCallTimeoutMs (${OMP_DEFAULT_HANDLER_TIMEOUT_SECONDS}s by default). Raise that OMP setting above it, or slow reviews are blocked before the classifier answers and the user cannot be asked.`,
     );
   }
   return notices;
 }
 
-export function loadConfig(path = configPath()): { config: ClearanceConfig; reviewerConfigured: boolean; warning?: string; notice?: string; created: boolean } {
+export function loadConfig(path = configPath()): {
+  config: ClearanceConfig;
+  reviewerConfigured: boolean;
+  warning?: string;
+  notice?: string;
+  created: boolean;
+} {
   let created = false;
   if (!existsSync(path)) {
     mkdirSync(dirname(path), { recursive: true });

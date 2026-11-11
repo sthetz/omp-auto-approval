@@ -44,7 +44,9 @@ function textOf(content: unknown): string {
     return content;
   }
   if (Array.isArray(content)) {
-    return content.map((part) => (part && typeof part === "object" && typeof part.text === "string" ? part.text : "")).join("");
+    return content
+      .map((part) => (part && typeof part === "object" && typeof part.text === "string" ? part.text : ""))
+      .join("");
   }
   return "";
 }
@@ -73,13 +75,23 @@ export async function startFakeModel(options: FakeModelOptions): Promise<FakeMod
     const parts: Buffer[] = [];
     request.on("data", (part: Buffer) => parts.push(part));
     request.on("end", () => {
-      const body = JSON.parse(Buffer.concat(parts).toString("utf8")) as { messages?: { role: string; content: unknown }[] };
+      const body = JSON.parse(Buffer.concat(parts).toString("utf8")) as {
+        messages?: { role: string; content: unknown }[];
+      };
       const messages = body.messages ?? [];
-      const system = messages.filter((message) => message.role === "system" || message.role === "developer").map((message) => textOf(message.content)).join(" ");
+      const system = messages
+        .filter((message) => message.role === "system" || message.role === "developer")
+        .map((message) => textOf(message.content))
+        .join(" ");
       let text: string | undefined;
       let tool: ToolCall | undefined;
       if (system.includes(CLASSIFIER_MARKER)) {
-        log.classifier.push(messages.filter((message) => message.role === "user").map((message) => textOf(message.content)).join("\n"));
+        log.classifier.push(
+          messages
+            .filter((message) => message.role === "user")
+            .map((message) => textOf(message.content))
+            .join("\n"),
+        );
         text = JSON.stringify({ outcome: options.verdict, rationale: `fake-${options.verdict}` });
       } else {
         const results = messages.filter((message) => message.role === "tool").map((message) => textOf(message.content));
@@ -93,7 +105,14 @@ export async function startFakeModel(options: FakeModelOptions): Promise<FakeMod
       }
       if (tool) {
         calls += 1;
-        delta.tool_calls = [{ index: 0, id: `call_${calls}`, type: "function", function: { name: tool.name, arguments: JSON.stringify(tool.arguments) } }];
+        delta.tool_calls = [
+          {
+            index: 0,
+            id: `call_${calls}`,
+            type: "function",
+            function: { name: tool.name, arguments: JSON.stringify(tool.arguments) },
+          },
+        ];
       }
       response.writeHead(200, { "content-type": "text/event-stream" });
       response.write(chunk(delta, null));

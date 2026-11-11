@@ -3,7 +3,16 @@ import { availableParallelism } from "node:os";
 import { SHELL_CASES } from "./cases.js";
 import { DEFAULT_CORPUS, loadCorpus, loadCorpusDirectory } from "./extract-corpus.js";
 import { fuzzCommands } from "./fuzz.js";
-import { compareRun, findEnvironment, OracleSetupError, redirectionFiles, runOracle, type OracleEnvironment, type ParsedScript, type ShellParser } from "./oracle.js";
+import {
+  compareRun,
+  findEnvironment,
+  OracleSetupError,
+  redirectionFiles,
+  runOracle,
+  type OracleEnvironment,
+  type ParsedScript,
+  type ShellParser,
+} from "./oracle.js";
 import { PARSERS } from "./parsers.js";
 
 /**
@@ -52,8 +61,18 @@ function unverifiable(script: ParsedScript): string | undefined {
   if (programs.some((program) => program?.text === "builtin")) {
     return "the oracle cannot record `builtin`";
   }
-  const files = commands.flatMap((command) => command.redirects.filter((redirect) => !redirect.duplicate).map((redirect) => redirect.target));
-  if (files.some((file) => file.endsWith("/") || ["", ".", "..", "/"].includes(file) || /(^|\/)\.\.?$/.test(file) || WORKSPACE_DIRECTORIES.has(file))) {
+  const files = commands.flatMap((command) =>
+    command.redirects.filter((redirect) => !redirect.duplicate).map((redirect) => redirect.target),
+  );
+  if (
+    files.some(
+      (file) =>
+        file.endsWith("/") ||
+        ["", ".", "..", "/"].includes(file) ||
+        /(^|\/)\.\.?$/.test(file) ||
+        WORKSPACE_DIRECTORIES.has(file),
+    )
+  ) {
     return "a redirection names a directory";
   }
   return undefined;
@@ -94,13 +113,15 @@ async function check(env: OracleEnvironment, parser: ShellParser, item: Item): P
 async function pool<T, R>(items: T[], jobs: number, work: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
-  await Promise.all(Array.from({ length: Math.min(jobs, items.length) }, async () => {
-    while (next < items.length) {
-      const index = next;
-      next += 1;
-      results[index] = await work(items[index]);
-    }
-  }));
+  await Promise.all(
+    Array.from({ length: Math.min(jobs, items.length) }, async () => {
+      while (next < items.length) {
+        const index = next;
+        next += 1;
+        results[index] = await work(items[index]);
+      }
+    }),
+  );
   return results;
 }
 
@@ -130,16 +151,27 @@ async function main(): Promise<void> {
   const items: Item[] = SHELL_CASES.map((command) => ({ source: "case", command }));
   if (!args.includes("--no-corpus")) {
     const corpusFile = option(args, "--corpus");
-    const corpus = corpusFile ? (existsSync(corpusFile) ? loadCorpus(corpusFile) : []) : loadCorpusDirectory(DEFAULT_CORPUS);
+    const corpus = corpusFile
+      ? existsSync(corpusFile)
+        ? loadCorpus(corpusFile)
+        : []
+      : loadCorpusDirectory(DEFAULT_CORPUS);
     if (!corpus.length) {
       console.log(`no corpus at ${corpusFile ?? DEFAULT_CORPUS}; run extract-corpus.ts to build one`);
     }
     items.push(...corpus.map((entry) => ({ source: `corpus:${entry.source}`, command: entry.command })));
   }
-  items.push(...fuzzCommands(Number(option(args, "--fuzz") ?? 3000), seed).map((command) => ({ source: `fuzz:${seed}`, command })));
+  items.push(
+    ...fuzzCommands(Number(option(args, "--fuzz") ?? 3000), seed).map((command) => ({
+      source: `fuzz:${seed}`,
+      command,
+    })),
+  );
 
   const started = Date.now();
-  const outcomes = await pool(items, Number(option(args, "--jobs") ?? availableParallelism()), (item) => check(env, parser, item));
+  const outcomes = await pool(items, Number(option(args, "--jobs") ?? availableParallelism()), (item) =>
+    check(env, parser, item),
+  );
 
   const sources = [...new Set(items.map((item) => item.source))];
   console.log(`parser: ${parserName}   bash: ${env.bash}   ${((Date.now() - started) / 1000).toFixed(1)}s\n`);
@@ -150,7 +182,9 @@ async function main(): Promise<void> {
     const diverged = rows.filter((outcome) => outcome.divergence).length;
     const skipped = rows.filter((outcome) => outcome.skipped).length;
     const share = rows.length ? ((100 * accepted) / rows.length).toFixed(1) : "0.0";
-    console.log(`${source.padEnd(14)} ${String(rows.length).padStart(6)}  ${String(accepted).padStart(5)} ${`(${share}%)`.padStart(8)}  ${String(diverged).padStart(6)}  ${String(skipped).padStart(7)}`);
+    console.log(
+      `${source.padEnd(14)} ${String(rows.length).padStart(6)}  ${String(accepted).padStart(5)} ${`(${share}%)`.padStart(8)}  ${String(diverged).padStart(6)}  ${String(skipped).padStart(7)}`,
+    );
   }
 
   const divergent = outcomes.filter((outcome) => outcome.divergence);

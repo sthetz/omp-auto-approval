@@ -24,43 +24,132 @@ const WORKSPACE_FILES: Record<string, string> = {
   "notes.txt": "alpha beta\ngamma: delta\nalpha again\n",
   "src/a.ts": "export const a = 1; // x\n",
   "src/b.ts": "export const b = 2;\n",
-  "data.json": "{\"name\":\"demo\",\"spec\":{\"env\":[1,2]}}\n",
+  "data.json": '{"name":"demo","spec":{"env":[1,2]}}\n',
   "dir/d.txt": "d\n",
 };
 const FILES = ["notes.txt", "src/a.ts", "src/b.ts", "data.json", "dir/d.txt"];
 
 // Values for options, by `program:option`, then by kind.
 const VALUES: Record<string, string[]> = {
-  "sort:k": ["1", "2,2", "1n"], "sort:key": ["2"], "sort:t": [":", ","], "sort:field-separator": [":"], "sort:S": ["1M"],
-  "sort:buffer-size": ["1M"], "sort:sort": ["numeric", "version"], "sort:check": ["quiet"],
-  "cut:b": ["1-3"], "cut:c": ["1-5", "2"], "cut:f": ["1", "1,2"], "cut:d": [":", " "], "cut:bytes": ["1-2"],
-  "cut:characters": ["1-3"], "cut:fields": ["1"], "cut:delimiter": [":"], "cut:output-delimiter": ["|"],
-  "ls:I": ["*.ts"], "ls:hide": ["*.txt"], "ls:ignore": ["dir"], "ls:sort": ["size", "time", "none"], "ls:format": ["long", "commas"],
-  "ls:time": ["atime", "ctime"], "ls:time-style": ["iso", "long-iso"], "ls:quoting-style": ["literal", "c"],
-  "ls:indicator-style": ["slash", "classify"], "ls:block-size": ["K"], "ls:color": ["never", "always"], "ls:classify": ["auto"],
+  "sort:k": ["1", "2,2", "1n"],
+  "sort:key": ["2"],
+  "sort:t": [":", ","],
+  "sort:field-separator": [":"],
+  "sort:S": ["1M"],
+  "sort:buffer-size": ["1M"],
+  "sort:sort": ["numeric", "version"],
+  "sort:check": ["quiet"],
+  "cut:b": ["1-3"],
+  "cut:c": ["1-5", "2"],
+  "cut:f": ["1", "1,2"],
+  "cut:d": [":", " "],
+  "cut:bytes": ["1-2"],
+  "cut:characters": ["1-3"],
+  "cut:fields": ["1"],
+  "cut:delimiter": [":"],
+  "cut:output-delimiter": ["|"],
+  "ls:I": ["*.ts"],
+  "ls:hide": ["*.txt"],
+  "ls:ignore": ["dir"],
+  "ls:sort": ["size", "time", "none"],
+  "ls:format": ["long", "commas"],
+  "ls:time": ["atime", "ctime"],
+  "ls:time-style": ["iso", "long-iso"],
+  "ls:quoting-style": ["literal", "c"],
+  "ls:indicator-style": ["slash", "classify"],
+  "ls:block-size": ["K"],
+  "ls:color": ["never", "always"],
+  "ls:classify": ["auto"],
   "ls:hyperlink": ["never"],
-  "grep:e": ["alpha", "a.*"], "grep:regexp": ["beta"], "grep:include": ["*.ts", "*.txt"], "grep:exclude": ["*.json"],
-  "grep:exclude-dir": ["dir"], "grep:binary-files": ["text", "without-match"], "grep:label": ["x"], "grep:color": ["never", "always"],
+  "grep:e": ["alpha", "a.*"],
+  "grep:regexp": ["beta"],
+  "grep:include": ["*.ts", "*.txt"],
+  "grep:exclude": ["*.json"],
+  "grep:exclude-dir": ["dir"],
+  "grep:binary-files": ["text", "without-match"],
+  "grep:label": ["x"],
+  "grep:color": ["never", "always"],
   "grep:colour": ["never"],
-  "date:d": ["now", "2024-01-01"], "date:date": ["yesterday"], "date:I": ["seconds", "date"], "date:iso-8601": ["ns"],
+  "date:d": ["now", "2024-01-01"],
+  "date:date": ["yesterday"],
+  "date:I": ["seconds", "date"],
+  "date:iso-8601": ["ns"],
   "date:rfc-3339": ["date", "seconds"],
-  "du:B": ["K"], "du:block-size": ["M"], "du:t": ["1"], "du:threshold": ["1K"], "du:exclude": ["*.ts"], "du:time": ["atime"],
+  "du:B": ["K"],
+  "du:block-size": ["M"],
+  "du:t": ["1"],
+  "du:threshold": ["1K"],
+  "du:exclude": ["*.ts"],
+  "du:time": ["atime"],
   "du:time-style": ["iso"],
-  "diff:x": ["*.ts"], "diff:exclude": ["*.ts"], "diff:I": ["alpha"], "diff:ignore-matching-lines": ["alpha"], "diff:F": ["^x"],
-  "diff:label": ["left"], "diff:palette": ["ad=1"], "diff:color": ["never", "always"], "diff:unified": ["1"], "diff:context": ["2"],
-  "stat:c": ["%s %n"], "stat:format": ["%a"], "stat:printf": ["%n\\n"],
-  "tac:s": [":"], "tac:separator": ["a"], "paste:d": [","], "paste:delimiters": [":"],
-  "timeout:s": ["TERM", "KILL"], "timeout:signal": ["INT"], "timeout:k": ["1"], "timeout:kill-after": ["2"],
-  "seq:s": [","], "seq:separator": [" "], "seq:f": ["%g"], "seq:format": ["%.1f"],
-  "basename:s": [".ts"], "basename:suffix": [".txt"], "wc:total": ["auto", "never"], "uniq:all-repeated": ["separate"],
-  "uniq:group": ["append"], "sed:l": ["20"], "sed:line-length": ["30"], "nproc:ignore": ["1"],
+  "diff:x": ["*.ts"],
+  "diff:exclude": ["*.ts"],
+  "diff:I": ["alpha"],
+  "diff:ignore-matching-lines": ["alpha"],
+  "diff:F": ["^x"],
+  "diff:label": ["left"],
+  "diff:palette": ["ad=1"],
+  "diff:color": ["never", "always"],
+  "diff:unified": ["1"],
+  "diff:context": ["2"],
+  "stat:c": ["%s %n"],
+  "stat:format": ["%a"],
+  "stat:printf": ["%n\\n"],
+  "tac:s": [":"],
+  "tac:separator": ["a"],
+  "paste:d": [","],
+  "paste:delimiters": [":"],
+  "timeout:s": ["TERM", "KILL"],
+  "timeout:signal": ["INT"],
+  "timeout:k": ["1"],
+  "timeout:kill-after": ["2"],
+  "seq:s": [","],
+  "seq:separator": [" "],
+  "seq:f": ["%g"],
+  "seq:format": ["%.1f"],
+  "basename:s": [".ts"],
+  "basename:suffix": [".txt"],
+  "wc:total": ["auto", "never"],
+  "uniq:all-repeated": ["separate"],
+  "uniq:group": ["append"],
+  "sed:l": ["20"],
+  "sed:line-length": ["30"],
+  "nproc:ignore": ["1"],
 };
-const SED_SCRIPTS = ["p", "1,2p", "$p", "/alpha/,/gamma/p", "s/alpha/omega/g", "s|a|b|2", "1!d", "2q", "=", "s/a/b/;s/c/d/", "1~2p", "n;p", "/x/,+1d"];
+const SED_SCRIPTS = [
+  "p",
+  "1,2p",
+  "$p",
+  "/alpha/,/gamma/p",
+  "s/alpha/omega/g",
+  "s|a|b|2",
+  "1!d",
+  "2q",
+  "=",
+  "s/a/b/;s/c/d/",
+  "1~2p",
+  "n;p",
+  "/x/,+1d",
+];
 const JQ_FILTERS = [".", ".name", ".spec.env[]", "keys", "to_entries", "[.[] | type]", "$v"];
 const FIND_EXPRESSIONS = [
-  ["-name", "*.ts"], ["-type", "f"], ["-maxdepth", "1"], ["-path", "./src/*"], ["-newer", "notes.txt"], ["-size", "-1k"],
-  ["-empty"], ["-print0"], ["-ls"], ["-printf", "%p %s\\n"], ["!", "-name", "*.json"], ["(", "-name", "a*", "-o", "-name", "b*", ")"],
-  ["-mmin", "-60"], ["-prune"], ["-regex", ".*ts"], ["-perm", "-u+r"], ["-quit"],
+  ["-name", "*.ts"],
+  ["-type", "f"],
+  ["-maxdepth", "1"],
+  ["-path", "./src/*"],
+  ["-newer", "notes.txt"],
+  ["-size", "-1k"],
+  ["-empty"],
+  ["-print0"],
+  ["-ls"],
+  ["-printf", "%p %s\\n"],
+  ["!", "-name", "*.json"],
+  ["(", "-name", "a*", "-o", "-name", "b*", ")"],
+  ["-mmin", "-60"],
+  ["-prune"],
+  ["-regex", ".*ts"],
+  ["-perm", "-u+r"],
+  ["-quit"],
 ];
 
 /** A small seeded generator (mulberry32). */
@@ -101,7 +190,11 @@ function generate(rng: ReturnType<typeof random>): string {
     }
     for (const [letter, kind] of Object.entries(spec.values ?? {})) {
       const alias = spec.aliases[letter];
-      choices.push(() => (kind === "optional" ? args.push(rng.chance(0.5) ? `-${letter}${value(letter, kind, alias)}` : `-${letter}`) : args.push(`-${letter}`, value(letter, kind, alias))));
+      choices.push(() =>
+        kind === "optional"
+          ? args.push(rng.chance(0.5) ? `-${letter}${value(letter, kind, alias)}` : `-${letter}`)
+          : args.push(`-${letter}`, value(letter, kind, alias)),
+      );
     }
     for (const name of spec.long ?? []) {
       choices.push(() => args.push(`--${name}`));
@@ -131,21 +224,51 @@ function generate(rng: ReturnType<typeof random>): string {
   const files = () => Array.from({ length: Math.floor(rng.next() * 3) }, () => rng.pick(FILES));
   switch (program) {
     case "grep":
-      return [program, ...args, rng.pick(["alpha", "a", "export"]), ...(rng.chance(0.5) ? files() : [rng.pick(["src", "dir", "."])])].map(quote).join(" ");
-    case "sed": return [program, ...args, rng.pick(SED_SCRIPTS), rng.pick(FILES)].map(quote).join(" ");
-    case "jq": return [program, ...args, rng.pick(JQ_FILTERS), "data.json"].map(quote).join(" ");
-    case "find": return [program, rng.pick([".", "src", "dir"]), ...rng.pick(FIND_EXPRESSIONS)].map(quote).join(" ");
-    case "timeout": return [program, ...args, "5", rng.pick(["cat", "head", "wc"]), rng.pick(FILES)].map(quote).join(" ");
-    case "diff": return [program, ...args, rng.pick(FILES), rng.pick(["notes.txt", "src", "dir/d.txt"])].map(quote).join(" ");
-    case "uniq": case "base64": return [program, ...args, rng.pick(FILES)].map(quote).join(" ");
-    case "tr": return [program, ...args, "a-z", "A-Z"].map(quote).join(" ");
-    case "echo": case "printf": return [program, rng.pick(["%s\\n", "hello"]), "a", "-n"].map(quote).join(" ");
-    case "seq": return [program, ...args, "1", "3"].map(quote).join(" ");
-    case "sleep": return "sleep 0.01";
-    case "date": return [program, ...args, ...(rng.chance(0.5) ? ["+%F"] : [])].map(quote).join(" ");
-    case "basename": case "dirname": return [program, ...args, "/a/b.ts"].map(quote).join(" ");
-    case "which": return [program, ...args, "cat"].map(quote).join(" ");
-    case "id": case "pwd": case "uname": case "whoami": case "hostname": case "nproc": case "true": case "false":
+      return [
+        program,
+        ...args,
+        rng.pick(["alpha", "a", "export"]),
+        ...(rng.chance(0.5) ? files() : [rng.pick(["src", "dir", "."])]),
+      ]
+        .map(quote)
+        .join(" ");
+    case "sed":
+      return [program, ...args, rng.pick(SED_SCRIPTS), rng.pick(FILES)].map(quote).join(" ");
+    case "jq":
+      return [program, ...args, rng.pick(JQ_FILTERS), "data.json"].map(quote).join(" ");
+    case "find":
+      return [program, rng.pick([".", "src", "dir"]), ...rng.pick(FIND_EXPRESSIONS)].map(quote).join(" ");
+    case "timeout":
+      return [program, ...args, "5", rng.pick(["cat", "head", "wc"]), rng.pick(FILES)].map(quote).join(" ");
+    case "diff":
+      return [program, ...args, rng.pick(FILES), rng.pick(["notes.txt", "src", "dir/d.txt"])].map(quote).join(" ");
+    case "uniq":
+    case "base64":
+      return [program, ...args, rng.pick(FILES)].map(quote).join(" ");
+    case "tr":
+      return [program, ...args, "a-z", "A-Z"].map(quote).join(" ");
+    case "echo":
+    case "printf":
+      return [program, rng.pick(["%s\\n", "hello"]), "a", "-n"].map(quote).join(" ");
+    case "seq":
+      return [program, ...args, "1", "3"].map(quote).join(" ");
+    case "sleep":
+      return "sleep 0.01";
+    case "date":
+      return [program, ...args, ...(rng.chance(0.5) ? ["+%F"] : [])].map(quote).join(" ");
+    case "basename":
+    case "dirname":
+      return [program, ...args, "/a/b.ts"].map(quote).join(" ");
+    case "which":
+      return [program, ...args, "cat"].map(quote).join(" ");
+    case "id":
+    case "pwd":
+    case "uname":
+    case "whoami":
+    case "hostname":
+    case "nproc":
+    case "true":
+    case "false":
       return [program, ...args].map(quote).join(" ");
     default:
       return [program, ...args, ...files()].map(quote).join(" ");
@@ -160,22 +283,54 @@ interface Finding {
 const SYSTEM_DIRECTORIES = ["/nix/store", "/usr", "/bin", "/lib", "/lib64", "/etc", "/run/current-system"];
 const SORT_TEMPORARY = /^\/tmp\/sort[A-Za-z0-9]{6}$/;
 const WRITE_FLAGS = /O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND/;
-const CHANGES = /^(creat|rename|renameat2?|unlink|unlinkat|mkdir|mkdirat|rmdir|link|linkat|symlink|symlinkat|chmod|fchmodat|truncate|utimensat)\(/;
+const CHANGES =
+  /^(creat|rename|renameat2?|unlink|unlinkat|mkdir|mkdirat|rmdir|link|linkat|symlink|symlinkat|chmod|fchmodat|truncate|utimensat)\(/;
 
-async function runTraced(env: { bwrap: string; bash: string }, strace: string, root: string, workspace: string, command: string): Promise<string> {
+async function runTraced(
+  env: { bwrap: string; bash: string },
+  strace: string,
+  root: string,
+  workspace: string,
+  command: string,
+): Promise<string> {
   const log = mkdtempSync(join(tmpdir(), "program-oracle-log-"));
   try {
     const args = [
-      "--unshare-all", "--die-with-parent", "--new-session",
+      "--unshare-all",
+      "--die-with-parent",
+      "--new-session",
       ...SYSTEM_DIRECTORIES.flatMap((directory) => ["--ro-bind-try", directory, directory]),
-      "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-      "--ro-bind", root, root,
-      "--bind", log, log,
-      "--chdir", workspace,
-      "--setenv", "HOME", join(root, "home"),
-      strace, "-f", "-qq", "-s", "200", "-o", join(log, "trace"),
-      "-e", "trace=execve,execveat,open,openat,openat2,creat,rename,renameat,renameat2,unlink,unlinkat,mkdir,mkdirat,rmdir,link,linkat,symlink,symlinkat,chmod,fchmodat,truncate,utimensat",
-      env.bash, "--noprofile", "--norc", "-c", command,
+      "--proc",
+      "/proc",
+      "--dev",
+      "/dev",
+      "--tmpfs",
+      "/tmp",
+      "--ro-bind",
+      root,
+      root,
+      "--bind",
+      log,
+      log,
+      "--chdir",
+      workspace,
+      "--setenv",
+      "HOME",
+      join(root, "home"),
+      strace,
+      "-f",
+      "-qq",
+      "-s",
+      "200",
+      "-o",
+      join(log, "trace"),
+      "-e",
+      "trace=execve,execveat,open,openat,openat2,creat,rename,renameat,renameat2,unlink,unlinkat,mkdir,mkdirat,rmdir,link,linkat,symlink,symlinkat,chmod,fchmodat,truncate,utimensat",
+      env.bash,
+      "--noprofile",
+      "--norc",
+      "-c",
+      command,
     ];
     await new Promise<void>((resolve) => {
       const child = spawn(env.bwrap, args, { stdio: ["ignore", "ignore", "ignore"] });
@@ -209,7 +364,8 @@ function traceProblems(trace: string, expected: Set<string>, bash: string, root:
       }
       continue;
     }
-    const open = /^(open|openat2?)\((?:AT_FDCWD|\d+), "([^"]*)", ([^)]*)/.exec(call) ?? /^(open)\("([^"]*)", ([^)]*)/.exec(call);
+    const open =
+      /^(open|openat2?)\((?:AT_FDCWD|\d+), "([^"]*)", ([^)]*)/.exec(call) ?? /^(open)\("([^"]*)", ([^)]*)/.exec(call);
     // sort keeps temporary files of its own in TMPDIR, created exclusively and removed.
     if (open && SORT_TEMPORARY.test(open[2]) && (open[3].includes("O_EXCL") || !WRITE_FLAGS.test(open[3]))) {
       continue;
@@ -219,8 +375,16 @@ function traceProblems(trace: string, expected: Set<string>, bash: string, root:
     }
     // A successful read outside the sandbox's workspace and system directories.
     // O_PATH gives a handle that cannot read (file opens `/` for its sandbox).
-    if (open && !WRITE_FLAGS.test(open[3]) && !open[3].includes("O_PATH") && open[2].startsWith("/") && !/= -1 /.test(call)
-      && ![root, ...SYSTEM_DIRECTORIES, "/proc/", "/dev/", "/sys/"].some((prefix) => open[2] === prefix || open[2].startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`))) {
+    if (
+      open &&
+      !WRITE_FLAGS.test(open[3]) &&
+      !open[3].includes("O_PATH") &&
+      open[2].startsWith("/") &&
+      !/= -1 /.test(call) &&
+      ![root, ...SYSTEM_DIRECTORIES, "/proc/", "/dev/", "/sys/"].some(
+        (prefix) => open[2] === prefix || open[2].startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`),
+      )
+    ) {
       problems.push(`read ${open[2]}`);
       continue;
     }
@@ -238,13 +402,15 @@ function traceProblems(trace: string, expected: Set<string>, bash: string, root:
 async function pool<T, R>(items: T[], jobs: number, work: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
-  await Promise.all(Array.from({ length: jobs }, async () => {
-    while (next < items.length) {
-      const index = next;
-      next += 1;
-      results[index] = await work(items[index]);
-    }
-  }));
+  await Promise.all(
+    Array.from({ length: jobs }, async () => {
+      while (next < items.length) {
+        const index = next;
+        next += 1;
+        results[index] = await work(items[index]);
+      }
+    }),
+  );
   return results;
 }
 
@@ -259,13 +425,16 @@ async function main(): Promise<void> {
     console.error(`program oracle cannot run: ${env}`);
     process.exit(2);
   }
-  const strace = (process.env.PATH ?? "").split(":").map((directory) => join(directory, "strace")).find((candidate) => {
-    try {
-      return realpathSync(candidate) !== "";
-    } catch {
-      return false;
-    }
-  });
+  const strace = (process.env.PATH ?? "")
+    .split(":")
+    .map((directory) => join(directory, "strace"))
+    .find((candidate) => {
+      try {
+        return realpathSync(candidate) !== "";
+      } catch {
+        return false;
+      }
+    });
   if (!strace) {
     console.error("program oracle cannot run: strace is not on PATH");
     process.exit(2);
@@ -282,13 +451,16 @@ async function main(): Promise<void> {
     const program = (name: string): string => {
       // The PATH entry itself, not its target: a multi-call binary such as
       // coreutils picks the program by the name it was run as.
-      const path = (process.env.PATH ?? "").split(":").map((directory) => join(directory, name)).find((candidate) => {
-        try {
-          return statSync(candidate).isFile();
-        } catch {
-          return false;
-        }
-      });
+      const path = (process.env.PATH ?? "")
+        .split(":")
+        .map((directory) => join(directory, name))
+        .find((candidate) => {
+          try {
+            return statSync(candidate).isFile();
+          } catch {
+            return false;
+          }
+        });
       if (!path) {
         console.error(`program oracle cannot run: ${name} is not on PATH`);
         process.exit(2);
@@ -296,8 +468,18 @@ async function main(): Promise<void> {
       return path;
     };
     let missed = 0;
-    for (const command of [`${program("sort")} -o /tmp/out notes.txt`, `${program("find")} . -maxdepth 0 -exec ${program("true")} ';'`, `${program("sed")} -i s/a/b/ notes.txt`, `${program("touch")} /tmp/x`]) {
-      const problems = traceProblems(await runTraced(env, strace, root, workspace, command), new Set([command.split(" ")[0]]), env.bash, root);
+    for (const command of [
+      `${program("sort")} -o /tmp/out notes.txt`,
+      `${program("find")} . -maxdepth 0 -exec ${program("true")} ';'`,
+      `${program("sed")} -i s/a/b/ notes.txt`,
+      `${program("touch")} /tmp/x`,
+    ]) {
+      const problems = traceProblems(
+        await runTraced(env, strace, root, workspace, command),
+        new Set([command.split(" ")[0]]),
+        env.bash,
+        root,
+      );
       console.log(`${problems.length ? "caught" : "MISSED"}: ${command}${problems.length ? ` (${problems[0]})` : ""}`);
       missed += problems.length ? 0 : 1;
     }
@@ -315,19 +497,27 @@ async function main(): Promise<void> {
   const accepted = planned.filter((item) => item.plan);
   const started = Date.now();
   try {
-    const findings = (await pool(accepted, Number(option("--jobs") ?? availableParallelism()), async ({ command, plan }): Promise<Finding | null> => {
-      const expected = new Set([...plan!.command.matchAll(/(?:^|\s)(\/\S+)/g)].map((match) => match[1]));
-      const trace = await runTraced(env, strace, root, workspace, plan!.command);
-      if (process.env.PROGRAM_ORACLE_DEBUG && command.startsWith(process.env.PROGRAM_ORACLE_DEBUG)) {
-        console.log(trace);
-      }
-      if (!trace) {
-        return { command, problems: ["no trace"] };
-      }
-      const problems = traceProblems(trace, expected, env.bash, root);
-      return problems.length ? { command, problems } : null;
-    })).filter((finding): finding is Finding => finding !== null);
-    console.log(`${commands.size} generated, ${accepted.length} accepted by the fast path, ${findings.length} with side effects   ${((Date.now() - started) / 1000).toFixed(1)}s`);
+    const findings = (
+      await pool(
+        accepted,
+        Number(option("--jobs") ?? availableParallelism()),
+        async ({ command, plan }): Promise<Finding | null> => {
+          const expected = new Set([...plan!.command.matchAll(/(?:^|\s)(\/\S+)/g)].map((match) => match[1]));
+          const trace = await runTraced(env, strace, root, workspace, plan!.command);
+          if (process.env.PROGRAM_ORACLE_DEBUG && command.startsWith(process.env.PROGRAM_ORACLE_DEBUG)) {
+            console.log(trace);
+          }
+          if (!trace) {
+            return { command, problems: ["no trace"] };
+          }
+          const problems = traceProblems(trace, expected, env.bash, root);
+          return problems.length ? { command, problems } : null;
+        },
+      )
+    ).filter((finding): finding is Finding => finding !== null);
+    console.log(
+      `${commands.size} generated, ${accepted.length} accepted by the fast path, ${findings.length} with side effects   ${((Date.now() - started) / 1000).toFixed(1)}s`,
+    );
     for (const finding of findings.slice(0, Number(option("--show") ?? 20))) {
       console.log(`\n${finding.command}\n  ${finding.problems.slice(0, 5).join("\n  ")}`);
     }

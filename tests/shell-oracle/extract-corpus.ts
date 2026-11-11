@@ -17,7 +17,11 @@ import { fileURLToPath } from "node:url";
  *   node --import tsx tests/shell-oracle/extract-corpus.ts [--out FILE] [--claude DIR] [--omp DIR] [--kimi DIR]
  */
 
-export const DEFAULT_CORPUS = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "omp-clearance", "shell-corpus.jsonl");
+export const DEFAULT_CORPUS = join(
+  process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
+  "omp-clearance",
+  "shell-corpus.jsonl",
+);
 
 export interface CorpusEntry {
   command: string;
@@ -84,9 +88,14 @@ function* commandsIn(file: string, source: Agent): Generator<string> {
       continue;
     }
     for (const part of content) {
-      const command = source === "claude"
-        ? part?.type === "tool_use" && part.name === "Bash" ? part.input?.command : undefined
-        : part?.type === "toolCall" && part.name === "bash" ? part.arguments?.command : undefined;
+      const command =
+        source === "claude"
+          ? part?.type === "tool_use" && part.name === "Bash"
+            ? part.input?.command
+            : undefined
+          : part?.type === "toolCall" && part.name === "bash"
+            ? part.arguments?.command
+            : undefined;
       if (typeof command === "string" && command.trim()) {
         yield command;
       }
@@ -95,7 +104,10 @@ function* commandsIn(file: string, source: Agent): Generator<string> {
 }
 
 export function loadCorpus(file: string): CorpusEntry[] {
-  return readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as CorpusEntry);
+  return readFileSync(file, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as CorpusEntry);
 }
 
 /** Every corpus file next to `file` (`shell-corpus*.jsonl`), deduplicated by command. */
@@ -103,12 +115,16 @@ export function loadCorpusDirectory(file: string): CorpusEntry[] {
   const directory = dirname(file);
   let names: string[];
   try {
-    names = readdirSync(directory).filter((name) => /^shell-corpus.*\.jsonl$/.test(name)).sort();
+    names = readdirSync(directory)
+      .filter((name) => /^shell-corpus.*\.jsonl$/.test(name))
+      .sort();
   } catch {
     return [];
   }
   const seen = new Set<string>();
-  return names.flatMap((name) => loadCorpus(join(directory, name))).filter((entry) => !seen.has(entry.command) && Boolean(seen.add(entry.command)));
+  return names
+    .flatMap((name) => loadCorpus(join(directory, name)))
+    .filter((entry) => !seen.has(entry.command) && Boolean(seen.add(entry.command)));
 }
 
 function main(): void {

@@ -30,6 +30,7 @@ const UNSAFE_PROGRAM_OPTIONS: Record<string, UnsafeOptions> = {
   sort: { prefixes: ["--compress-program", "--output"], shortLetters: "o" },
   // Running, extracting, or writing archives: x, c, r, u and A write files.
   tar: {
+    // prettier-ignore
     prefixes: [
       "--to-command", "--checkpoint-action", "--use-compress-program", "--info-script", "--new-volume-script", "--rsh-command",
       "--extract", "--get", "--create", "--append", "--update", "--concatenate", "--catenate", "--delete",
@@ -73,7 +74,10 @@ function hasUnsafeOption(program: string, args: string[]): boolean {
     }
     if (arg.startsWith("--")) {
       const name = arg.split("=", 1)[0];
-      return unsafe.prefixes?.some((option) => name.startsWith(option) || (name.length > 2 && option.startsWith(name))) ?? false;
+      return (
+        unsafe.prefixes?.some((option) => name.startsWith(option) || (name.length > 2 && option.startsWith(name))) ??
+        false
+      );
     }
     // tar also takes old-style option letters without a dash as its first argument.
     const group = arg.startsWith("-") ? arg.slice(1) : program === "tar" && index === 0 ? arg : "";
@@ -143,13 +147,16 @@ function pinTilde(word: ShellWord, check: Check): void {
  */
 function namesNoUnreadableFile(text: string, place: Place): boolean {
   const candidates = pathCandidates(text);
-  return candidates !== null && candidates.every((candidate) => {
-    if (!candidate) {
-      return true;
-    }
-    const absolute = resolvePathForCwd(candidate, place.directory);
-    return !existsSync(absolute) || isInsideReadRoots(absolute, place.roots);
-  });
+  return (
+    candidates !== null &&
+    candidates.every((candidate) => {
+      if (!candidate) {
+        return true;
+      }
+      const absolute = resolvePathForCwd(candidate, place.directory);
+      return !existsSync(absolute) || isInsideReadRoots(absolute, place.roots);
+    })
+  );
 }
 
 /**
@@ -162,7 +169,11 @@ function isAllowedArgumentSafe(word: ShellWord, check: Check): boolean {
   if (!word.expands) {
     return namesNoUnreadableFile(word.text, check.place);
   }
-  if (!expandsHome(word, check) || /[*?[{]/.test(word.text) || !isInsideReadRoots(join(homedir(), word.text.slice(1)), check.place.roots)) {
+  if (
+    !expandsHome(word, check) ||
+    /[*?[{]/.test(word.text) ||
+    !isInsideReadRoots(join(homedir(), word.text.slice(1)), check.place.roots)
+  ) {
     return false;
   }
   pinTilde(word, check);
@@ -186,10 +197,21 @@ function isAllowedByRule(words: ShellWord[], check: Check): boolean {
   const written = normalizeCommand(words.map((word) => check.source.slice(word.start, word.end)).join(" "));
   const [first, ...args] = words;
   const program = programName(first.text);
-  const entry = check.rules.rules.find((rule) => (
-    rule.outcome === "allow" && rule.prefix !== null && matchesAllowEntry(written, rule.prefix) && prefixAllowsProgram(rule.prefix, program)
-  ));
-  if (entry === undefined || first.expands || hasUnsafeOption(program, args.map((word) => word.text))) {
+  const entry = check.rules.rules.find(
+    (rule) =>
+      rule.outcome === "allow" &&
+      rule.prefix !== null &&
+      matchesAllowEntry(written, rule.prefix) &&
+      prefixAllowsProgram(rule.prefix, program),
+  );
+  if (
+    entry === undefined ||
+    first.expands ||
+    hasUnsafeOption(
+      program,
+      args.map((word) => word.text),
+    )
+  ) {
     return false;
   }
   if (!args.every((word) => isAllowedArgumentSafe(word, check))) {
@@ -211,7 +233,9 @@ function isSafeRedirect(redirect: ShellRedirect, place: Place): boolean {
   if (redirect.target === "/dev/null") {
     return true;
   }
-  return redirect.kind === "read" && isInsideReadRoots(resolvePathForCwd(redirect.target, place.directory), place.roots);
+  return (
+    redirect.kind === "read" && isInsideReadRoots(resolvePathForCwd(redirect.target, place.directory), place.roots)
+  );
 }
 
 function shellQuote(word: string): string {
@@ -370,8 +394,7 @@ function isSafeCommand(words: ShellWord[], check: Check): boolean {
     }
     return entry !== null;
   };
-  const safe = (!program.text.includes("/") && attempt(byRule))
-    || attempt(() => isAllowedByRule(words, check));
+  const safe = (!program.text.includes("/") && attempt(byRule)) || attempt(() => isAllowedByRule(words, check));
   return safe && pinProgram(program, check);
 }
 
@@ -442,7 +465,11 @@ export function planSafeCommand(
   let first = 0;
   // After `cd <dir>;` the rest runs even if cd fails; the directory is known
   // to exist, and OMP fails the call rather than run it elsewhere.
-  while (first < script.pipelines.length - 1 && script.connectors[first] !== "||" && script.pipelines[first].length === 1) {
+  while (
+    first < script.pipelines.length - 1 &&
+    script.connectors[first] !== "||" &&
+    script.pipelines[first].length === 1
+  ) {
     const directory = cdTarget(script.pipelines[first][0], place);
     if (directory === null) {
       break;
@@ -451,7 +478,15 @@ export function planSafeCommand(
     first += 1;
   }
   const commands = script.pipelines.slice(first).flat();
-  const check: Check = { source: command, config, place, searchPath: options.searchPath ?? STARTUP_PATH, rules, pins: [], used: [] };
+  const check: Check = {
+    source: command,
+    config,
+    place,
+    searchPath: options.searchPath ?? STARTUP_PATH,
+    rules,
+    pins: [],
+    used: [],
+  };
   for (const shellCommand of commands) {
     if (!shellCommand.redirects.every((redirect) => isSafeRedirect(redirect, place))) {
       return null;
@@ -464,5 +499,7 @@ export function planSafeCommand(
   for (const { start, end, text } of [...check.pins].sort((a, b) => b.start - a.start)) {
     pinned = `${pinned.slice(0, start)}${text}${pinned.slice(end)}`;
   }
-  return first === 0 ? { command: pinned, rules: check.used } : { command: pinned.slice(commands[0].start), cwd: place.directory, rules: check.used };
+  return first === 0
+    ? { command: pinned, rules: check.used }
+    : { command: pinned.slice(commands[0].start), cwd: place.directory, rules: check.used };
 }

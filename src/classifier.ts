@@ -4,11 +4,7 @@ import type { CommandRule } from "./command-rules.js";
 import { buildSystemPrompt } from "./prompt.js";
 import { toRecord } from "./common.js";
 
-export type ClassifierClient = (
-  model: unknown,
-  context: unknown,
-  options: Record<string, unknown>,
-) => Promise<unknown>;
+export type ClassifierClient = (model: unknown, context: unknown, options: Record<string, unknown>) => Promise<unknown>;
 
 async function loadCompleteSimple(): Promise<ClassifierClient> {
   // The specifier must stay a string literal: OMP serves its bundled host
@@ -28,13 +24,18 @@ function extractAssistantText(message: unknown): string | undefined {
     return content;
   }
   if (Array.isArray(content)) {
-    return content.map((item) => {
-      const itemRecord = toRecord(item);
-      return typeof itemRecord.text === "string" ? itemRecord.text : "";
-    }).join("");
+    return content
+      .map((item) => {
+        const itemRecord = toRecord(item);
+        return typeof itemRecord.text === "string" ? itemRecord.text : "";
+      })
+      .join("");
   }
   if (Array.isArray(record.output)) {
-    return record.output.map((item) => toRecord(item).text).filter((text): text is string => typeof text === "string").join("");
+    return record.output
+      .map((item) => toRecord(item).text)
+      .filter((text): text is string => typeof text === "string")
+      .join("");
   }
   return undefined;
 }
@@ -143,9 +144,7 @@ function resolveClassifierModel(ctx: ExtensionContextLike, config: ClearanceConf
     }
   }
 
-  return provider
-    ? { ...currentModelRecord, provider, id }
-    : { ...currentModelRecord, id };
+  return provider ? { ...currentModelRecord, provider, id } : { ...currentModelRecord, id };
 }
 
 /**
@@ -171,9 +170,10 @@ async function resolveRequestAuth(
   const result = await registry.getApiKeyAndHeaders(model);
   const record = toRecord(result);
   if (record.ok !== true) {
-    const error = typeof record.error === "string" && record.error.trim()
-      ? record.error.trim()
-      : "auth resolution reported failure with no error message";
+    const error =
+      typeof record.error === "string" && record.error.trim()
+        ? record.error.trim()
+        : "auth resolution reported failure with no error message";
     throw new Error(`Could not resolve classifier model auth: ${error}`);
   }
   const auth: { apiKey?: string; headers?: Record<string, string>; env?: Record<string, string> } = {};
@@ -196,7 +196,7 @@ export async function classifyAction(
   client?: ClassifierClient,
   context: { agentMessage?: string; rule?: CommandRule; ruleTextOnly?: boolean } = {},
 ): Promise<ClassifierDecision> {
-  const completeSimple = client ?? await loadCompleteSimple();
+  const completeSimple = client ?? (await loadCompleteSimple());
 
   const model = resolveClassifierModel(ctx, config);
   if (!model) {
@@ -207,18 +207,24 @@ export async function classifyAction(
 
   const controller = new AbortController();
   const response = await withTimeout(
-    completeSimple(model, {
-      systemPrompt: buildSystemPrompt(config),
-      messages: [{
-        role: "user",
-        content: buildProjectedContext(ctx, subject, context),
-        timestamp: Date.now(),
-      }],
-    }, {
-      temperature: 0,
-      ...auth,
-      signal: controller.signal,
-    }),
+    completeSimple(
+      model,
+      {
+        systemPrompt: buildSystemPrompt(config),
+        messages: [
+          {
+            role: "user",
+            content: buildProjectedContext(ctx, subject, context),
+            timestamp: Date.now(),
+          },
+        ],
+      },
+      {
+        temperature: 0,
+        ...auth,
+        signal: controller.signal,
+      },
+    ),
     config.classifierTimeoutSeconds * 1000,
     controller,
   );
@@ -226,9 +232,7 @@ export async function classifyAction(
   const responseText = extractAssistantText(response);
   if (!responseText) {
     const responseRecord = toRecord(response);
-    const upstreamError = typeof responseRecord.errorMessage === "string"
-      ? responseRecord.errorMessage.trim()
-      : "";
+    const upstreamError = typeof responseRecord.errorMessage === "string" ? responseRecord.errorMessage.trim() : "";
     if (upstreamError) {
       throw new Error(`Classifier request failed: ${upstreamError}`);
     }

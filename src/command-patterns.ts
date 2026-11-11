@@ -35,7 +35,7 @@ function nestedScript(line: string[]): string | null {
   const program = programName(line[start] ?? "");
   if (SHELLS.has(program) || program === "su") {
     const option = line.findIndex((word, index) => index > start && /^-[A-Za-z]*c[A-Za-z]*$/.test(word));
-    return option >= 0 ? line[option + 1] ?? null : null;
+    return option >= 0 ? (line[option + 1] ?? null) : null;
   }
   return null;
 }
@@ -47,10 +47,18 @@ function nestedScript(line: string[]): string | null {
 export function commandSegments(command: string, depth = 0): CommandSegments {
   const text = command.replace(/\\\r?\n/g, "");
   const bodies: string[] = [];
-  const lines = commandLines(text, bodies).map((words) => words.map(unquote).filter(Boolean)).filter((line) => line.length > 0);
-  const recognized = recognizeShell(text)?.pipelines.flat().map((simple) => simple.words.map((word) => word.text)) ?? [];
+  const lines = commandLines(text, bodies)
+    .map((words) => words.map(unquote).filter(Boolean))
+    .filter((line) => line.length > 0);
+  const recognized =
+    recognizeShell(text)
+      ?.pipelines.flat()
+      .map((simple) => simple.words.map((word) => word.text)) ?? [];
   const structural = [...resolveExpansions(lines), ...recognized];
-  const naive = text.split(COMMAND_BOUNDARY).map((segment) => unquote(segment).split(/\s+/).filter(Boolean)).filter((segment) => segment.length > 0);
+  const naive = text
+    .split(COMMAND_BOUNDARY)
+    .map((segment) => unquote(segment).split(/\s+/).filter(Boolean))
+    .filter((segment) => segment.length > 0);
   const textual = resolveExpansions(naive);
   if (depth < MAX_NESTED_SCRIPTS) {
     const scripts = lines.map(nestedScript).filter((script): script is string => script !== null);
@@ -81,7 +89,12 @@ function resolveExpansions(lines: string[][]): string[][] {
   const literals = new Map<string, string>();
   return lines.map((words) => {
     const first = words.findIndex((word) => !ASSIGNMENT.test(word));
-    const setters = first < 0 ? words : ["export", "declare", "typeset", "local", "readonly"].includes(words[first]) ? words.slice(first + 1) : [];
+    const setters =
+      first < 0
+        ? words
+        : ["export", "declare", "typeset", "local", "readonly"].includes(words[first])
+          ? words.slice(first + 1)
+          : [];
     for (const word of setters) {
       const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(word);
       if (assignment) {
@@ -109,10 +122,29 @@ function programName(word: string): string {
 // Words that run the command that follows them, and their options that take
 // the next word as a value.
 const WRAPPERS = new Map<string, string[]>([
-  ["sudo", ["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T"]], ["doas", ["-u", "-C"]], ["env", ["-u", "-C", "-S"]],
-  ["command", []], ["builtin", []], ["exec", ["-a"]], ["eval", []], ["time", ["-f", "-o"]], ["nohup", []], ["nice", ["-n"]],
-  ["xargs", ["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s"]], ["stdbuf", ["-i", "-o", "-e"]], ["setsid", []], ["watch", ["-n", "-d"]],
-  ["then", []], ["do", []], ["else", []], ["if", []], ["elif", []], ["while", []], ["until", []], ["!", []], ["{", []],
+  ["sudo", ["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T"]],
+  ["doas", ["-u", "-C"]],
+  ["env", ["-u", "-C", "-S"]],
+  ["command", []],
+  ["builtin", []],
+  ["exec", ["-a"]],
+  ["eval", []],
+  ["time", ["-f", "-o"]],
+  ["nohup", []],
+  ["nice", ["-n"]],
+  ["xargs", ["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s"]],
+  ["stdbuf", ["-i", "-o", "-e"]],
+  ["setsid", []],
+  ["watch", ["-n", "-d"]],
+  ["then", []],
+  ["do", []],
+  ["else", []],
+  ["if", []],
+  ["elif", []],
+  ["while", []],
+  ["until", []],
+  ["!", []],
+  ["{", []],
 ]);
 // find runs the command after these.
 const EXEC_OPTIONS = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
@@ -173,9 +205,10 @@ type WordTest = (word: string) => boolean;
 
 /** `-f` also matches a group of short flags that contains it (`-uf`), and `--as` matches `--as=admin`. */
 function literalWord(wanted: string): WordTest {
-  return (word) => word === wanted
-    || (SHORT_FLAG.test(wanted) && SHORT_FLAG_GROUP.test(word) && word.includes(wanted[1]))
-    || (wanted.startsWith("--") && word.startsWith(`${wanted}=`));
+  return (word) =>
+    word === wanted ||
+    (SHORT_FLAG.test(wanted) && SHORT_FLAG_GROUP.test(word) && word.includes(wanted[1])) ||
+    (wanted.startsWith("--") && word.startsWith(`${wanted}=`));
 }
 
 function globWord(glob: string): WordTest {
@@ -232,9 +265,9 @@ function splitAlternatives(word: string): string[] {
  * `*`, `?` and `[…]`; `[|]` is a literal `|`.
  */
 function wordTest(wanted: string): WordTest {
-  const alternatives = splitAlternatives(wanted).filter(Boolean).map((alternative) => (
-    /[*?[]/.test(alternative) ? globWord(alternative) : literalWord(alternative)
-  ));
+  const alternatives = splitAlternatives(wanted)
+    .filter(Boolean)
+    .map((alternative) => (/[*?[]/.test(alternative) ? globWord(alternative) : literalWord(alternative)));
   if (!alternatives.length) {
     throw new Error(`empty word in a pattern: ${JSON.stringify(wanted)}`);
   }
@@ -267,7 +300,9 @@ export function compileCommandPattern(raw: string): CommandPattern {
   }
   const words = pattern.split(/\s+/);
   if (words[0].includes("/")) {
-    throw new Error(`programs are matched by name, so "${words[0]}" never matches; write "${words[0].slice(words[0].lastIndexOf("/") + 1)}"`);
+    throw new Error(
+      `programs are matched by name, so "${words[0]}" never matches; write "${words[0].slice(words[0].lastIndexOf("/") + 1)}"`,
+    );
   }
   const [program, ...rest] = words.map(wordTest);
   // A one-word pattern (`sudo`, `mkfs*`) matches only where a program runs,
@@ -276,24 +311,32 @@ export function compileCommandPattern(raw: string): CommandPattern {
   // know (`docker exec c`, `ssh host`) may run it, and its other words must
   // follow.
   const oneWord = rest.length === 0;
-  const matches = (segments: string[][]) => segments.some((segment) => segment.some((word, start) => {
-    const expanded = word.startsWith(EXPANDED);
-    // A word the shell expands (`$k`, `${KUBECTL}`, `$(command -v kubectl)`)
-    // where a program runs could be any program: agents often name one
-    // through a variable. Not for a one-word pattern, or every command run
-    // by a variable would match.
-    const named = program(programName(expanded ? word.slice(1) : word));
-    if (oneWord ? !named || !atCommandPosition(segment, start) : !named && !(expanded && atCommandPosition(segment, start))) {
-      return false;
-    }
-    let next = start + 1;
-    return rest.every((wanted) => {
-      while (next < segment.length && !wanted(segment[next].replace(EXPANDED, ""))) {
-        next += 1;
-      }
-      next += 1;
-      return next <= segment.length;
-    });
-  }));
-  return (_command, segments) => (matches(segments.structural) ? "structural" : !oneWord && matches(segments.text) ? "text" : null);
+  const matches = (segments: string[][]) =>
+    segments.some((segment) =>
+      segment.some((word, start) => {
+        const expanded = word.startsWith(EXPANDED);
+        // A word the shell expands (`$k`, `${KUBECTL}`, `$(command -v kubectl)`)
+        // where a program runs could be any program: agents often name one
+        // through a variable. Not for a one-word pattern, or every command run
+        // by a variable would match.
+        const named = program(programName(expanded ? word.slice(1) : word));
+        if (
+          oneWord
+            ? !named || !atCommandPosition(segment, start)
+            : !named && !(expanded && atCommandPosition(segment, start))
+        ) {
+          return false;
+        }
+        let next = start + 1;
+        return rest.every((wanted) => {
+          while (next < segment.length && !wanted(segment[next].replace(EXPANDED, ""))) {
+            next += 1;
+          }
+          next += 1;
+          return next <= segment.length;
+        });
+      }),
+    );
+  return (_command, segments) =>
+    matches(segments.structural) ? "structural" : !oneWord && matches(segments.text) ? "text" : null;
 }

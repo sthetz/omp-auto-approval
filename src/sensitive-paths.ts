@@ -36,9 +36,15 @@ const NON_SECRET_ENV_SUFFIXES = new Set(["example", "sample", "template", "dist"
 
 /** Whether a path, relative to the directory being read, looks like it holds credentials. */
 export function isSensitivePath(relativePath: string): boolean {
-  const segments = relativePath.split(/[\\/]/).filter(Boolean).map((segment) => segment.toLowerCase());
+  const segments = relativePath
+    .split(/[\\/]/)
+    .filter(Boolean)
+    .map((segment) => segment.toLowerCase());
   const fileName = segments.at(-1) ?? "";
-  if (segments.slice(0, -1).some((segment) => SENSITIVE_DIRECTORIES.has(segment)) || SENSITIVE_DIRECTORIES.has(fileName)) {
+  if (
+    segments.slice(0, -1).some((segment) => SENSITIVE_DIRECTORIES.has(segment)) ||
+    SENSITIVE_DIRECTORIES.has(fileName)
+  ) {
     return true;
   }
   if (SENSITIVE_FILE_NAMES.has(fileName)) {

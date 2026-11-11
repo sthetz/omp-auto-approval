@@ -1,4 +1,11 @@
-import { defaultRules, type CommandRules, type OperandCheckName, type OperandRule, type OptionKind, type ProgramEntry } from "./command-rules.js";
+import {
+  defaultRules,
+  type CommandRules,
+  type OperandCheckName,
+  type OperandRule,
+  type OptionKind,
+  type ProgramEntry,
+} from "./command-rules.js";
 import type { FileFilter } from "./path-expansion.js";
 import { isSensitivePath } from "./sensitive-paths.js";
 import type { ShellWord } from "./shell-syntax.js";
@@ -61,7 +68,10 @@ export interface RuleContext {
 }
 
 // The parts of an entry that option parsing reads.
-type OptionTable = Pick<ProgramEntry, "flags" | "values" | "long" | "longValues" | "aliases" | "numeric" | "stopAtOperand">;
+type OptionTable = Pick<
+  ProgramEntry,
+  "flags" | "values" | "long" | "longValues" | "aliases" | "numeric" | "stopAtOperand"
+>;
 
 const NUMBER = /^[+-]?\d+(\.\d+)?[A-Za-z]{0,3}$/;
 const DURATION = /^\d+(\.\d+)?[smhd]?$/;
@@ -200,7 +210,12 @@ function readsFiles(command: ParsedCommand, context: RuleContext, operands = com
  * operand, or one that bash may drop (a glob, under nullglob), the search
  * covers the working directory too.
  */
-function recursiveReadIsClean(command: ParsedCommand, context: RuleContext, operands: ShellWord[], paths: string[], filter?: FileFilter): boolean {
+function recursiveReadIsClean(
+  context: RuleContext,
+  operands: ShellWord[],
+  paths: string[],
+  filter?: FileFilter,
+): boolean {
   const roots = !operands.length || operands.some((word) => word.expands) ? [...paths, context.directory] : paths;
   return roots.every((path) => context.treeIsClean(path, filter));
 }
@@ -239,7 +254,7 @@ function checkGrep(command: ParsedCommand, context: RuleContext): boolean {
   // working directory instead.
   const filter = grepFilter(command);
   return has(command, "recursive")
-    ? recursiveReadIsClean(command, context, operands, paths, filter)
+    ? recursiveReadIsClean(context, operands, paths, filter)
     : paths.every((path) => context.treeIsClean(path, filter));
 }
 
@@ -395,7 +410,8 @@ function checkSed(command: ParsedCommand, context: RuleContext): boolean {
 }
 
 // jq builtins that read the environment or load modules from files.
-const JQ_UNSAFE = /(?<![.$\w])(?:env|import|include|modulemeta|get_search_list|get_prog_origin|get_jq_origin)(?!\w)|\$ENV(?!\w)/;
+const JQ_UNSAFE =
+  /(?<![.$\w])(?:env|import|include|modulemeta|get_search_list|get_prog_origin|get_jq_origin)(?!\w)|\$ENV(?!\w)/;
 
 function checkJq(command: ParsedCommand, context: RuleContext): boolean {
   const [filter, ...inputs] = command.operands;
@@ -405,16 +421,20 @@ function checkJq(command: ParsedCommand, context: RuleContext): boolean {
   return readsFiles(command, context, inputs) !== null;
 }
 
-const FIND_TESTS_WITHOUT_VALUE = new Set(words(`
+const FIND_TESTS_WITHOUT_VALUE = new Set(
+  words(`
   -print -print0 -prune -quit -empty -readable -writable -executable -true -false -depth -xdev -mount
   -nouser -nogroup -ls -daystart -noleaf -ignore_readdir_race -noignore_readdir_race
   ! ( ) , -not -a -and -o -or
-`));
-const FIND_TESTS_WITH_VALUE = new Set(words(`
+`),
+);
+const FIND_TESTS_WITH_VALUE = new Set(
+  words(`
   -name -iname -path -ipath -wholename -iwholename -regex -iregex -regextype -type -xtype -maxdepth -mindepth
   -mtime -mmin -atime -amin -ctime -cmin -size -perm -user -group -uid -gid -links -inum -lname -ilname
   -printf -used -newermt
-`));
+`),
+);
 const FIND_TESTS_WITH_PATH = new Set(["-newer", "-anewer", "-cnewer", "-samefile"]);
 
 /**
@@ -443,7 +463,11 @@ function parseFind(words: ShellWord[]): ParsedCommand | null {
       index += 1;
       continue;
     }
-    const kind = FIND_TESTS_WITH_VALUE.has(word.text) ? "string" : FIND_TESTS_WITH_PATH.has(word.text) ? "read-file" : null;
+    const kind = FIND_TESTS_WITH_VALUE.has(word.text)
+      ? "string"
+      : FIND_TESTS_WITH_PATH.has(word.text)
+        ? "read-file"
+        : null;
     const value = words[index + 1];
     if (!kind || !value || value.expands) {
       return null;
@@ -465,7 +489,13 @@ function checkPrintf(command: ParsedCommand): boolean {
 
 function checkTimeout(command: ParsedCommand, context: RuleContext): boolean {
   const [duration, ...inner] = command.operands;
-  return duration !== undefined && DURATION.test(duration.text) && !duration.expands && inner.length > 0 && context.command(inner);
+  return (
+    duration !== undefined &&
+    DURATION.test(duration.text) &&
+    !duration.expands &&
+    inner.length > 0 &&
+    context.command(inner)
+  );
 }
 
 /**
@@ -491,36 +521,52 @@ function gitOperands(command: ParsedCommand, context: RuleContext): boolean {
   return command.operands.every((operand) => isWorkspaceGitOperand(operand.text, context));
 }
 
-const GIT_BRANCH_LIST_FLAGS = new Set(["--show-current", "--list", "--all", "--merged", "--no-merged", "-a", "-r", "-v", "-vv"]);
+const GIT_BRANCH_LIST_FLAGS = new Set([
+  "--show-current",
+  "--list",
+  "--all",
+  "--merged",
+  "--no-merged",
+  "-a",
+  "-r",
+  "-v",
+  "-vv",
+]);
 // Positional arguments are branch-name patterns only in list mode; otherwise
 // `git branch <name>` creates a branch.
 const GIT_BRANCH_LIST_MODE_FLAGS = new Set(["--list", "--merged", "--no-merged"]);
 
 function gitBranchList(args: string[]): boolean {
   const flags = args.filter((arg) => arg.startsWith("-"));
-  return flags.every((flag) => GIT_BRANCH_LIST_FLAGS.has(flag))
-    && (flags.length === args.length || flags.some((flag) => GIT_BRANCH_LIST_MODE_FLAGS.has(flag)));
+  return (
+    flags.every((flag) => GIT_BRANCH_LIST_FLAGS.has(flag)) &&
+    (flags.length === args.length || flags.some((flag) => GIT_BRANCH_LIST_MODE_FLAGS.has(flag)))
+  );
 }
 
 // `git tag <name>` creates a tag; patterns are listed only with -l.
 function gitTagList(args: string[]): boolean {
   const flags = args.filter((arg) => arg.startsWith("-"));
-  return flags.every((flag) => ["-l", "--list"].includes(flag) || /^-n\d*$/.test(flag) || /^--(sort|format)=/.test(flag))
-    && (flags.length === args.length || flags.some((flag) => flag === "-l" || flag === "--list"));
+  return (
+    flags.every((flag) => ["-l", "--list"].includes(flag) || /^-n\d*$/.test(flag) || /^--(sort|format)=/.test(flag)) &&
+    (flags.length === args.length || flags.some((flag) => flag === "-l" || flag === "--list"))
+  );
 }
 
 type OperandCheck = (command: ParsedCommand, context: RuleContext, rule: OperandRule, args: ShellWord[]) => boolean;
 
 const texts = (args: ShellWord[]) => args.map((word) => word.text);
-const counted = (command: ParsedCommand, rule: OperandRule) => command.operands.length >= rule.min && command.operands.length <= rule.max;
+const counted = (command: ParsedCommand, rule: OperandRule) =>
+  command.operands.length >= rule.min && command.operands.length <= rule.max;
 
 /** The checks an entry's `operands` can name (see OPERAND_CHECKS). */
 const OPERAND_CHECK_FUNCTIONS: Record<OperandCheckName, OperandCheck> = {
   "read-files": (command, context, rule) => counted(command, rule) && readsFiles(command, context) !== null,
-  "literals": (command, _context, rule) => counted(command, rule)
-    && command.operands.every((word) => !word.expands && (!rule.pattern || rule.pattern.test(word.text))),
-  "none": (command) => command.operands.length === 0,
-  "any": () => true,
+  literals: (command, _context, rule) =>
+    counted(command, rule) &&
+    command.operands.every((word) => !word.expands && (!rule.pattern || rule.pattern.test(word.text))),
+  none: (command) => command.operands.length === 0,
+  any: () => true,
   "printf-format": checkPrintf,
   "grep-operands": checkGrep,
   "diff-operands": checkDiff,
@@ -530,9 +576,11 @@ const OPERAND_CHECK_FUNCTIONS: Record<OperandCheckName, OperandCheck> = {
   "git-operands": gitOperands,
   "git-branch-list": (command, context, _rule, args) => gitOperands(command, context) && gitBranchList(texts(args)),
   "git-tag-list": (command, context, _rule, args) => gitOperands(command, context) && gitTagList(texts(args)),
-  "git-remote": (command, context, _rule, args) => gitOperands(command, context)
-    && (args.every((arg) => arg.text === "-v" || arg.text === "--verbose") || args[0]?.text === "get-url"),
-  "git-stash-list": (command, context, _rule, args) => gitOperands(command, context) && ["list", "show"].includes(args[0]?.text ?? ""),
+  "git-remote": (command, context, _rule, args) =>
+    gitOperands(command, context) &&
+    (args.every((arg) => arg.text === "-v" || arg.text === "--verbose") || args[0]?.text === "get-url"),
+  "git-stash-list": (command, context, _rule, args) =>
+    gitOperands(command, context) && ["list", "show"].includes(args[0]?.text ?? ""),
 };
 
 /**
@@ -543,7 +591,9 @@ const OPERAND_CHECK_FUNCTIONS: Record<OperandCheckName, OperandCheck> = {
 function isExcepted(text: string, except: string[]): boolean {
   if (text.startsWith("--")) {
     const name = text.split("=", 1)[0];
-    return except.some((option) => option.startsWith("--") && (name.startsWith(option) || (name.length > 2 && option.startsWith(name))));
+    return except.some(
+      (option) => option.startsWith("--") && (name.startsWith(option) || (name.length > 2 && option.startsWith(name))),
+    );
   }
   return text.startsWith("-") && except.some((option) => !option.startsWith("--") && text.slice(1).includes(option[1]));
 }
@@ -576,11 +626,11 @@ function parseAnyOptions(entry: ProgramEntry, args: ShellWord[]): ParsedCommand 
 
 function globalOptionKind(entry: ProgramEntry, text: string): OptionKind | null {
   if (/^-[A-Za-z0-9]$/.test(text)) {
-    return entry.flags.includes(text[1]) ? "flag" : entry.values[text[1]] ?? null;
+    return entry.flags.includes(text[1]) ? "flag" : (entry.values[text[1]] ?? null);
   }
   if (text.startsWith("--")) {
     const name = text.slice(2);
-    return entry.long.includes(name) ? "flag" : entry.longValues[name] ?? null;
+    return entry.long.includes(name) ? "flag" : (entry.longValues[name] ?? null);
   }
   return null;
 }
@@ -591,13 +641,22 @@ function globalOptionKind(entry: ProgramEntry, text: string): OptionKind | null 
  * and no word may expand. `-C dir` style options move the rest of the
  * command to that directory.
  */
-function isSafeWithSubcommand(entry: ProgramEntry, words: ShellWord[], context: RuleContext, used: { entry?: ProgramEntry }): boolean {
+function isSafeWithSubcommand(
+  entry: ProgramEntry,
+  words: ShellWord[],
+  context: RuleContext,
+  used: { entry?: ProgramEntry },
+): boolean {
   if (words.some((word) => word.expands)) {
     return false;
   }
   let index = 1;
   let place = context;
-  for (let kind = globalOptionKind(entry, words[index]?.text ?? ""); kind; kind = globalOptionKind(entry, words[index]?.text ?? "")) {
+  for (
+    let kind = globalOptionKind(entry, words[index]?.text ?? "");
+    kind;
+    kind = globalOptionKind(entry, words[index]?.text ?? "")
+  ) {
     if (kind !== "flag") {
       const value = words[index + 1]?.text;
       if (value === undefined) {
@@ -621,15 +680,23 @@ function isSafeWithSubcommand(entry: ProgramEntry, words: ShellWord[], context: 
 }
 
 // `used` is given the entry that decided: the subcommand's, for a program with subcommands.
-function isSafeByEntry(entry: ProgramEntry, words: ShellWord[], context: RuleContext, used: { entry?: ProgramEntry }): boolean {
+function isSafeByEntry(
+  entry: ProgramEntry,
+  words: ShellWord[],
+  context: RuleContext,
+  used: { entry?: ProgramEntry },
+): boolean {
   if (entry.subcommands) {
     return isSafeWithSubcommand(entry, words, context, used);
   }
   const args = words.slice(1);
-  const command = entry.anyOptions ? parseAnyOptions(entry, args)
-    : entry.arguments === "find-expression" ? parseFind(words)
-    : entry.arguments === "literal-words" ? parseLiteralWords(words)
-    : parseOptions(entry, words);
+  const command = entry.anyOptions
+    ? parseAnyOptions(entry, args)
+    : entry.arguments === "find-expression"
+      ? parseFind(words)
+      : entry.arguments === "literal-words"
+        ? parseLiteralWords(words)
+        : parseOptions(entry, words);
   if (!command) {
     return false;
   }
@@ -667,7 +734,7 @@ function isSafeByEntry(entry: ProgramEntry, words: ShellWord[], context: RuleCon
 export function safeByProgramRule(words: ShellWord[], context: RuleContext, rules: CommandRules): ProgramEntry | null {
   const entry = rules.programs.get(words[0].text);
   const used: { entry?: ProgramEntry } = {};
-  return entry !== undefined && isSafeByEntry(entry, words, context, used) ? used.entry ?? null : null;
+  return entry !== undefined && isSafeByEntry(entry, words, context, used) ? (used.entry ?? null) : null;
 }
 
 /**

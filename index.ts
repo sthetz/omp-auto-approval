@@ -2,7 +2,13 @@ import type { ClearanceConfig, ExtensionContextLike, Reviewer } from "./src/type
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, saveConfig } from "./src/extension-config.js";
 import { defaultRulesPath, userRulesPath, type CommandRules } from "./src/command-rules.js";
 import { decide, sessionKey, snapshotDecisionState, type Decision } from "./src/decision.js";
-import { canonicalContext, canonicalTools, evaluateToolCall } from "./src/omp-host.js";
+import {
+  canonicalContext,
+  canonicalToolCall,
+  canonicalTools,
+  evaluateToolCall,
+  reviewToolResult,
+} from "./src/omp-host.js";
 import { describeRule, rulesOverview } from "./src/rules-report.js";
 import { toRecord } from "./src/common.js";
 import { findToolDefinition } from "./src/tool-routing.js";
@@ -445,6 +451,30 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
       return {
         block: true,
         reason: `omp-clearance failed to decide this tool call: ${reason}. Do not retry; report this error to the user.`,
+      };
+    }
+  });
+
+  // A result OMP is about to pass to the agent. Only lsp results are checked
+  // (see reviewToolResult); a failure withholds the result rather than
+  // passing on what could not be checked.
+  omp.on("tool_result", async (event: unknown, context: unknown) => {
+    if (canonicalToolCall(event).toolName !== "lsp") {
+      return undefined;
+    }
+    try {
+      const ctx = canonicalContext(context) ?? lastContext;
+      if (!ctx) {
+        throw new Error("OMP supplied an invalid extension context");
+      }
+      return await reviewToolResult(event, ctx, config);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return {
+        content: [
+          { type: "text" as const, text: `omp-clearance withheld this lsp result: checking it failed (${reason}).` },
+        ],
+        isError: true as const,
       };
     }
   });

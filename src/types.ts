@@ -135,6 +135,16 @@ export interface AuditEntry {
   durationMs?: number;
 }
 
+/** An lsp result was replaced because it showed source lines the agent may not read without review. */
+export interface ResultWithheldEntry {
+  event: "result_withheld";
+  toolName: string;
+  actionSummary: string;
+  actionHash: string;
+  // The path whose source lines the result showed.
+  path: string;
+}
+
 /** An approved bash command turned the session's bash fast path off (see shellHook). */
 export interface ShellLatchEntry {
   event: "shell_latch";

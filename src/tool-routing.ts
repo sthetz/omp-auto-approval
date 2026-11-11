@@ -175,7 +175,7 @@ function parseJsonStringArray(value: string): string[] | null {
  * Apart from `~/` expansion, every form other than a plain path or a JSON
  * array of plain paths is left to review instead of being re-implemented here.
  */
-function isReadTarget(value: unknown, roots: ReadRoots, depth = 0): boolean {
+export function isReadTarget(value: unknown, roots: ReadRoots, depth = 0): boolean {
   if (Array.isArray(value)) {
     return depth === 0 && value.length > 0 && value.every((item) => isReadTarget(item, roots, depth + 1));
   }

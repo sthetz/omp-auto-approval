@@ -46,6 +46,8 @@ Every path the call names (`file`, and `new_name` for `rename_file`) must pass t
 - `reload` and `request` (any raw LSP method);
 - fields outside the tool's schema.
 
+A language server answers from every file the workspace's code refers to, which can include files outside the workspace and `readRoots` or sensitive ones, and the agent can write that code without review. So every `lsp` result, reviewed or not, is checked before the agent sees it: a result that shows source lines from a file the [workspace read](#workspace-reads) checks would refuse (as `definition` or `references` do under each location) is replaced by a note saying so, and the audit log records a `result_withheld` entry. Paths and symbol names without their source lines are let through. Not covered: `hover` and `diagnostics` can show the value of a constant from such a file (`const TOKEN: "…"`) without naming it, and a review would not catch that either, since the reviewer sees the call, not its result.
+
 The agent often calls `lsp` by writing its arguments to `xd://lsp` with the `write` tool. OMP then runs the `lsp` call as a separate tool call, which is decided as above, so that write is let through (route `lsp_dispatch`). This applies to `xd://lsp` only; other `xd://` devices, such as `xd://bash`, stay reviewed. Letting the write through does not reset the count of [consecutive denials](../README.md#reviewers).
 
 ## Safe bash commands

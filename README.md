@@ -201,7 +201,7 @@ Every decision is appended as a line of JSON to `logs/omp-clearance.jsonl` in th
 - the rule that decided (`ruleId`, `ruleSource`), or for a fast-pathed command the entries that let it through (`ruleIds`);
 - the command as actually run, if pinning rewrote it (`pinnedCommand`, `pinnedCwd`).
 
-A `shell_latch` event records when the bash fast path turned off for a session. The log holds the commands and paths your agent used, so treat it as private.
+A `shell_latch` event records when the bash fast path turned off for a session, and a `result_withheld` event an `lsp` result the agent did not see because it showed source lines from a file it may not read without review ([details](docs/fast-paths.md#language-server-queries)). The log holds the commands and paths your agent used, so treat it as private.
 
 ## Development
 

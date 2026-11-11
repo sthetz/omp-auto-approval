@@ -10,6 +10,9 @@ export default defineConfig(
     },
     rules: {
       "@typescript-eslint/restrict-template-expressions": ["error", { allowNumber: true }],
+      // String spreads here split into code points on purpose (glob characters,
+      // option letters), not user-facing text; other misused spreads stay errors.
+      "@typescript-eslint/no-misused-spread": ["error", { allow: [{ from: "lib", name: "string" }] }],
 
       // Rules the code doesn't pass yet. Each is turned on in its own
       // commit, with its fixes.
@@ -17,7 +20,6 @@ export default defineConfig(
       "@typescript-eslint/no-deprecated": "off",
       "@typescript-eslint/no-dynamic-delete": "off",
       "@typescript-eslint/no-explicit-any": "off",
-      "@typescript-eslint/no-misused-spread": "off",
       "@typescript-eslint/no-non-null-assertion": "off",
       "@typescript-eslint/no-redundant-type-constituents": "off",
       "@typescript-eslint/no-unnecessary-condition": "off",

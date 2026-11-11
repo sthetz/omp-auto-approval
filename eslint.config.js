@@ -21,8 +21,9 @@ export default defineConfig(
       // option letters), not user-facing text; other misused spreads stay errors.
       "@typescript-eslint/no-misused-spread": ["error", { allow: [{ from: "lib", name: "string" }] }],
 
-      // Rules the code doesn't pass yet. Each is turned on in its own
-      // commit, with its fixes.
+      // Without noUncheckedIndexedAccess, arr[i] and record[key] are typed as
+      // always present, so this rule calls the checks on them unnecessary.
+      // It is turned on together with that flag.
       "@typescript-eslint/no-unnecessary-condition": "off",
     },
   },

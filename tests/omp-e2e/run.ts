@@ -76,6 +76,14 @@ interface Scenario {
 }
 
 const bash = (command: string): ToolCall => ({ name: "bash", arguments: { command } });
+const lsp = (args: Record<string, unknown>): ToolCall => ({
+  name: "write",
+  arguments: { path: "xd://lsp", content: JSON.stringify({ ...args, timeout: 60 }) },
+});
+const lspRename = (file: string, line: number, symbol: string, newName: string, apply: boolean) =>
+  lsp({ action: "rename", file, line, symbol, new_name: newName, apply });
+const lspMove = (file: string, newName: string, apply: boolean) =>
+  lsp({ action: "rename_file", file, new_name: newName, apply });
 const decisions = (result: RunResult) => result.audit.filter((line) => line.event === "decision");
 const expect = (problems: string[], ok: boolean, message: string) => {
   if (!ok) {
@@ -501,6 +509,137 @@ const SCENARIOS: Scenario[] = [
         problems,
         result.audit.some((line) => line.event === "result_withheld"),
         "the audit log has no result_withheld entry",
+      );
+      return problems;
+    },
+  },
+  {
+    // An lsp edit's files are chosen by the language server, after the
+    // decision. A preview lists them; an apply that repeats a preview whose
+    // files can all be written without review skips review too.
+    name: "an lsp rename that repeats a clean preview skips review",
+    reviewer: "manual",
+    verdict: "deny",
+    requires: "typescript-language-server",
+    files: {
+      "package.json": '{"name":"probe","version":"1.0.0"}\n',
+      "tsconfig.json": "{}\n",
+      "src/a.ts": "export const oldName = 1;\n",
+      "src/b.ts": 'import { oldName } from "./a";\nexport const used = oldName;\n',
+    },
+    // At the definition, so that the rename reaches b.ts too.
+    steps: [
+      lspRename("src/a.ts", 1, "oldName", "newName", false),
+      lspRename("src/a.ts", 1, "oldName", "newName", true),
+    ],
+    check(result) {
+      const problems: string[] = [];
+      const routes = decisions(result).map((line) => `${line.route}/${line.outcome}`);
+      expect(problems, routes.includes("lsp_edit/allow"), `no lsp_edit decision: ${JSON.stringify(routes)}`);
+      const shown = JSON.stringify(result.model.toolResults);
+      expect(
+        problems,
+        /skips review once/.test(shown),
+        `the preview did not say the apply skips review: ${shown.slice(-600)}`,
+      );
+      for (const file of ["src/a.ts", "src/b.ts"]) {
+        expect(
+          problems,
+          readFileSync(join(result.workspace, file), "utf8").includes("newName"),
+          `${file} was not renamed`,
+        );
+      }
+      expect(
+        problems,
+        !result.audit.some((line) => line.event === "lsp_edit_mismatch"),
+        "the apply was reported as a mismatch",
+      );
+      return problems;
+    },
+  },
+  {
+    name: "an lsp rename whose preview reaches outside the workspace is reviewed",
+    reviewer: "manual",
+    verdict: "deny",
+    requires: "typescript-language-server",
+    files: {
+      "package.json": '{"name":"probe","version":"1.0.0"}\n',
+      "tsconfig.json": "{}\n",
+      // c.ts brings ../outside.ts into the project, and outside.ts uses c.ts's `local`.
+      "../outside.ts": 'import { local } from "./work/src/c";\nexport const shared = local;\n',
+      "src/c.ts": 'import { shared } from "../../outside";\nexport const local = 1;\nexport const used = shared;\n',
+    },
+    steps: [lspRename("src/c.ts", 2, "local", "renamed", false), lspRename("src/c.ts", 2, "local", "renamed", true)],
+    check(result) {
+      const problems: string[] = [];
+      const routes = decisions(result).map((line) => `${line.route}/${line.outcome}`);
+      const shown = JSON.stringify(result.model.toolResults);
+      expect(
+        problems,
+        /outside\.ts: \d+ edits?/.test(shown),
+        `the preview did not list outside.ts: ${shown.slice(-600)}`,
+      );
+      expect(problems, !routes.includes("lsp_edit/allow"), `the apply skipped review: ${JSON.stringify(routes)}`);
+      expect(
+        problems,
+        !readFileSync(join(result.workspace, "..", "outside.ts"), "utf8").includes("renamed"),
+        "the file outside the workspace changed",
+      );
+      return problems;
+    },
+  },
+  {
+    name: "an lsp rename_file that repeats a clean preview skips review",
+    reviewer: "manual",
+    verdict: "deny",
+    requires: "typescript-language-server",
+    files: {
+      "package.json": '{"name":"probe","version":"1.0.0"}\n',
+      "tsconfig.json": "{}\n",
+      "src/a.ts": "export const value = 1;\n",
+      "src/b.ts": 'import { value } from "./a";\nexport const used = value;\n',
+    },
+    steps: [lspMove("src/a.ts", "src/moved.ts", false), lspMove("src/a.ts", "src/moved.ts", true)],
+    check(result) {
+      const problems: string[] = [];
+      const routes = decisions(result).map((line) => `${line.route}/${line.outcome}`);
+      expect(problems, routes.includes("lsp_edit/allow"), `no lsp_edit decision: ${JSON.stringify(routes)}`);
+      // Whether the server also updates b.ts's import is up to the server.
+      expect(problems, existsSync(join(result.workspace, "src/moved.ts")), "src/a.ts was not moved");
+      expect(
+        problems,
+        !result.audit.some((line) => line.event === "lsp_edit_mismatch"),
+        `the apply was reported as a mismatch: ${JSON.stringify(result.model.toolResults).slice(-600)}`,
+      );
+      return problems;
+    },
+  },
+  {
+    // A write between the preview and the apply can change what the same
+    // arguments mean, so the apply no longer skips review.
+    name: "an lsp rename after a write since its preview is reviewed",
+    reviewer: "manual",
+    verdict: "deny",
+    requires: "typescript-language-server",
+    files: {
+      "package.json": '{"name":"probe","version":"1.0.0"}\n',
+      "tsconfig.json": "{}\n",
+      "src/a.ts": "export const oldName = 1;\n",
+    },
+    steps: [
+      lspRename("src/a.ts", 1, "oldName", "newName", false),
+      { name: "write", arguments: { path: "src/a.ts", content: "export const oldName = 2;\n" } },
+      lspRename("src/a.ts", 1, "oldName", "newName", true),
+    ],
+    check(result) {
+      const problems: string[] = [];
+      const routes = decisions(result).map((line) => `${line.route}/${line.outcome}`);
+      expect(problems, routes.includes("workspace_write/allow"), `the write did not run: ${JSON.stringify(routes)}`);
+      expect(problems, !routes.includes("lsp_edit/allow"), `the apply skipped review: ${JSON.stringify(routes)}`);
+      expect(
+        problems,
+        readFileSync(join(result.workspace, "src/a.ts"), "utf8") === "export const oldName = 2;\n",
+        "the rename was applied",
       );
       return problems;
     },

@@ -41,12 +41,23 @@ Calls to OMP's own `lsp` tool that only ask the language server a question or pr
 
 Every path the call names (`file`, and `new_name` for `rename_file`) must pass the [workspace read](#workspace-reads) checks; `*` (the whole workspace) is accepted for `symbols`. These always go to the session reviewer instead:
 
-- applied edits: `rename` and `rename_file` (they apply unless `apply` is false) and `code_actions` with `apply: true`. The language server decides which files an edit changes only after this decision, and OMP writes them without checking where they are; a code action can also run a command inside the server;
+- applied edits: `rename` and `rename_file` (they apply unless `apply` is false) and `code_actions` with `apply: true`, except a previewed rename (below). The language server decides which files an edit changes only after this decision, and OMP writes them without checking where they are; a code action can also run a command inside the server;
 - `diagnostics` on `*`, which runs the project's own checker (`cargo check`, `npx tsc`, `go build` or `pyright`), and `diagnostics` on a glob;
 - `reload` and `request` (any raw LSP method);
 - fields outside the tool's schema.
 
 A language server answers from every file the workspace's code refers to, which can include files outside the workspace and `readRoots` or sensitive ones, and the agent can write that code without review. So every `lsp` result, reviewed or not, is checked before the agent sees it: a result that shows source lines from a file the [workspace read](#workspace-reads) checks would refuse (as `definition` or `references` do under each location) is replaced by a note saying so, and the audit log records a `result_withheld` entry. Paths and symbol names without their source lines are let through. Not covered: `hover` and `diagnostics` can show the value of a constant from such a file (`const TOKEN: "…"`) without naming it, and a review would not catch that either, since the reviewer sees the call, not its result.
+
+### Previewed renames
+
+A `rename` or `rename_file` that repeats an earlier preview of the same call (`file`, `line`, `symbol` and `new_name`, in the same session and directory) skips review once (route `lsp_edit`) when:
+
+- the preview listed only text edits, each in a file the [workspace write](#workspace-writes) checks accept: inside the workspace, not a protected entry, not credential-like, not a program. A preview that creates, moves or deletes files, reports server notes, or prints anything else does not count;
+- for `rename`, the new name is an identifier (letters, digits, `_`, `$`), since it is written at every reference;
+- for `rename_file`, the file is an ordinary file that is not a program (no execute bit, no `#!` first line, not a directory), and both its old and new paths pass the same write checks;
+- nothing that could change files ran while the preview ran or since: no call other than reads, language server queries and previews was allowed in that time or was still running, and none of OMP's background jobs (async bash, subagents) was running. Even a write that skips review counts, because a changed file can make the same arguments name another symbol, such as one declared outside the workspace. A call whose result never comes back keeps this fast path off for the session.
+
+The preview tells the agent when its apply would skip review. With nothing changed in between, the language server sees the same code and normally gives the same answer, but this extension cannot make it: a server still loading the project, for one, can answer the apply with more files than the preview (OMP waits for the project to load before a rename, which makes this unlikely). What such an apply can write is limited, though: a rename writes the new name, an identifier, at the places the server finds the symbol, and `rename_file` writes import paths. After the apply, its result is compared with the preview: if it changed a file the preview did not list, made more edits in one than the preview counted, failed, or printed something this extension does not recognise, you get a warning, the audit log records an `lsp_edit_mismatch` event, and edits are reviewed again for the rest of the session. That check comes after the change, so it can tell you about it but not prevent it. Programs outside OMP's view, such as your editor or a process an approved command left running, can also change files between the two calls; only that check covers them.
 
 The agent often calls `lsp` by writing its arguments to `xd://lsp` with the `write` tool. OMP then runs the `lsp` call as a separate tool call, which is decided as above, so that write is let through (route `lsp_dispatch`). This applies to `xd://lsp` only; other `xd://` devices, such as `xd://bash`, stay reviewed. Letting the write through does not reset the count of [consecutive denials](../README.md#reviewers).
 

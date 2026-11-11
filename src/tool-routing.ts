@@ -370,10 +370,15 @@ function isProtectedWorkspacePath(relativePath: string): boolean {
  */
 function writesProgram(input: unknown): boolean {
   const content = toRecord(input).content;
-  return typeof content === "string" && content.startsWith("#!") && !content.startsWith("#![");
+  return typeof content === "string" && startsAsProgram(content);
 }
 
-function isExecutableFile(path: string, cwd: string): boolean {
+/** Text OMP's write tool would make executable: a `#!` line, but not Rust's `#![`. */
+export function startsAsProgram(text: string): boolean {
+  return text.startsWith("#!") && !text.startsWith("#![");
+}
+
+export function isExecutableFile(path: string, cwd: string): boolean {
   try {
     const stats = statSync(resolvePathForCwd(path, cwd));
     return stats.isFile() && (stats.mode & 0o111) !== 0;
@@ -395,25 +400,33 @@ export function isWorkspaceWriteFastPath(input: unknown, cwd: string, protectedF
   if (writesProgram(input)) {
     return false;
   }
-  const protectedPaths = new Set(protectedFiles.map((path) => canonicalPath(path, cwd)));
+  const writable = workspaceWriteTarget(cwd, protectedFiles);
   const destinations: unknown[] = [];
   collectWriteDestinations(input, destinations);
-  return (
-    destinations.length > 0 &&
-    destinations.every((destination) => {
-      if (typeof destination !== "string" || !isPlainPath(destination)) {
-        return false;
-      }
-      const relative = relativePathWithin(destination, cwd);
-      return (
-        relative !== null &&
-        !protectedPaths.has(canonicalPath(destination, cwd)) &&
-        !isProtectedWorkspacePath(relative) &&
-        !isSensitivePath(relative) &&
-        !isExecutableFile(destination, cwd)
-      );
-    })
-  );
+  return destinations.length > 0 && destinations.every(writable);
+}
+
+/**
+ * The workspace write fast path's check on one destination, with the
+ * protected files resolved once: a plain path inside the workspace, not a
+ * protected entry, protected file or credential file, and not an existing
+ * program.
+ */
+export function workspaceWriteTarget(cwd: string, protectedFiles: string[] = []): (destination: unknown) => boolean {
+  const protectedPaths = new Set(protectedFiles.map((path) => canonicalPath(path, cwd)));
+  return (destination) => {
+    if (typeof destination !== "string" || !isPlainPath(destination)) {
+      return false;
+    }
+    const relative = relativePathWithin(destination, cwd);
+    return (
+      relative !== null &&
+      !protectedPaths.has(canonicalPath(destination, cwd)) &&
+      !isProtectedWorkspacePath(relative) &&
+      !isSensitivePath(relative) &&
+      !isExecutableFile(destination, cwd)
+    );
+  };
 }
 
 export function isManualOnlyTool(toolName: string, toolDefinition?: unknown): boolean {

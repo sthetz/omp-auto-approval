@@ -81,6 +81,21 @@ const PROTECTED_WORKSPACE_ENTRIES = new Set([
   ".vscode",
   ".idea",
   ".devcontainer",
+  // Language servers. OMP starts them when a code file is written
+  // (`lsp.diagnosticsOnWrite` is on by default), reads their command from
+  // these files, looks for their programs under `node_modules/.bin` and
+  // the virtualenv `bin` directories first, and typescript-language-server
+  // runs the workspace's `node_modules/typescript/lib/tsserver.js`.
+  "lsp.json",
+  ".lsp.json",
+  "lsp.yaml",
+  ".lsp.yaml",
+  "lsp.yml",
+  ".lsp.yml",
+  "node_modules",
+  ".venv",
+  "venv",
+  ".env",
 ]);
 
 export function isLocalStateTool(toolName: string): boolean {

@@ -26,8 +26,11 @@ Calls to OMP's own `write` and `edit` tools whose every destination, including `
 - protected entries at any depth, after resolving symlinks. Their contents are executed or trusted later without a call this extension could review:
   - git: `.git`, `.husky`. `core.fsmonitor` in `.git/config` runs on `git status`;
   - agent and editor settings: `.omp`, `.pi`, `.claude`, `.codex`, `.gemini`, `.opencode`, `.cursor`, `.windsurf`, `.mcp.json`, `mcp.json`, `opencode.json`, `opencode.jsonc`, `ssh.json`, `.ssh.json`, `.envrc`, `.vscode`, `.idea`, `.devcontainer`. OMP reads the project config of several agents and starts the MCP servers it names when a session starts, and Claude Code hooks in `.claude/settings.json` run shell commands;
+  - language servers: `lsp.json`, `.lsp.json`, `lsp.yaml`, `.lsp.yaml`, `lsp.yml`, `.lsp.yml`, `node_modules`, `.venv`, `venv`, `.env`. OMP starts a language server when a code file is written, takes its command from these files, looks for it in `node_modules/.bin` and virtualenvs first, and typescript-language-server runs the workspace's own `tsserver.js`;
 - the credential-like files listed above for reads, such as `.env` or `*.pem`;
 - writes that create or change a program: content starting with `#!` (OMP's `write` tool makes such a file executable) or a destination that is already executable. A program in the workspace can shadow a command on the shell's PATH.
+
+Not covered: language servers that run ordinary project files, which this fast path lets the agent write. The ESLint server loads `eslint.config.js`, rust-analyzer runs `build.rs` and proc macros, and the servers for Tailwind, Svelte, Gradle, sbt, Elixir, Zig and Nix (nixd) load or evaluate project code. OMP starts the server for a file type when a file of that type is written, so a write can make code run later without review. If such a server is installed, turn off `lsp.diagnosticsOnWrite` in OMP's settings (it is on by default) and leave `lsp.diagnosticsOnEdit` and `lsp.formatOnWrite` off (their default). Language servers then start only through the `lsp` tool, which is reviewed.
 
 ## Safe bash commands
 

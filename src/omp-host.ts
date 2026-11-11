@@ -10,10 +10,19 @@ import type {
 import type { ClassifierClient } from "./classifier.js";
 import type { CommandRules } from "./command-rules.js";
 import { getString, toRecord } from "./common.js";
-import { runDecision, type CanonicalToolCall, type Decision } from "./decision.js";
+import { jobsIdle, runDecision, sessionKey, type CanonicalToolCall, type Decision } from "./decision.js";
 import { writeAudit } from "./logging.js";
 import { unreadableLspLocation, withheldLspResultText } from "./lsp-results.js";
 import { createReviewSubject, resolveReadRoots } from "./tool-routing.js";
+import {
+  appliedEditMismatch,
+  cleanPreviewFiles,
+  isLspEditApply,
+  isLspEditPreview,
+  lspEditKey,
+  lspWritable,
+  PREVIEW_NOTE,
+} from "./lsp-edits.js";
 import type { SessionApprovalStore } from "./session-approval-store.js";
 
 /** OMP runs the call on an empty object and blocks it on `block: true`. */
@@ -24,9 +33,11 @@ export function canonicalToolCall(event: unknown): CanonicalToolCall {
   const record = toRecord(event);
   const direct = getString(record.toolName) ?? getString(record.name);
   const toolRecord = toRecord(record.tool);
+  const toolCallId = getString(record.toolCallId);
   return {
     toolName: direct ?? getString(toolRecord.name) ?? getString(toolRecord.toolName) ?? null,
     input: record.input !== undefined ? record.input : (record.arguments ?? {}),
+    ...(toolCallId ? { toolCallId } : {}),
   };
 }
 
@@ -115,6 +126,19 @@ export function canonicalContext(value: unknown): ExtensionContextLike | null {
     const abort = record.abort;
     context.abort = () => {
       abort.call(record);
+    };
+  }
+  if (typeof record.getAsyncJobSnapshot === "function") {
+    const getAsyncJobSnapshot = record.getAsyncJobSnapshot;
+    // OMP returns null when the session has no job manager, so no jobs.
+    // Anything else it cannot read counts as a running job.
+    context.runningJobCount = () => {
+      const snapshot: unknown = getAsyncJobSnapshot.call(record);
+      if (snapshot === null || snapshot === undefined) {
+        return 0;
+      }
+      const running = toRecord(snapshot).running;
+      return Array.isArray(running) ? running.length : 1;
     };
   }
 
@@ -238,30 +262,87 @@ export function ompToolCallResponse(decision: Decision): ToolCallDecision {
 }
 
 /** What a `tool_result` handler returns to replace the result OMP passes on. */
-export type ToolResultReplacement = { content: { type: "text"; text: string }[]; isError: true } | undefined;
+export type ToolResultReplacement = { content: unknown[]; isError?: true } | undefined;
 
 /**
- * Check an OMP `tool_result` event: an `lsp` result that shows source lines
- * from a file the read fast path would not read is replaced, so the agent
- * never sees them. Every event field is untrusted.
+ * Check an OMP `tool_result` event for an `lsp` call. Every event field is
+ * untrusted.
+ *
+ * - A result that shows source lines from a file the read fast path would
+ *   not read is replaced, so the agent never sees them.
+ * - An edit preview whose files could all be written without review is
+ *   remembered, so the apply that repeats it can skip review, and the agent
+ *   is told so. Any other preview of the same call forgets an earlier one.
+ * - The result of an apply that skipped review is compared with its
+ *   preview; a difference is reported and turns lsp edits back to review
+ *   for the session.
  */
 export async function reviewToolResult(
   event: unknown,
   ctx: ExtensionContextLike,
   config: ClearanceConfig,
+  options: { store: SessionApprovalStore; protectedFiles: string[] },
 ): Promise<ToolResultReplacement> {
-  const { toolName, input } = canonicalToolCall(event);
+  const { toolName, input, toolCallId } = canonicalToolCall(event);
+  const { store } = options;
+  if (toolCallId !== undefined) {
+    store.noteResult(toolCallId);
+  }
   if (toolName !== "lsp") {
     return undefined;
   }
+  const record = toRecord(event);
+  const content: unknown[] = Array.isArray(record.content) ? record.content : [];
+  const text = content
+    .map((part) => getString(toRecord(part).text))
+    .filter((part) => part !== undefined)
+    .join("\n");
   const cwd = ctx.cwd || process.cwd();
-  const path = unreadableLspLocation(toRecord(event).content, resolveReadRoots(cwd, config.readRoots));
-  if (path === null) {
+  const session = sessionKey(ctx);
+  const subject = () => createReviewSubject(toolName, input, cwd);
+  const action = getString(toRecord(input).action) ?? "";
+
+  // An apply let through on a preview: compare what it did with the preview.
+  const previewFiles = toolCallId !== undefined ? store.finishLspApply(toolCallId) : undefined;
+  if (previewFiles) {
+    const line = appliedEditMismatch(action, text, record.isError === true, previewFiles);
+    if (line !== null) {
+      store.turnLspEditsOff(session, line);
+      const { actionSummary, actionHash } = subject();
+      await writeAudit(config, { event: "lsp_edit_mismatch", toolName, actionSummary, actionHash, line });
+      ctx.ui?.notify?.(
+        `omp-clearance: an lsp ${action} that skipped review changed more than its preview showed, or its result could not be checked (${line}). lsp edits are reviewed for the rest of this session; check what it changed.`,
+        "warning",
+      );
+    }
+  }
+
+  const key = lspEditKey(input, session, cwd);
+  const isPreview = key !== null && isLspEditPreview(input);
+  const path = unreadableLspLocation(content, resolveReadRoots(cwd, config.readRoots));
+  if (path !== null) {
+    if (isPreview && toolCallId !== undefined) {
+      // Withheld, so not a usable preview; an earlier one of this call goes too.
+      store.finishLspPreview(toolCallId, key, null);
+    }
+    const { actionSummary, actionHash } = subject();
+    await writeAudit(config, { event: "result_withheld", toolName, actionSummary, actionHash, path });
+    return { content: [{ type: "text", text: withheldLspResultText(path) }], isError: true };
+  }
+
+  if (key === null || !isPreview) {
     return undefined;
   }
-  const { actionSummary, actionHash } = createReviewSubject(toolName, input, cwd);
-  await writeAudit(config, { event: "result_withheld", toolName, actionSummary, actionHash, path });
-  return { content: [{ type: "text", text: withheldLspResultText(path) }], isError: true };
+  const files =
+    record.isError === true ? null : cleanPreviewFiles(action, text, lspWritable(cwd, options.protectedFiles));
+  const recorded = toolCallId !== undefined && store.finishLspPreview(toolCallId, key, files);
+  // Tell the agent only when the apply would in fact skip review.
+  const applies =
+    recorded &&
+    store.hasLspPreview(session, key) &&
+    jobsIdle(ctx) &&
+    isLspEditApply({ ...toRecord(input), apply: true }, cwd, options.protectedFiles);
+  return applies ? { content: [...content, { type: "text", text: PREVIEW_NOTE }] } : undefined;
 }
 
 /** Run the canonical pipeline for an OMP event and adapt its final response. */

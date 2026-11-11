@@ -61,6 +61,8 @@ export interface ExtensionContextLike {
   };
   // Ends the current OMP agent turn.
   abort?: () => void;
+  // How many of OMP's background jobs (async bash, subagents) are running.
+  runningJobCount?: () => number;
   model?: unknown;
   modelRegistry?: {
     refresh?: () => unknown;
@@ -102,6 +104,7 @@ export type RouteName =
   | "workspace_write"
   | "lsp_read"
   | "lsp_dispatch"
+  | "lsp_edit"
   | "safe_command"
   | "session_approval"
   | "classifier_cache"
@@ -143,6 +146,16 @@ export interface ResultWithheldEntry {
   actionHash: string;
   // The path whose source lines the result showed.
   path: string;
+}
+
+/** An lsp edit that skipped review changed something its preview did not list. */
+export interface LspEditMismatchEntry {
+  event: "lsp_edit_mismatch";
+  toolName: string;
+  actionSummary: string;
+  actionHash: string;
+  // The first line of the result that the preview did not account for.
+  line: string;
 }
 
 /** An approved bash command turned the session's bash fast path off (see shellHook). */

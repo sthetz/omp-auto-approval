@@ -35,12 +35,15 @@ import {
 } from "./tool-routing.js";
 import { getString, relativePathWithin, resolvePathForCwd, toRecord } from "./common.js";
 import { shellHook } from "./shell-hooks.js";
+import { isLspEditApply, isLspEditPreview, lspEditKey } from "./lsp-edits.js";
 import { requestHumanApproval, type HumanDecision } from "./human-approval.js";
 
 /** The host-independent form of a tool call. */
 export interface CanonicalToolCall {
   toolName: string | null;
   input: unknown;
+  // OMP's id for the call; its result carries the same id.
+  toolCallId?: string;
 }
 
 export type DecisionOutcome = "allow" | "deny" | "review" | "ask";
@@ -78,6 +81,10 @@ export interface DecisionState {
   shellLatchEffect?: { session: string; reason: string };
   rules: CommandRules;
   exactApproved: boolean;
+  // For an lsp rename or rename_file: what identifies its preview (see
+  // lsp-edits.ts), and whether a usable one exists for this call.
+  lspEditKey?: string;
+  lspPreviewReady?: boolean;
   subject?: ReviewSubject;
   staticVerdict?: StaticVerdict;
   classifier?: ClassifierVerdict;
@@ -225,9 +232,17 @@ function evaluateStatic(call: CanonicalToolCall & { toolName: string }, state: D
   if (
     builtin &&
     (call.toolName === "write" || call.toolName === "edit") &&
-    isWorkspaceWriteFastPath(call.input, state.cwd, [configPath(), userRulesPath(), ...rules.files])
+    isWorkspaceWriteFastPath(call.input, state.cwd, protectedFiles(rules))
   ) {
     return verdict("allow", "workspace_write");
+  }
+  if (
+    builtin &&
+    call.toolName === "lsp" &&
+    state.lspPreviewReady === true &&
+    isLspEditApply(call.input, state.cwd, protectedFiles(rules))
+  ) {
+    return verdict("allow", "lsp_edit");
   }
   if (
     builtin &&
@@ -443,12 +458,57 @@ export function snapshotDecisionState(
     shellLatched: store.shellLatch(sessionKey(ctx)) !== null,
     rules: options.rules ?? defaultRules(),
     exactApproved: subject ? store.isExactApproved(subject.actionHash) : false,
+    ...lspEditState(call, ctx, store),
     ...(subject ? { subject } : {}),
     ...(cached
       ? { classifier: { evaluator: "classifier", outcome: cached.outcome, decision: cached, cached: true } }
       : {}),
   };
 }
+
+function lspEditState(
+  call: CanonicalToolCall,
+  ctx: ExtensionContextLike,
+  store: SessionApprovalStore,
+): Pick<DecisionState, "lspEditKey" | "lspPreviewReady"> {
+  const session = sessionKey(ctx);
+  const key = call.toolName === "lsp" ? lspEditKey(call.input, session, ctx.cwd || process.cwd()) : null;
+  if (key === null) {
+    return {};
+  }
+  // The apply's result is matched to it by call id, so one is needed.
+  return {
+    lspEditKey: key,
+    lspPreviewReady: call.toolCallId !== undefined && jobsIdle(ctx) && store.hasLspPreview(session, key),
+  };
+}
+
+/**
+ * No background job (async bash, a subagent) is running that could change
+ * files without a call this extension sees. Unknown counts as running.
+ */
+export function jobsIdle(ctx: ExtensionContextLike): boolean {
+  try {
+    return ctx.runningJobCount?.() === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Workspace files whose writes are always reviewed: this extension's config and rules. */
+export function protectedFiles(rules: CommandRules): string[] {
+  return [configPath(), userRulesPath(), ...rules.files];
+}
+
+// Routes after which files are as they were: nothing ran that could write.
+// Every other allowed call forgets the lsp edit previews.
+const UNCHANGING_ROUTES: ReadonlySet<Decision["route"]> = new Set<Decision["route"]>([
+  "readonly",
+  "lsp_read",
+  "lsp_dispatch",
+  "local_state",
+  "ui_only",
+]);
 
 async function auditDecision(decision: Decision, started: number, pinnedInputChanged: boolean): Promise<void> {
   const { subject, state } = decision;
@@ -500,6 +560,22 @@ async function applyFinal(
   // a run of denied lsp calls from ever reaching maxConsecutiveDenials. This
   // holds whichever route let the write through (reviewExemptTools too).
   const dispatchesLsp = decision.call.toolName === "write" && isLspDispatch(decision.call.input);
+  if (decision.outcome === "allow") {
+    const { lspEditKey: key } = decision.state;
+    const callId = decision.call.toolCallId;
+    if (decision.route === "lsp_edit" && key !== undefined && callId !== undefined) {
+      store.startLspApply(key, callId);
+    } else if (
+      decision.route === "lsp_read" &&
+      isLspEditPreview(decision.call.input) &&
+      callId !== undefined &&
+      jobsIdle(ctx)
+    ) {
+      store.startLspPreview(callId);
+    } else if (!UNCHANGING_ROUTES.has(decision.route)) {
+      store.noteChange(callId);
+    }
+  }
   if (decision.outcome === "allow" && !dispatchesLsp) {
     store.recordNonDenial();
   }

@@ -6,6 +6,7 @@ import { isWorkspaceWriteFastPath, resolveReadRoots } from "../../src/tool-routi
 import { logPath, normalizeConfig } from "../../src/extension-config.js";
 import { evaluateToolCall, reviewToolResult } from "../../src/omp-host.js";
 import { unreadableLspLocation } from "../../src/lsp-results.js";
+import { appliedEditMismatch, cleanPreviewFiles, isLspEditApply } from "../../src/lsp-edits.js";
 import { defaultRules, type CommandRules } from "../../src/command-rules.js";
 import { SessionApprovalStore } from "../../src/session-approval-store.js";
 import { test } from "node:test";
@@ -750,20 +751,324 @@ await test("lsp results that show source lines from unreadable files are withhel
       { toolName: "lsp", input: { action: "definition" }, content: text(`  ${outside}:1:14`, "    1: s") },
       ctx({ cwd: workspace }),
       config({ readRoots: [library] }),
+      { store: new SessionApprovalStore(), protectedFiles: [] },
     );
     assert.ok(withheld);
     assert.equal(withheld.isError, true);
-    assert.match(withheld.content[0]?.text ?? "", /withheld this lsp result: it shows source lines from .*secret\.ts/);
+    assert.match(
+      JSON.stringify(withheld.content[0]),
+      /withheld this lsp result: it shows source lines from .*secret\.ts/,
+    );
     assert.equal(
       await reviewToolResult(
         { toolName: "read", content: text(`  ${outside}:1:14`, "    1: s") },
         ctx({ cwd: workspace }),
         config(),
+        { store: new SessionApprovalStore(), protectedFiles: [] },
       ),
       undefined,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test("lsp edit previews are read strictly, and applies are matched against them", () => {
+  const ok = (path: string) => path.startsWith("src/");
+  const lines = (...parts: string[]) => parts.join("\n");
+  assert.deepEqual(
+    cleanPreviewFiles("rename", lines("Rename preview:", "  src/a.ts: 2 edits", "  src/b.ts: 1 edit"), ok),
+    new Map([
+      ["src/a.ts", 2],
+      ["src/b.ts", 1],
+    ]),
+  );
+  for (const preview of [
+    lines("Rename preview:", "  src/a.ts: 2 edits", "  /elsewhere/c.ts: 1 edit"),
+    lines("Rename preview:", "  src/a.ts: 2 edits", "  CREATE: src/new.ts"),
+    lines("Rename preview:", "  DELETE: src/a.ts"),
+    lines("Rename preview:"),
+    lines("Rename returned no edits"),
+    lines("Rename preview:", "  src/a.ts: 2 edits", "  something new"),
+  ]) {
+    assert.equal(cleanPreviewFiles("rename", preview, ok), null, preview);
+  }
+  assert.deepEqual(
+    cleanPreviewFiles(
+      "rename_file",
+      lines(
+        "Rename preview: src/a.ts → src/b.ts",
+        "  typescript-language-server:",
+        "    src/c.ts: 1 edit",
+        "  eslint:",
+        "    src/c.ts: 2 edits",
+      ),
+      ok,
+    ),
+    new Map([["src/c.ts", 3]]),
+  );
+  assert.deepEqual(
+    cleanPreviewFiles(
+      "rename_file",
+      lines("Rename preview: src/a.ts → src/b.ts", "  No LSP edits would be applied"),
+      ok,
+    ),
+    new Map(),
+  );
+  for (const preview of [
+    lines("Rename preview: 2 files under src/d → src/e", "  No LSP edits would be applied"),
+    lines("Rename preview: 1 file under src/d → src/e", "  No LSP edits would be applied"),
+    lines("Rename preview: src/a.ts → src/b.ts", "  ts:", "    lib/c.ts: 1 edit"),
+    lines("Rename preview: src/a.ts → src/b.ts", "  Server notes:", "  ts: failed"),
+  ]) {
+    assert.equal(cleanPreviewFiles("rename_file", preview, ok), null, preview);
+  }
+
+  const previewed = new Map([
+    ["src/a.ts", 2],
+    ["src/c.ts", 1],
+  ]);
+  const mismatch = (action: string, text: string, isError = false) =>
+    appliedEditMismatch(action, text, isError, previewed);
+  assert.equal(mismatch("rename", lines("Applied rename:", "  Applied 2 edit(s) to src/a.ts")), null);
+  // OMP changed nothing.
+  for (const text of ["Rename returned no edits", "Error: new_name parameter required for rename"]) {
+    assert.equal(mismatch("rename", text), null, text);
+  }
+  assert.equal(mismatch("rename", "No language server found for this action"), null);
+  // Files the preview did not list, other changes, and results this cannot read.
+  assert.equal(
+    mismatch("rename", lines("Applied rename:", "  Applied 1 edit(s) to src/b.ts")),
+    "  Applied 1 edit(s) to src/b.ts",
+  );
+  assert.equal(mismatch("rename", lines("Applied rename:", "  Created src/a.ts")), "  Created src/a.ts");
+  // More edits than the preview counted: the server answered differently.
+  assert.equal(
+    mismatch("rename", lines("Applied rename:", "  Applied 40 edit(s) to src/a.ts")),
+    "  Applied 40 edit(s) to src/a.ts",
+  );
+  assert.equal(mismatch("rename", lines("Applied rename:", "  Applied 1 edit(s) to src/a.ts")), null);
+  assert.equal(mismatch("rename", "LSP error: write failed"), "LSP error: write failed");
+  assert.equal(mismatch("rename", "Renamed it all"), "Renamed it all");
+  assert.equal(
+    mismatch("rename", "LSP rename timed out after 30s", true),
+    "the apply failed: LSP rename timed out after 30s",
+  );
+
+  const moved = (...more: string[]) =>
+    lines("Renamed src/x.ts → src/y.ts", ...more, "  Renamed src/x.ts → src/y.ts", "  Server notes:", "  ts: late");
+  assert.equal(
+    mismatch(
+      "rename_file",
+      moved("  ts: applied 1 edit(s) to src/c.ts", "    note: discarded 1 overlapping edit(s) from b (kept ts)"),
+    ),
+    null,
+  );
+  assert.equal(mismatch("rename_file", lines("Renamed src/x.ts → src/y.ts", "  Renamed src/x.ts → src/y.ts")), null);
+  assert.equal(
+    mismatch("rename_file", moved("  ts: applied 1 edit(s) to ../other/z.ts")),
+    "  ts: applied 1 edit(s) to ../other/z.ts",
+  );
+  // The move must be the call's own, once.
+  assert.equal(
+    mismatch("rename_file", lines("Renamed src/x.ts → src/y.ts", "  Renamed src/run.ts → bin/run")),
+    "  Renamed src/run.ts → bin/run",
+  );
+  assert.equal(
+    mismatch("rename_file", lines("Renamed src/x.ts → src/y.ts")),
+    "Renamed src/x.ts → src/y.ts (no move line)",
+  );
+  assert.equal(
+    mismatch(
+      "rename_file",
+      lines(
+        "Renamed src/x.ts → src/y.ts",
+        "  Renamed src/x.ts → src/y.ts",
+        "  Server notes:",
+        "  ts: applied 1 edit(s) to src/b.ts",
+      ),
+    ),
+    "  ts: applied 1 edit(s) to src/b.ts",
+  );
+  // A server note spanning lines, or anything else after the notes heading.
+  assert.equal(
+    mismatch(
+      "rename_file",
+      lines(
+        "Renamed src/x.ts → src/y.ts",
+        "  Renamed src/x.ts → src/y.ts",
+        "  Server notes:",
+        "    also changed ../z.ts",
+      ),
+    ),
+    "    also changed ../z.ts",
+  );
+});
+
+await test("an lsp edit that repeats a clean preview skips review once", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-lsp-edit-"));
+  mkdirSync(join(workspace, "src"));
+  writeFileSync(join(workspace, "src", "a.ts"), "export const oldName = 1;\n");
+  writeFileSync(join(workspace, "src", "tool.js"), "#!/usr/bin/env node\n");
+  chmodSync(join(workspace, "src", "tool.js"), 0o755);
+  writeFileSync(join(workspace, "src", "script.txt"), "#!/bin/sh\necho hi\n");
+  mkdirSync(join(workspace, "src", "dir"));
+  try {
+    // The checks on the apply call itself.
+    const apply = (input: Record<string, unknown>) =>
+      isLspEditApply({ action: "rename", file: "src/a.ts", line: 1, symbol: "oldName", ...input }, workspace, []);
+    assert.equal(apply({ new_name: "newName" }), true);
+    assert.equal(apply({ new_name: "$näme_2", apply: true }), true);
+    assert.equal(apply({ new_name: "x; evil()" }), false);
+    assert.equal(apply({ new_name: "2x" }), false);
+    assert.equal(apply({ new_name: "y", apply: false }), false);
+    assert.equal(apply({ new_name: "y", payload: "{}" }), false);
+    assert.equal(apply({ new_name: "y", file: ".git/config" }), false);
+    const move = (file: string, newName: string) =>
+      isLspEditApply({ action: "rename_file", file, new_name: newName }, workspace, []);
+    assert.equal(move("src/a.ts", "src/b.ts"), true);
+    assert.equal(move("src/a.ts", ".mcp.json"), false);
+    assert.equal(move("src/a.ts", "../b.ts"), false);
+    assert.equal(move("src/tool.js", "src/tool2.js"), false);
+    assert.equal(move("src/script.txt", "src/run"), false);
+    assert.equal(move("src/dir", "src/dir2"), false);
+    assert.equal(move("src/missing.ts", "src/b.ts"), false);
+
+    // The whole flow, as OMP reports it.
+    const store = new SessionApprovalStore();
+    const notices: string[] = [];
+    let session = "s1";
+    let jobs = 0;
+    const context = () =>
+      ctx({
+        cwd: workspace,
+        ui: { notify: (message: string) => notices.push(message) },
+        sessionManager: { getBranch: () => [], getSessionId: () => session },
+        runningJobCount: () => jobs,
+      });
+    const cfg = config({ reviewer: "ai", maxConsecutiveDenials: 100 });
+    const rename = { action: "rename", file: "src/a.ts", line: 1, symbol: "oldName", new_name: "newName" };
+    const preview = { ...rename, apply: false };
+    let calls = 0;
+    const result = (input: unknown, toolCallId: string, ...text: string[]) =>
+      reviewToolResult(
+        { toolName: "lsp", toolCallId, input, content: [{ type: "text", text: text.join("\n") }] },
+        context(),
+        cfg,
+        { store, protectedFiles: [] },
+      );
+    // OMP decides a preview, then runs it and reports its result under the same id.
+    const decided = (input: unknown, classifier = false, toolName = "lsp", toolCallId = `c${(calls += 1)}`) =>
+      evaluateToolCall(
+        { toolName, input, toolCallId },
+        context(),
+        cfg,
+        store,
+        classifier
+          ? classifierDenyOptions()
+          : {
+              classifierClient: async () => {
+                throw new Error("this call should skip review");
+              },
+            },
+      );
+    const decide = (input: unknown, classifier = false, toolName = "lsp") => decided(input, classifier, toolName);
+    const previewed = async (input: unknown = preview, ...text: string[]) => {
+      assert.deepEqual(await decided(input, false, "lsp", "p"), {});
+      return result(input, "p", ...(text.length ? text : ["Rename preview:", "  src/a.ts: 2 edits"]));
+    };
+    // An apply's result as OMP reports it, matching the preview.
+    const applied = (input: unknown = rename) =>
+      result(input, `c${calls}`, "Applied rename:", "  Applied 2 edit(s) to src/a.ts");
+    const denied = { block: true, reason: CLASSIFIER_DENY_REASON };
+
+    // No preview yet: reviewed.
+    assert.deepEqual(await decide(rename, true), denied);
+    // A clean preview: the agent is told, and the same apply skips review once.
+    assert.match(JSON.stringify((await previewed())?.content), /skips review once/);
+    assert.deepEqual(await decide({ ...rename, apply: true }), {});
+    await applied({ ...rename, apply: true });
+    assert.deepEqual(await decide(rename, true), denied);
+    // Other arguments than the preview's are reviewed.
+    await previewed();
+    assert.deepEqual(await decide({ ...rename, new_name: "other" }, true), denied);
+    // A write in between can change what the same arguments mean.
+    await previewed();
+    assert.deepEqual(await decide({ path: "src/a.ts", content: "x" }, false, "write"), {});
+    await result({ path: "src/a.ts" }, `c${calls}`, "ok");
+    assert.deepEqual(await decide(rename, true), denied);
+    // A batch: the preview is decided, then a write is decided before the
+    // preview's result comes back. The preview may show the code before or
+    // after the write, so it does not count.
+    assert.deepEqual(await decided(preview, false, "lsp", "p"), {});
+    assert.deepEqual(await decided({ path: "src/a.ts", content: "x" }, false, "write", "w1"), {});
+    assert.equal(await result(preview, "p", "Rename preview:", "  src/a.ts: 2 edits"), undefined);
+    assert.deepEqual(await decide(rename, true), denied);
+    // While that write is still running, a new preview does not count either.
+    assert.equal(await previewed(), undefined);
+    assert.deepEqual(await decide(rename, true), denied);
+    // Once its result is back, it does.
+    await result({ path: "src/a.ts" }, "w1", "ok");
+    await previewed();
+    assert.deepEqual(await decide(rename), {});
+    await applied();
+    // Background jobs could change files at any time.
+    await previewed();
+    jobs = 1;
+    assert.deepEqual(await decide(rename, true), denied);
+    assert.equal(await previewed(), undefined);
+    jobs = 0;
+    assert.deepEqual(await decide(rename, true), denied);
+    // A job that starts while the preview runs: no promise to the agent.
+    assert.deepEqual(await decided(preview, false, "lsp", "p"), {});
+    jobs = 1;
+    assert.equal(await result(preview, "p", "Rename preview:", "  src/a.ts: 2 edits"), undefined);
+    jobs = 0;
+    // A withheld preview is not usable, and an earlier one of the same call goes too.
+    await previewed();
+    const withheld = await previewed(preview, "Rename preview:", `  ${join(tmpdir(), "x.ts")}:1:1`, "    1: secret");
+    assert.equal(withheld?.isError, true);
+    assert.deepEqual(await decide(rename, true), denied);
+    // Lookups in between change nothing.
+    await previewed();
+    assert.deepEqual(await decide({ action: "hover", file: "src/a.ts", line: 1 }), {});
+    assert.deepEqual(await decide(rename), {});
+    await applied();
+    // A preview naming a file outside the workspace is not usable, and forgets the earlier one.
+    await previewed();
+    assert.equal(await previewed(preview, "Rename preview:", "  ../b.ts: 1 edit"), undefined);
+    assert.deepEqual(await decide(rename, true), denied);
+    // A new name the apply would not accept: no note, and the apply is reviewed.
+    const dotted = { ...preview, new_name: "a.b" };
+    assert.equal(await previewed(dotted), undefined);
+    assert.deepEqual(await decide({ ...dotted, apply: true }, true), denied);
+    // A preview counts only in its own session.
+    await previewed();
+    session = "s2";
+    assert.deepEqual(await decide(rename, true), denied);
+    session = "s1";
+
+    // The apply's result matches its preview: nothing happens.
+    await previewed();
+    assert.deepEqual(await decide(rename), {});
+    await applied();
+    assert.deepEqual(notices, []);
+    // It changes another file: the user is told, and edits are reviewed from then on, even after a restart.
+    await previewed();
+    assert.deepEqual(await decide(rename), {});
+    await result(
+      rename,
+      `c${calls}`,
+      "Applied rename:",
+      "  Applied 2 edit(s) to src/a.ts",
+      "  Applied 1 edit(s) to ../b.ts",
+    );
+    assert.match(notices.join("\n"), /changed more than its preview showed/);
+    store.clear();
+    assert.equal(await previewed(), undefined);
+    assert.deepEqual(await decide(rename, true), denied);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
   }
 });
 

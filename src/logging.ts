@@ -1,11 +1,17 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { logPath } from "./extension-config.js";
-import type { AuditEntry, ClearanceConfig, ResultWithheldEntry, ShellLatchEntry } from "./types.js";
+import type {
+  AuditEntry,
+  ClearanceConfig,
+  LspEditMismatchEntry,
+  ResultWithheldEntry,
+  ShellLatchEntry,
+} from "./types.js";
 
 export async function writeAudit(
   config: ClearanceConfig,
-  entry: AuditEntry | ResultWithheldEntry | ShellLatchEntry,
+  entry: AuditEntry | LspEditMismatchEntry | ResultWithheldEntry | ShellLatchEntry,
 ): Promise<void> {
   if (!config.audit) {
     return;

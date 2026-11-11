@@ -1,7 +1,7 @@
 import type { ClearanceConfig, ExtensionContextLike, Reviewer } from "./src/types.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, saveConfig } from "./src/extension-config.js";
 import { defaultRulesPath, userRulesPath, type CommandRules } from "./src/command-rules.js";
-import { decide, sessionKey, snapshotDecisionState, type Decision } from "./src/decision.js";
+import { decide, protectedFiles, sessionKey, snapshotDecisionState, type Decision } from "./src/decision.js";
 import {
   canonicalContext,
   canonicalToolCall,
@@ -61,6 +61,7 @@ const ROUTE_EXPLANATIONS: Record<Decision["route"], string> = {
   lsp_read:
     "allowed without review: an lsp query or edit preview about non-sensitive paths in the workspace or readRoots",
   lsp_dispatch: "allowed without review: dispatches an lsp call, which is decided on its own",
+  lsp_edit: "allowed without review: repeats an lsp edit preview whose files can all be written without review",
   safe_command: "allowed without review: every command is read-only by the command rules",
   manual_unavailable: "blocked: manual review needs an interactive UI, but none is available",
   manual_only: "needs manual approval: this tool cannot be auto-approved",
@@ -233,7 +234,8 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
       return;
     }
     const source = toRecord(toRecord(findToolDefinition(toolName, tools)).sourceInfo).source;
-    const call = { toolName, input: parsed.input };
+    // A call id like OMP's, so a previewed lsp edit is explained as it would be decided.
+    const call = { toolName, input: parsed.input, toolCallId: "explain" };
     const decision = decide(
       call,
       snapshotDecisionState(call, ctx, config, approvals, { reviewer: reviewerState.reviewer, tools, rules }),
@@ -455,20 +457,28 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
     }
   });
 
-  // A result OMP is about to pass to the agent. Only lsp results are checked
-  // (see reviewToolResult); a failure withholds the result rather than
-  // passing on what could not be checked.
+  // A result OMP is about to pass to the agent. Every result marks its call
+  // as finished; only lsp results are checked (see reviewToolResult), and a
+  // failure withholds an lsp result rather than pass on what was not checked.
   omp.on("tool_result", async (event: unknown, context: unknown) => {
-    if (canonicalToolCall(event).toolName !== "lsp") {
-      return undefined;
+    // First, so the call counts as finished even if the rest fails.
+    const finished = canonicalToolCall(event).toolCallId;
+    if (finished !== undefined) {
+      approvals.noteResult(finished);
     }
     try {
       const ctx = canonicalContext(context) ?? lastContext;
       if (!ctx) {
         throw new Error("OMP supplied an invalid extension context");
       }
-      return await reviewToolResult(event, ctx, config);
+      return await reviewToolResult(event, ctx, config, {
+        store: approvals,
+        protectedFiles: protectedFiles(rules),
+      });
     } catch (error) {
+      if (canonicalToolCall(event).toolName !== "lsp") {
+        return undefined;
+      }
       const reason = error instanceof Error ? error.message : String(error);
       return {
         content: [

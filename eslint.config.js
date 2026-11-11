@@ -10,13 +10,15 @@ export default defineConfig(
     },
     rules: {
       "@typescript-eslint/restrict-template-expressions": ["error", { allowNumber: true }],
+      // `() => call()` for a callback whose result nobody reads is fine; a void
+      // result used as a value is still an error.
+      "@typescript-eslint/no-confusing-void-expression": ["error", { ignoreArrowShorthand: true }],
       // String spreads here split into code points on purpose (glob characters,
       // option letters), not user-facing text; other misused spreads stay errors.
       "@typescript-eslint/no-misused-spread": ["error", { allow: [{ from: "lib", name: "string" }] }],
 
       // Rules the code doesn't pass yet. Each is turned on in its own
       // commit, with its fixes.
-      "@typescript-eslint/no-confusing-void-expression": "off",
       "@typescript-eslint/no-deprecated": "off",
       "@typescript-eslint/no-dynamic-delete": "off",
       "@typescript-eslint/no-explicit-any": "off",

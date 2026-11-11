@@ -71,7 +71,7 @@ function* commandsIn(file: string, source: Agent): Generator<string> {
     }
     let entry: { message?: { content?: unknown }; event?: { name?: unknown; args?: { command?: unknown } } };
     try {
-      entry = JSON.parse(line);
+      entry = JSON.parse(line) as typeof entry;
     } catch {
       continue;
     }
@@ -87,13 +87,20 @@ function* commandsIn(file: string, source: Agent): Generator<string> {
     if (!Array.isArray(content)) {
       continue;
     }
-    for (const part of content) {
+    for (const item of content as unknown[]) {
+      // A tool call in a Claude Code transcript or an OMP session.
+      const part = (item ?? {}) as {
+        type?: unknown;
+        name?: unknown;
+        input?: { command?: unknown };
+        arguments?: { command?: unknown };
+      };
       const command =
         source === "claude"
-          ? part?.type === "tool_use" && part.name === "Bash"
+          ? part.type === "tool_use" && part.name === "Bash"
             ? part.input?.command
             : undefined
-          : part?.type === "toolCall" && part.name === "bash"
+          : part.type === "toolCall" && part.name === "bash"
             ? part.arguments?.command
             : undefined;
       if (typeof command === "string" && command.trim()) {

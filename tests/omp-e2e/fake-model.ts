@@ -45,7 +45,10 @@ function textOf(content: unknown): string {
   }
   if (Array.isArray(content)) {
     return content
-      .map((part) => (part && typeof part === "object" && typeof part.text === "string" ? part.text : ""))
+      .map((part: unknown) => {
+        const text: unknown = part && typeof part === "object" ? (part as { text?: unknown }).text : undefined;
+        return typeof text === "string" ? text : "";
+      })
       .join("");
   }
   return "";

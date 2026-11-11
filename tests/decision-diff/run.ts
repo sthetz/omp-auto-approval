@@ -42,13 +42,24 @@ function option(argv: string[], name: string): string | undefined {
 
 /** The decision for each command, as one comparable string. */
 async function loadSide(root: string, workspace: string, rulesPath: string): Promise<{ side: Side; rules: unknown }> {
-  const safe = await import(join(root, "src", "safe-command.ts"));
-  const commandRules = await import(join(root, "src", "command-rules.ts"));
-  const config = await import(join(root, "src", "extension-config.ts"));
-  if (typeof commandRules.loadCommandRules !== "function" || typeof commandRules.escalateCommand !== "function") {
+  // Another revision's sources, so typed only as far as this script uses them;
+  // these functions have kept these shapes since 0.4.0.
+  const safe = (await import(join(root, "src", "safe-command.ts"))) as {
+    planSafeCommand: (command: string, config: unknown, options: unknown) => { command: string; cwd?: string } | null;
+  };
+  const commandRules = (await import(join(root, "src", "command-rules.ts"))) as {
+    loadCommandRules?: (path: string) => { problem?: string | null };
+    escalateCommand?: (
+      command: string,
+      rules: unknown,
+    ) => { outcome: string; rule?: { id: string } | null; textOnly?: boolean } | null;
+  };
+  const config = (await import(join(root, "src", "extension-config.ts"))) as { DEFAULT_CONFIG: object };
+  const { loadCommandRules, escalateCommand } = commandRules;
+  if (typeof loadCommandRules !== "function" || typeof escalateCommand !== "function") {
     throw new Error(`${root} has no command rules; pick a base revision from 0.4.0 on`);
   }
-  const rules = commandRules.loadCommandRules(rulesPath);
+  const rules = loadCommandRules(rulesPath);
   if (rules.problem) {
     throw new Error(`rules in ${root}: ${rules.problem}`);
   }
@@ -59,7 +70,7 @@ async function loadSide(root: string, workspace: string, rulesPath: string): Pro
     side: {
       decide(command: string): string {
         try {
-          const escalation = commandRules.escalateCommand(command, rules);
+          const escalation = escalateCommand(command, rules);
           if (escalation) {
             return `${escalation.outcome}:${escalation.rule?.id ?? "?"}${escalation.textOnly ? " (text-only)" : ""}`;
           }

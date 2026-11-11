@@ -120,6 +120,13 @@ function pinnedCommand(command: string, cfg: TestConfig, workspace: string, sear
   return planSafeCommand(command, cfg, { workspace, searchPath, rules: cfg.rules })?.command ?? null;
 }
 
+/** The reason of a tool_call response, or "" when it has none. */
+function reasonOf(response: unknown): string {
+  const reason: unknown =
+    response && typeof response === "object" ? (response as { reason?: unknown }).reason : undefined;
+  return typeof reason === "string" ? reason : "";
+}
+
 function test(name: string, fn: () => void | Promise<void>): Promise<void> {
   return Promise.resolve()
     .then(fn)
@@ -1005,7 +1012,18 @@ async function run(): Promise<void> {
   });
 
   await test("the rules schema names the same kinds, checks and parsers as the code", () => {
-    const schema = JSON.parse(readFileSync(new URL("../schemas/rules.schema.json", import.meta.url), "utf8"));
+    // The parts of the schema this test reads; a different shape fails the test.
+    type RulesSchema = {
+      $defs: {
+        operandCheck: { enum: string[] };
+        entry: { properties: { arguments: { enum: string[] } } };
+        rule: { oneOf: { properties: { outcome: { enum: string[] } } }[] };
+        kind: { enum: string[] };
+      };
+    };
+    const schema = JSON.parse(
+      readFileSync(new URL("../schemas/rules.schema.json", import.meta.url), "utf8"),
+    ) as RulesSchema;
     assert.deepEqual([...schema.$defs.operandCheck.enum].sort(), Object.keys(OPERAND_CHECKS).sort());
     assert.deepEqual(schema.$defs.entry.properties.arguments.enum, [...ARGUMENT_PARSERS]);
     assert.deepEqual(schema.$defs.rule.oneOf[0].properties.outcome.enum, [...RULE_OUTCOMES]);
@@ -1649,7 +1667,7 @@ async function run(): Promise<void> {
       );
 
       // Session start shows an error and keeps the problem in the status line.
-      const handlers = new Map<string, (...args: any[]) => any>();
+      const handlers = new Map<string, (event: unknown, context?: unknown) => unknown>();
       ompClearanceExtension({
         on: (event, handler) => {
           handlers.set(event, handler);
@@ -1722,7 +1740,7 @@ async function run(): Promise<void> {
     process.env.CLEARANCE_RULES_PATH = main;
     process.env.CLEARANCE_CONFIG_PATH = join(workspace, "config.jsonc");
     writeFileSync(process.env.CLEARANCE_CONFIG_PATH, JSON.stringify({ reviewer: "off" }));
-    const handlers = new Map<string, (...args: any[]) => any>();
+    const handlers = new Map<string, (event: unknown, context?: unknown) => unknown>();
     const notices: string[] = [];
     const sessionCtx = ctx({
       cwd: workspace,
@@ -1749,7 +1767,7 @@ async function run(): Promise<void> {
       await handlers.get("resources_discover")!({}, sessionCtx);
       assert.match(notices.at(-1) ?? "", /included\.jsonc/);
       const blocked = await call();
-      assert.match("reason" in blocked ? blocked.reason : "", /included\.jsonc:\d+:\d+: expected a key/);
+      assert.match(reasonOf(blocked), /included\.jsonc:\d+:\d+: expected a key/);
       assert.equal(notices.length, 1);
 
       writeFileSync(included, validInclude);
@@ -1759,10 +1777,7 @@ async function run(): Promise<void> {
       writeFileSync(included, '{ "programs": { "x": {} } }');
       utimesSync(included, 90, 90);
       const invalid = await call();
-      assert.match(
-        "reason" in invalid ? invalid.reason : "",
-        /included\.jsonc:\d+:\d+: programs\["x"\]: missing "operands"/,
-      );
+      assert.match(reasonOf(invalid), /included\.jsonc:\d+:\d+: programs\["x"\]: missing "operands"/);
 
       for (const [seconds, document, message] of [
         [
@@ -3965,7 +3980,7 @@ async function run(): Promise<void> {
     try {
       for (const reviewer of ["ai", "manual", "off"] as const) {
         writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, reviewer }));
-        const handlers = new Map<string, (...args: any[]) => any>();
+        const handlers = new Map<string, (event: unknown, context?: unknown) => unknown>();
         ompClearanceExtension({
           on: (event, handler) => {
             handlers.set(event, handler);
@@ -4008,7 +4023,7 @@ async function run(): Promise<void> {
         rmSync(freshConfigFile, { force: true });
       }
 
-      const handlers = new Map<string, (...args: any[]) => any>();
+      const handlers = new Map<string, (event: unknown, context?: unknown) => unknown>();
       ompClearanceExtension({
         on: (event, handler) => {
           handlers.set(event, handler);

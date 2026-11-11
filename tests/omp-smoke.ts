@@ -104,7 +104,7 @@ async function run(): Promise<void> {
 
     await harness.command("ai", commandCtx);
     assert.equal(loadConfig().config.reviewer, "off");
-    assert.equal(JSON.parse(readFileSync(reviewerStatePath(), "utf8")).reviewer, "ai");
+    assert.equal((JSON.parse(readFileSync(reviewerStatePath(), "utf8")) as { reviewer?: unknown }).reviewer, "ai");
     assert.ok(notifications.includes("omp-clearance reviewer: ai."));
     assert.deepEqual(statuses.at(-1), ["omp-clearance", "clearance:ai"]);
 
@@ -133,7 +133,7 @@ async function run(): Promise<void> {
     await harness.command("manual", commandCtx);
     const aiConfig = loadConfig().config;
     assert.equal(aiConfig.reviewer, "off");
-    assert.equal(JSON.parse(readFileSync(reviewerStatePath(), "utf8")).reviewer, "manual");
+    assert.equal((JSON.parse(readFileSync(reviewerStatePath(), "utf8")) as { reviewer?: unknown }).reviewer, "manual");
     assert.ok(notifications.includes("omp-clearance reviewer: manual."));
     assert.deepEqual(statuses.at(-1), ["omp-clearance", "clearance:manual"]);
 

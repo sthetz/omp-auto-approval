@@ -1,5 +1,5 @@
-import type { ExtensionContextLike, ReviewDecision, ReviewSubject } from "./types.js";
-import { RULES_PROBLEM_ID, type CommandRule } from "./command-rules.js";
+import type { ExtensionContextLike, ClassifierDecision, ReviewSubject } from "./types.js";
+import type { CommandRule } from "./command-rules.js";
 
 export type HumanDecision =
   | { approved: true; persistence: "once" | "exact" }
@@ -11,7 +11,7 @@ const REJECT = "Reject";
 const REJECT_WITH_REASON = "Reject With Reason";
 const REJECT_AND_STOP = "Reject and Stop the Turn";
 
-function formatDecision(decision?: ReviewDecision): string {
+function formatDecision(decision?: ClassifierDecision): string {
   if (!decision) {
     return "";
   }
@@ -27,7 +27,7 @@ export async function requestHumanApproval(
   subject: ReviewSubject,
   options: {
     title?: string;
-    classifierDecision?: ReviewDecision;
+    classifierDecision?: ClassifierDecision;
     failureReason?: string;
     // The command rule that sent this action here.
     rule?: CommandRule;
@@ -43,9 +43,7 @@ export async function requestHumanApproval(
     ? "AI review recommends blocking this action."
     : options.failureReason
       ? "AI review could not complete."
-      : rule?.id === RULES_PROBLEM_ID
-        ? "The command rules could not be loaded, so every bash command needs your approval until they are fixed."
-        : rule?.outcome === "ask"
+      : rule?.outcome === "ask"
         ? "A command rule asks you to approve this action."
         : "This action needs your approval.";
   const details = [

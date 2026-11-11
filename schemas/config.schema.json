@@ -7,17 +7,15 @@
     "$schema": {
       "type": "string"
     },
-    "enabled": {
-      "type": "boolean",
-      "default": false
-    },
-    "mode": {
+    "reviewer": {
       "type": "string",
       "enum": [
-        "fallback",
-        "auto"
+        "ai",
+        "manual",
+        "off"
       ],
-      "default": "fallback"
+      "default": "off",
+      "description": "Starting reviewer only while reviewer-state.json does not exist."
     },
     "classifierModel": {
       "type": [

@@ -6,7 +6,7 @@ There are three: [workspace reads](#workspace-reads), [workspace writes](#worksp
 
 ## Workspace reads
 
-The host's own read-only tools (`read`, `grep`, `find`, `glob`, `ast_grep`, `ls`, …) when every path they name is inside the working directory or a `readRoots` directory (after resolving symlinks) and is not credential-like. These always go to classifier review:
+The host's own read-only tools (`read`, `grep`, `find`, `glob`, `ast_grep`, `ls`, …) when every path they name is inside the working directory or a `readRoots` directory (after resolving symlinks) and is not credential-like. These always go to the session reviewer:
 
 - paths outside the working directory and `readRoots`;
 - URLs (`http(s)://`, `www.`) and remote or sensitive internal URLs (`ssh://`, `mcp://`, `pr://`, `issue://`, `mr://`, `vault://`, `cfg://`, `proc://`, …). Only session-local URLs (`skill://`, `rule://`, `agent://`, `artifact://`, `memory://`, `local://`, `omp://`) skip review;
@@ -14,13 +14,13 @@ The host's own read-only tools (`read`, `grep`, `find`, `glob`, `ast_grep`, `ls`
 - path forms that OMP rewrites before use (a leading `@`, `:` or `"`, `~user`, `file://`, `?query`, `#fragment`);
 - searches with `gitignore: false`. OMP's `grep` searches hidden files but honours `.gitignore`, which normally keeps `.env` out of a workspace-wide search. A secret file that is *not* gitignored can still appear in grep results.
 
-`web_search` is always classifier-reviewed, because its query is sent to a third party and could carry data out of the session.
+`web_search` always goes to the session reviewer, because its query is sent to a third party and could carry data out of the session.
 
 Tools are matched by name only when the host reports them as its own (`sourceInfo.source` is `builtin`). An extension, SDK or MCP tool that reuses a read-only name is reviewed. Self-declared metadata (`isReadOnly`, `readOnlyHint`, MCP `annotations.readOnlyHint`) is ignored, as the MCP specification says these hints are untrusted.
 
 ## Workspace writes
 
-Calls to OMP's own `write` and `edit` tools whose every destination, including `edit` renames, is a plain path inside the working directory. These always go to classifier review instead:
+Calls to OMP's own `write` and `edit` tools whose every destination, including `edit` renames, is a plain path inside the working directory. These always go to the session reviewer instead:
 
 - paths that OMP rewrites before use (`[path]`, `~/…`, `scheme://…`);
 - protected entries at any depth, after resolving symlinks: `.git`, `.omp`, `.pi`, `.claude`, `.mcp.json`, `.cursor`, `.envrc`, `.vscode`, `.idea`, `.husky`, `.devcontainer`. Their contents are executed or trusted later without review: `core.fsmonitor` in `.git/config` runs on `git status`, and Claude Code hooks in `.claude/settings.json` run shell commands;
@@ -57,7 +57,7 @@ OMP runs every bash call in one persistent shell per session, so an earlier call
 
 ### When the bash fast path turns off
 
-Some shell state runs code by itself, before or after every later command, and pinning cannot stop it: a `trap … DEBUG` runs before the pinned program, and before anything placed in front of it. So once a bash command that may set up such a hook has run, by whatever route or with the extension off, every bash command is reviewed for the rest of the session, and OMP shows a warning. That covers `trap`, `eval`, `exec`, `enable`, a command named by a variable (`$cmd`) unless the same command set it to plain text, aliases or variables set to those, `PS4`, `BASH_ENV`, `PROMPT_COMMAND`, `extdebug` and `functrace`, and `source`/`.` of a file that could not be read or that contains any of these. A sourced file with a literal path is read and checked the same way, so `source .venv/bin/activate` keeps the fast path. Heredoc bodies are a command's input and are not checked. Across about 15,000 recorded agent commands, 1.6% would turn the fast path off. `/clearance status` and `explain` say when the fast path is off; a new session turns it back on, and `/clearance off` does not. This check reads text, so a hook built in pieces (`$'\x74rap'`) can get past it; the command that sets one is still reviewed first.
+Some shell state runs code by itself, before or after every later command, and pinning cannot stop it: a `trap … DEBUG` runs before the pinned program, and before anything placed in front of it. So once a bash command that may set up such a hook has run, by whatever route or with the reviewer off, every bash command is reviewed for the rest of the session, and OMP shows a warning. That covers `trap`, `eval`, `exec`, `enable`, a command named by a variable (`$cmd`) unless the same command set it to plain text, aliases or variables set to those, `PS4`, `BASH_ENV`, `PROMPT_COMMAND`, `extdebug` and `functrace`, and `source`/`.` of a file that could not be read or that contains any of these. A sourced file with a literal path is read and checked the same way, so `source .venv/bin/activate` keeps the fast path. Heredoc bodies are a command's input and are not checked. Across about 15,000 recorded agent commands, 1.6% would turn the fast path off. `/clearance status` and `explain` say when the fast path is off; a new session turns it back on, and `/clearance off` does not. This check reads text, so a hook built in pieces (`$'\x74rap'`) can get past it; the command that sets one is still reviewed first.
 
 ### Other bash call fields
 

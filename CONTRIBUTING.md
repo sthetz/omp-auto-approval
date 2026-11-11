@@ -29,7 +29,7 @@ Steps 2 to 5 run on your machine only, not in CI, since they need tools CI lacks
 
 Add a test for every change to what is allowed, asked, reviewed or blocked, in `tests/run-tests.ts`. Most tests call `evaluateToolCall` or `planSafeCommand` directly. The test file runs programs from a temporary directory of stub programs and points the config, rules and audit log paths at temporary files, so it never reads or writes your real ones.
 
-`config/default-rules.jsonc` is validated strictly when it loads: an unknown key, kind or check name, or an option listed twice, is an error. Then every bash command asks the user first (denied in auto mode), and `/clearance status` says why. `npm test` loads it, and checks `schemas/rules.schema.json` against the code.
+`config/default-rules.jsonc` is validated strictly when it loads: an unknown key, kind or check name, or an option listed twice, is an error. Then every bash command is blocked in every reviewer mode, including `off`, until the file is fixed; `/clearance status` says why. Default, user and included files are checked for changes on every tool call and reload automatically. `npm test` loads the defaults, checks `schemas/rules.schema.json` against the code, and covers broken-file and include reloads.
 
 ### Decision diff
 
@@ -110,9 +110,9 @@ npm run e2e:omp -- --keep         # keep the temporary directories to inspect
 OMP=/path/to/omp npm run e2e:omp  # a specific OMP build
 ```
 
-It needs no API key and makes no request beyond the local fake model. Point `OMP` at the real binary if your `omp` is a wrapper that needs a keyring or a login: the scenarios pass OMP only `PATH` and their own temporary paths, and stop at the first one where OMP never runs the extension. Prompts can't be answered in print mode, so `fallback` asks are covered by the unit tests, and the model selector needs a manual look: run `/clearance model` in a real session.
+It needs no API key and makes no request beyond the local fake model. Point `OMP` at the real binary if your `omp` is a wrapper that needs a keyring or a login: the scenarios pass OMP only `PATH` and their own temporary paths, and stop at the first one where OMP never runs the extension. Prompts can't be answered in print mode, so `manual` asks are covered by the unit tests, and the model selector needs a manual look: run `/clearance model` in a real session.
 
-To add a scenario, add an entry to `SCENARIOS` in `tests/omp-e2e/run.ts`: the mode, the classifier's verdict, the agent's tool calls, an optional rules file, and the checks. Make sure a check can fail: break the behaviour it covers once and watch it go red.
+To add a scenario, add an entry to `SCENARIOS` in `tests/omp-e2e/run.ts`: the reviewer, the classifier's verdict, the agent's tool calls, an optional rules file, and the checks. Make sure a check can fail: break the behaviour it covers once and watch it go red.
 
 ### Your own command corpus
 

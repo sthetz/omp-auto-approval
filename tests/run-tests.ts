@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import ompClearanceExtension, { SYSTEM_PROMPT_NOTE } from "../index.js";
-import { applyDecisionPolicy, classifyAction, parseReviewDecision } from "../src/classifier.js";
+import { applyDecisionPolicy, classifyAction, parseClassifierDecision } from "../src/classifier.js";
 import { compileCommandPattern } from "../src/command-patterns.js";
 import { isWorkspaceWriteFastPath, resolveReadRoots } from "../src/tool-routing.js";
 import { buildProjectedContext } from "../src/context-projection.js";
 import { configPath, DEFAULT_CONFIG, extensionRoot, loadConfig, logPath, logsDir, normalizeConfig, saveConfig } from "../src/extension-config.js";
-import { evaluateToolCall, selectFastPath } from "../src/decision.js";
+import { decide, type DecisionState } from "../src/decision.js";
+import { canonicalContext, canonicalToolCall, canonicalTools, evaluateToolCall, type ToolCallDecision } from "../src/omp-host.js";
 import { columnWidth, truncateVisible } from "../src/model-selector.js";
 import { planSafeCommand } from "../src/safe-command.js";
 import { isSafeSedScript } from "../src/program-rules.js";
@@ -20,7 +21,8 @@ import { recognizeShell } from "../src/shell-syntax.js";
 import { shellHook } from "../src/shell-hooks.js";
 import { compareRun, pipelinesRun, type ParsedScript } from "./shell-oracle/oracle.js";
 import { SessionApprovalStore } from "../src/session-approval-store.js";
-import type { AutoReviewConfig, ExtensionContextLike } from "../src/types.js";
+import { loadReviewerState, reviewerStatePath, saveReviewerState } from "../src/reviewer-state.js";
+import type { ClearanceConfig, ExtensionContextLike } from "../src/types.js";
 
 // Fast-pathed commands are pinned to a program found on OMP's startup PATH.
 // Stub programs make the tests independent of what this machine has
@@ -62,7 +64,7 @@ function test(name: string, fn: () => void | Promise<void>): Promise<void> {
 
 // A config, and the command rules to use with it: the built-in ones, plus
 // allow rules for `allowRules` prefixes and block rules for `blockRules` patterns.
-type TestConfig = AutoReviewConfig & { rules: CommandRules };
+type TestConfig = ClearanceConfig & { rules: CommandRules };
 const RULES_DIR = mkdtempSync(join(tmpdir(), "omp-clearance-test-rules-"));
 process.on("exit", () => rmSync(RULES_DIR, { recursive: true, force: true }));
 let rulesFiles = 0;
@@ -85,9 +87,9 @@ function testRules(allowRules: string[] = [], blockRules: string[] = []): Comman
   return rules;
 }
 
-function config(overrides: Partial<AutoReviewConfig> & { allowRules?: string[]; blockRules?: string[] } = {}): TestConfig {
+function config(overrides: Partial<ClearanceConfig> & { allowRules?: string[]; blockRules?: string[] } = {}): TestConfig {
   const { allowRules, blockRules, ...rest } = overrides;
-  return { ...DEFAULT_CONFIG, enabled: true, audit: false, ...rest, rules: testRules(allowRules, blockRules) };
+  return { ...DEFAULT_CONFIG, reviewer: "ai", audit: false, ...rest, rules: testRules(allowRules, blockRules) };
 }
 
 function ctx(overrides: Partial<ExtensionContextLike> = {}): ExtensionContextLike {
@@ -98,6 +100,23 @@ function ctx(overrides: Partial<ExtensionContextLike> = {}): ExtensionContextLik
     sessionManager: { getBranch: () => [] },
     ...overrides,
   };
+}
+
+function staticRoute(
+  toolName: string,
+  input: unknown,
+  options: Pick<DecisionState, "cwd" | "config" | "tools" | "hasUI"> & Partial<Pick<DecisionState, "rules" | "shellLatched">>,
+): string | null {
+  const decision = decide({ toolName, input }, {
+    ...options,
+    reviewer: options.config.reviewer,
+    canAsk: false,
+    consecutiveDenials: 0,
+    shellLatched: options.shellLatched ?? false,
+    rules: options.rules ?? defaultRules(),
+    exactApproved: false,
+  });
+  return decision.staticVerdict?.outcome === "review" ? null : decision.staticVerdict?.route ?? null;
 }
 
 const CLASSIFIER_DENY_REASON = "The approval classifier rejected this action. Reason: needs review Do not retry the same action unless the user explicitly approves it.";
@@ -111,10 +130,61 @@ function classifierDenyOptions(reason = "needs review"): { classifierClient: Non
 }
 
 async function run(): Promise<void> {
-  await test("normalizeConfig defaults to disabled fallback", () => {
+  await test("normalizeConfig defaults to off and reads reviewer as the starting value", () => {
     assert.deepEqual(normalizeConfig({}), DEFAULT_CONFIG);
-    assert.equal(normalizeConfig({ enabled: true, mode: "auto" }).mode, "auto");
-    assert.equal(normalizeConfig({ enabled: true, mode: "bad" }).mode, "fallback");
+    assert.equal(normalizeConfig({ reviewer: "ai" }).reviewer, "ai");
+    assert.equal(normalizeConfig({ reviewer: "manual" }).reviewer, "manual");
+    assert.equal(normalizeConfig({ reviewer: "bad", enabled: true, mode: "auto" }).reviewer, "off");
+    const legacyDir = mkdtempSync(join(tmpdir(), "omp-clearance-legacy-config-"));
+    const legacyPath = join(legacyDir, "config.jsonc");
+    try {
+      writeFileSync(legacyPath, JSON.stringify({ enabled: true, mode: "auto" }));
+      const legacy = loadConfig(legacyPath);
+      assert.equal(legacy.config.reviewer, "off");
+      assert.match(legacy.notice ?? "", /enabled is no longer read/);
+      assert.match(legacy.notice ?? "", /mode is no longer read/);
+    } finally {
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+
+  await test("reviewer state uses config only when missing, reloads on mtime, and fails closed as manual", () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-reviewer-state-"));
+    const path = join(dir, "reviewer-state.json");
+    const cfg = config({ reviewer: "manual" });
+    try {
+      const missing = loadReviewerState(cfg, false, undefined, path);
+      assert.equal(missing.reviewer, "off");
+      assert.equal(missing.source, "default");
+      const fromConfig = loadReviewerState(cfg, true, undefined, path);
+      assert.equal(fromConfig.reviewer, "manual");
+      assert.equal(fromConfig.source, "config.jsonc");
+
+      assert.deepEqual(saveReviewerState("ai", path), { success: true });
+      const ai = loadReviewerState(cfg, true, undefined, path);
+      assert.equal(ai.reviewer, "ai");
+      assert.equal(ai.source, "state file");
+
+      assert.deepEqual(saveReviewerState("off", path), { success: true });
+      utimesSync(path, 10, 10);
+      const off = loadReviewerState(cfg, true, ai, path);
+      assert.equal(off.reviewer, "off");
+
+      writeFileSync(path, "{ broken");
+      utimesSync(path, 20, 20);
+      const invalid = loadReviewerState(cfg, true, off, path);
+      assert.equal(invalid.reviewer, "manual");
+      assert.equal(invalid.source, "invalid state file");
+      assert.match(invalid.problem ?? "", /using manual/);
+
+      assert.deepEqual(saveReviewerState("ai", path), { success: true });
+      utimesSync(path, 30, 30);
+      const recovered = loadReviewerState(cfg, true, invalid, path);
+      assert.equal(recovered.reviewer, "ai");
+      assert.equal(recovered.problem, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   await test("config paths come from CLEARANCE env vars, else the extension directory", () => {
@@ -144,13 +214,13 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("parseReviewDecision supports strict and wrapped JSON", () => {
-    assert.deepEqual(parseReviewDecision('{"outcome":"allow"}'), { outcome: "allow" });
-    assert.deepEqual(parseReviewDecision('text {"outcome":"deny","rationale":"bad"} tail'), {
+  await test("parseClassifierDecision supports strict and wrapped JSON", () => {
+    assert.deepEqual(parseClassifierDecision('{"outcome":"allow"}'), { outcome: "allow" });
+    assert.deepEqual(parseClassifierDecision('text {"outcome":"deny","rationale":"bad"} tail'), {
       outcome: "deny",
       rationale: "bad",
     });
-    assert.throws(() => parseReviewDecision("{}"));
+    assert.throws(() => parseClassifierDecision("{}"));
   });
 
   await test("safe command fast path allows only narrow built-ins", () => {
@@ -598,7 +668,7 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("a rules file with any problem is not used, and every bash command is reviewed", () => {
+  await test("a rules file with any problem is not used, and every bash call is blocked", () => {
     const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-rules-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
     const file = join(workspace, "rules.jsonc");
@@ -624,7 +694,7 @@ async function run(): Promise<void> {
         writeFileSync(file, text);
         const rules = loadRulesFile(file, "rules.jsonc");
         assert.match(rules.problem ?? "", problem, text);
-        assert.match(rules.problem ?? "", /^rules\.jsonc: /);
+        assert.match(rules.problem ?? "", /^rules\.jsonc:\d+:\d+: /);
         assert.equal(rules.programs.size, 0);
         // Not even allow rules apply: the file could have held a rule
         // that is meant to restrict it.
@@ -639,7 +709,7 @@ async function run(): Promise<void> {
       assert.notEqual(planSafeCommand("cat notes.txt", config(), { workspace, searchPath: TEST_PATH, rules }), null);
       assert.equal(planSafeCommand("cat -n notes.txt", config(), { workspace, searchPath: TEST_PATH, rules }), null);
       assert.equal(planSafeCommand("pwd", config(), { workspace, searchPath: TEST_PATH, rules }), null);
-      assert.match(loadRulesFile(join(workspace, "missing.jsonc"), "missing.jsonc").problem ?? "", /^missing\.jsonc: ENOENT/);
+      assert.match(loadRulesFile(join(workspace, "missing.jsonc"), "missing.jsonc").problem ?? "", /^missing\.jsonc:\d+:\d+: ENOENT/);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
@@ -877,13 +947,13 @@ async function run(): Promise<void> {
       assert.notEqual(planSafeCommand("npm ls", config(), { workspace: home, searchPath: TEST_PATH, rules }), null);
 
       const broken: [Record<string, string>, RegExp][] = [
-        [{ "rules.jsonc": '{ "include": ["rules/npm.jsonc"] }' }, /^~\/rules\.jsonc: include: expected an absolute path or one starting with ~\//],
-        [{ "rules.jsonc": '{ "include": ["~/rules/missing.jsonc"] }' }, /^~\/rules\/missing\.jsonc: ENOENT/],
-        [{ "rules.jsonc": '{ "include": ["~/rules/a.jsonc"] }', "rules/a.jsonc": '{ "include": ["~/rules.jsonc"] }' }, /^~\/rules\.jsonc: includes itself through ~\/rules\.jsonc → ~\/rules\/a\.jsonc/],
-        [{ "rules.jsonc": '{ "include": ["~/rules/a.jsonc"] }', "rules/a.jsonc": "{ oops }" }, /^~\/rules\/a\.jsonc: expected a key in double quotes at line 1/],
+        [{ "rules.jsonc": '{ "include": ["rules/npm.jsonc"] }' }, /^~\/rules\.jsonc:\d+:\d+: include: expected an absolute path or one starting with ~\//],
+        [{ "rules.jsonc": '{ "include": ["~/rules/missing.jsonc"] }' }, /^~\/rules\/missing\.jsonc:\d+:\d+: ENOENT/],
+        [{ "rules.jsonc": '{ "include": ["~/rules/a.jsonc"] }', "rules/a.jsonc": '{ "include": ["~/rules.jsonc"] }' }, /^~\/rules\.jsonc:\d+:\d+: includes itself through ~\/rules\.jsonc → ~\/rules\/a\.jsonc/],
+        [{ "rules.jsonc": '{ "include": ["~/rules/a.jsonc"] }', "rules/a.jsonc": "{ oops }" }, /^~\/rules\/a\.jsonc:\d+:\d+: expected a key in double quotes at line 1/],
         [
           { "rules.jsonc": '{ "include": ["~/rules/a.jsonc"], "programs": { "cat": { "operands": "none" } } }', "rules/a.jsonc": '{ "programs": { "cat": { "operands": "none" } } }' },
-          /^~\/rules\.jsonc: programs\["cat"\]: also defined in ~\/rules\/a\.jsonc/,
+          /^~\/rules\.jsonc:\d+:\d+: programs\["cat"\]: also defined in ~\/rules\/a\.jsonc/,
         ],
       ];
       for (const [files, problem] of broken) {
@@ -904,7 +974,7 @@ async function run(): Promise<void> {
       // A dangling symbolic link is an error, not "no rules file".
       rmSync(join(home, "rules.jsonc"));
       symlinkSync(join(home, "gone.jsonc"), join(home, "rules.jsonc"));
-      assert.match(loadCommandRules(join(home, "rules.jsonc")).problem ?? "", /^~\/rules\.jsonc: ENOENT/);
+      assert.match(loadCommandRules(join(home, "rules.jsonc")).problem ?? "", /^~\/rules\.jsonc:\d+:\d+: ENOENT/);
     } finally {
       process.env.HOME = previousHome;
       rmSync(home, { recursive: true, force: true });
@@ -917,7 +987,7 @@ async function run(): Promise<void> {
     const file = join(workspace, "rules.jsonc");
     try {
       const broken: [string, RegExp][] = [
-        ['{ "programs": {}, "rule": [] }', /rules\.jsonc: unknown key "rule"/],
+        ['{ "programs": {}, "rule": [] }', /rules\.jsonc:\d+:\d+: unknown key "rule"/],
         ['{ "programs": { "sed": null } }', /to turn off a built-in program, list "program:sed" in "disable"/],
         ['{ "programs": { "head": { "extends": "builtin" } } }', /programs\["head"\]\.extends: only "default"/],
         ['{ "programs": { "kubectl": { "extends": "default" } } }', /programs\["kubectl"\]\.extends: only "default", for a program the defaults have$/],
@@ -932,7 +1002,7 @@ async function run(): Promise<void> {
         ['{ "programs": { "git": { "extends": "default", "subcommands": { "worktree": null } } } }', /no subcommand "worktree"/],
         ['{ "programs": { "git": { "extends": "default", "subcommands": { "worktree": { "extends": "default" } } } } }', /subcommands\["worktree"\]\.extends: only "default", for a subcommand the default entry has/],
         ['{ "programs": { "npm": { "subcommands": { "ls": { "extends": "default", "operands": "none" } } } } }', /extends: only "default", for a subcommand the defaults have/],
-        ['{ "programs": { "cat": { "options": { "-n": "flags" }, "operands": "read-files" } } }', /rules\.jsonc: programs\["cat"\]\.options\["-n"\]: unknown kind "flags"/],
+        ['{ "programs": { "cat": { "options": { "-n": "flags" }, "operands": "read-files" } } }', /rules\.jsonc:\d+:\d+: programs\["cat"\]\.options\["-n"\]: unknown kind "flags"/],
         ['{ "programs": { "later": { "options": { "-k": "string" }, "operands": "duration-then-command" } } }', /needs "stopAtOperand": true/],
         ['{ "programs": { "git": { "extends": "default", "subcommands": { "run": { "options": "any", "stopAtOperand": true, "operands": "duration-then-command" } } } } }', /needs "stopAtOperand": true and an option table/],
       ];
@@ -950,52 +1020,130 @@ async function run(): Promise<void> {
         writeFileSync(file, text);
         const rules = loadCommandRules(file);
         const event = { toolName: "bash", input: { command: "git status" } as Record<string, unknown> };
-        const decision = await evaluateToolCall(event, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), { ...classifierDenyOptions(), rules });
+        const decision = await evaluateToolCall(event, ctx({ cwd: workspace }), config({ reviewer: "ai" }), new SessionApprovalStore(), { ...classifierDenyOptions(), rules });
         assert.equal("block" in decision && decision.block, true, text);
         assert.equal(event.input.command, "git status");
       }
       const event = { toolName: "bash", input: { command: "git status" } as Record<string, unknown> };
       writeFileSync(file, '{ "programs": { "cat": { "operands": "read-files" } } }');
-      assert.deepEqual(await evaluateToolCall(event, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), { ...classifierDenyOptions(), rules: loadCommandRules(file) }), {});
+      assert.deepEqual(await evaluateToolCall(event, ctx({ cwd: workspace }), config({ reviewer: "ai" }), new SessionApprovalStore(), { ...classifierDenyOptions(), rules: loadCommandRules(file) }), {});
       assert.match(String(event.input.command), /^\/\S*\/git status$/);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
 
-  await test("while the rules file is broken, every bash command asks the user, and session start says so", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-broken-ask-"));
+  await test("broken rules block bash in every reviewer, report loudly, and reload when fixed", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-broken-block-"));
     writeFileSync(join(workspace, "notes.txt"), "x\n");
     writeFileSync(join(workspace, "rules.jsonc"), "{ broken");
     const previousRules = process.env.CLEARANCE_RULES_PATH;
     const previousConfig = process.env.CLEARANCE_CONFIG_PATH;
     process.env.CLEARANCE_RULES_PATH = join(workspace, "rules.jsonc");
     process.env.CLEARANCE_CONFIG_PATH = join(workspace, "config.jsonc");
-    writeFileSync(join(workspace, "config.jsonc"), JSON.stringify({ enabled: true, mode: "auto" }));
+    writeFileSync(join(workspace, "config.jsonc"), JSON.stringify({ reviewer: "ai" }));
     try {
       const rules = loadCommandRules(join(workspace, "rules.jsonc"));
       assert.notEqual(rules.problem, null);
       const noClassifier = { classifierClient: async () => { throw new Error("must not call the classifier"); }, rules };
       const bash = (command: string) => ({ toolName: "bash", input: { command } });
-      // Auto mode: denied, with the reason; the classifier is never asked.
-      const denied = await evaluateToolCall(bash("git status"), ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), noClassifier);
-      assert.match((denied as { reason?: string }).reason ?? "", /^The command rules could not be loaded, so every bash command needs the user's approval, and the user cannot be asked in auto mode\. Problem: .*rules\.jsonc: expected a key.*\. Do not retry; tell the user to fix the rules file\.$/);
-      // Even with bash in reviewExemptTools.
-      assert.equal("block" in await evaluateToolCall(bash("git status"), ctx({ cwd: workspace }), config({ mode: "auto", reviewExemptTools: ["bash"] }), new SessionApprovalStore(), noClassifier), true);
-      // Fallback mode with a UI: the user is asked.
-      let prompt = "";
-      const ui = { select: async (title: string) => { prompt = title; return "Allow Once"; } };
-      assert.deepEqual(await evaluateToolCall(bash("git status"), ctx({ cwd: workspace, hasUI: true, ui }), config({ mode: "fallback" }), new SessionApprovalStore(), noClassifier), {});
-      assert.match(prompt, /The command rules could not be loaded, so every bash command needs your approval until they are fixed\.[\s\S]*Rule: rules-unreadable \(ask, .*rules\.jsonc\)\nWhy: .*rules\.jsonc: expected a key/);
-      // Other tools are not governed by the rules.
-      assert.deepEqual(await evaluateToolCall({ toolName: "read", input: { path: "notes.txt" } }, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), noClassifier), {});
+      for (const reviewer of ["ai", "manual", "off"] as const) {
+        const denied = await evaluateToolCall(
+          bash("git status"),
+          ctx({ cwd: workspace, hasUI: true, ui: { select: async () => { throw new Error("broken rules must not prompt"); } } }),
+          config({ reviewer }),
+          new SessionApprovalStore(),
+          noClassifier,
+        );
+        assert.match((denied as { reason?: string }).reason ?? "", /^The command rules are broken at .*rules\.jsonc:\d+:\d+: expected a key.*Every bash call is blocked until the file is fixed\. Report this rules error to the user and do not retry the call\.$/);
+      }
+      // Even with bash in reviewExemptTools; other tools are not governed by the rules.
+      for (const input of [{}, { command: "" }]) {
+        assert.equal("block" in await evaluateToolCall({ toolName: "bash", input }, ctx({ cwd: workspace }), config({ reviewer: "off", reviewExemptTools: ["bash"] }), new SessionApprovalStore(), noClassifier), true);
+      }
+      assert.equal("block" in await evaluateToolCall(bash("git status"), ctx({ cwd: workspace }), config({ reviewer: "off", reviewExemptTools: ["bash"] }), new SessionApprovalStore(), noClassifier), true);
+      assert.deepEqual(await evaluateToolCall({ toolName: "read", input: { path: "notes.txt" } }, ctx({ cwd: workspace }), config({ reviewer: "ai" }), new SessionApprovalStore(), noClassifier), {});
 
-      // Session start shows an error.
+      // Session start shows an error and keeps the problem in the status line.
       const handlers = new Map<string, (...args: any[]) => any>();
       ompClearanceExtension({ on: (event, handler) => { handlers.set(event, handler); }, getAllTools: () => [], registerCommand: () => {} });
       const notices: [string, string | undefined][] = [];
-      await handlers.get("session_start")!({}, ctx({ cwd: workspace, ui: { notify: (message, type) => { notices.push([message, type]); }, setStatus: () => {} } }));
-      assert.ok(notices.some(([message, type]) => type === "error" && /^omp-clearance: the command rules could not be loaded, so every bash command asks you first/.test(message)), JSON.stringify(notices));
+      const statuses: string[] = [];
+      const sessionCtx = ctx({ cwd: workspace, ui: {
+        notify: (message, type) => { notices.push([message, type]); },
+        setStatus: (_key, value) => { if (value) statuses.push(value); },
+      } });
+      await handlers.get("session_start")!({}, sessionCtx);
+      assert.ok(notices.some(([message, type]) => type === "error" && /^omp-clearance: the command rules could not be loaded, so every bash call is blocked/.test(message)), JSON.stringify(notices));
+      assert.match(statuses.at(-1) ?? "", /rules error/);
+      assert.ok(statuses.at(-1)?.startsWith("\u001B[31m"));
+      assert.ok(statuses.at(-1)?.endsWith("\u001B[0m"));
+
+      // Fixing the main file is enough: the next call reloads it and runs safely.
+      writeFileSync(join(workspace, "rules.jsonc"), "{}");
+      utimesSync(join(workspace, "rules.jsonc"), 60, 60);
+      assert.deepEqual(await handlers.get("tool_call")!(bash("git status"), sessionCtx), {});
+      assert.doesNotMatch(statuses.at(-1) ?? "", /rules error/);
+      assert.equal(notices.filter(([message, type]) => type === "info" && message === "omp-clearance: command rules reloaded; bash calls are no longer blocked.").length, 1);
+    } finally {
+      for (const [name, previous] of [["CLEARANCE_RULES_PATH", previousRules], ["CLEARANCE_CONFIG_PATH", previousConfig]] as const) {
+        if (previous === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = previous;
+        }
+      }
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  await test("rules includes reload when their contents change", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-include-reload-"));
+    const main = join(workspace, "rules.jsonc");
+    const included = join(workspace, "included.jsonc");
+    const validInclude = '{ "programs": { "whoami": { "opensNoFiles": true, "operands": "none" } } }';
+    writeFileSync(main, JSON.stringify({ include: [included] }));
+    writeFileSync(included, validInclude);
+    const previousRules = process.env.CLEARANCE_RULES_PATH;
+    const previousConfig = process.env.CLEARANCE_CONFIG_PATH;
+    process.env.CLEARANCE_RULES_PATH = main;
+    process.env.CLEARANCE_CONFIG_PATH = join(workspace, "config.jsonc");
+    writeFileSync(process.env.CLEARANCE_CONFIG_PATH, JSON.stringify({ reviewer: "off" }));
+    const handlers = new Map<string, (...args: any[]) => any>();
+    const notices: string[] = [];
+    const sessionCtx = ctx({ cwd: workspace, ui: { notify: (message) => { notices.push(message); }, setStatus: () => {} } });
+    try {
+      ompClearanceExtension({ on: (event, handler) => { handlers.set(event, handler); }, getAllTools: () => [], registerCommand: () => {} });
+      const call = () => handlers.get("tool_call")!({ toolName: "bash", input: { command: "whoami" } }, sessionCtx);
+      assert.deepEqual(await call(), {});
+
+      writeFileSync(included, "{ broken");
+      utimesSync(included, 70, 70);
+      await handlers.get("resources_discover")!({}, sessionCtx);
+      assert.match(notices.at(-1) ?? "", /included\.jsonc/);
+      const blocked = await call();
+      assert.match("reason" in blocked ? blocked.reason : "", /included\.jsonc:\d+:\d+: expected a key/);
+      assert.equal(notices.length, 1);
+
+      writeFileSync(included, validInclude);
+      utimesSync(included, 80, 80);
+      assert.deepEqual(await call(), {});
+
+      writeFileSync(included, '{ "programs": { "x": {} } }');
+      utimesSync(included, 90, 90);
+      const invalid = await call();
+      assert.match("reason" in invalid ? invalid.reason : "", /included\.jsonc:\d+:\d+: programs\["x"\]: missing "operands"/);
+
+      for (const [seconds, document, message] of [
+        [100, '{ "programs": { "cat": { "extends": "default", "operands": { "read-files": { "min": 2, "max": 1 } } } } }', "min is more than max"],
+        [110, '{ "programs": { "bad key": {} } }', "one program per entry"],
+      ] as const) {
+        writeFileSync(included, document);
+        utimesSync(included, seconds, seconds);
+        const problem = loadCommandRules(main).problem ?? "";
+        assert.ok(problem.startsWith(`${included}:`), problem);
+        assert.match(problem, new RegExp(message));
+      }
     } finally {
       for (const [name, previous] of [["CLEARANCE_RULES_PATH", previousRules], ["CLEARANCE_CONFIG_PATH", previousConfig]] as const) {
         if (previous === undefined) {
@@ -1021,15 +1169,15 @@ async function run(): Promise<void> {
       for (const path of ["rules.jsonc", "./rules.jsonc", "link.jsonc", "kube.jsonc", join(workspace, "rules.jsonc")]) {
         assert.equal(isWorkspaceWriteFastPath(write(path), workspace, protectedFiles), false, path);
       }
-      // selectFastPath protects config.jsonc and rules.jsonc even before they exist.
+      // The static evaluator protects config.jsonc and rules.jsonc even before they exist.
       process.env.CLEARANCE_RULES_PATH = join(workspace, "new-rules.jsonc");
       process.env.CLEARANCE_CONFIG_PATH = join(workspace, "config.jsonc");
-      const route = (path: string) => selectFastPath("write", write(path), { cwd: workspace, config: config(), tools: [], hasUI: false });
+      const route = (path: string) => staticRoute("write", write(path), { cwd: workspace, config: config(), tools: [], hasUI: false });
       assert.equal(route("notes.txt"), "workspace_write");
       assert.equal(route("new-rules.jsonc"), null);
       assert.equal(route("config.jsonc"), null);
       const rules: CommandRules = { ...defaultRules(), files: [join(workspace, "kube.jsonc")] };
-      assert.equal(selectFastPath("write", write("kube.jsonc"), { cwd: workspace, config: config(), tools: [], hasUI: false, rules }), null);
+      assert.equal(staticRoute("write", write("kube.jsonc"), { cwd: workspace, config: config(), tools: [], hasUI: false, rules }), null);
     } finally {
       process.env.CLEARANCE_RULES_PATH = previousRules;
       if (previousConfig === undefined) {
@@ -1291,9 +1439,9 @@ async function run(): Promise<void> {
           return { content: [{ type: "text", text: '{"outcome":"deny","rationale":"needs review"}' }] };
         },
       };
-      const run = async (command: string, overrides: Partial<AutoReviewConfig> = {}, extra: Partial<ExtensionContextLike> = {}, store = new SessionApprovalStore(), with_ = rules) => {
+      const run = async (command: string, overrides: Partial<ClearanceConfig> = {}, extra: Partial<ExtensionContextLike> = {}, store = new SessionApprovalStore(), with_ = rules) => {
         const event = { toolName: "bash", input: { command } as Record<string, unknown> };
-        return evaluateToolCall(event, ctx({ cwd: workspace, ...extra }), config({ mode: "auto", ...overrides }), store, { ...classifier, rules: with_ });
+        return evaluateToolCall(event, ctx({ cwd: workspace, ...extra }), config({ reviewer: "ai", ...overrides }), store, { ...classifier, rules: with_ });
       };
       const blocked = (decision: unknown) => typeof decision === "object" && decision !== null && "block" in decision;
       const reason = (decision: unknown) => String((decision as { reason?: string }).reason);
@@ -1310,24 +1458,24 @@ async function run(): Promise<void> {
 
       // Block: never reviewed, the reason carries the rule.
       let before = classifierCalls;
-      const reset = await run("git stash && git reset --hard HEAD~1", { mode: "fallback" }, { hasUI: true, ui: { select: async () => { throw new Error("must not ask"); } } });
+      const reset = await run("git stash && git reset --hard HEAD~1", { reviewer: "manual" }, { hasUI: true, ui: { select: async () => { throw new Error("must not ask"); } } });
       assert.match(reason(reset), /command rule "no-reset" \(block\).*Why: Work would be lost\./);
       assert.equal(classifierCalls, before);
 
-      // Ask: denied in auto mode and without a UI, never the classifier.
+      // Ask: denied without a UI, never sent to the classifier.
       before = classifierCalls;
-      assert.match(reason(await run("git tag -d v1")), /command rule "ask-tag", which asks the user to approve it, and the user cannot be asked in auto mode\. Why: Tags are releases\./);
-      assert.match(reason(await run("git tag -d v1", { mode: "fallback" })), /cannot be asked without an interactive UI/);
+      assert.match(reason(await run("git tag -d v1")), /command rule "ask-tag", which asks the user to approve it, and the user cannot be asked without an interactive UI\. Why: Tags are releases\./);
+      assert.match(reason(await run("git tag -d v1", { reviewer: "manual" })), /cannot be asked without an interactive UI/);
       assert.equal(classifierCalls, before);
-      // In fallback mode with a UI, it asks, with the rule shown.
+      // With a UI, it asks, with the rule shown.
       let prompt = "";
       const store = new SessionApprovalStore();
       const ui = { select: async (title: string) => { prompt = title; return "Allow Always This Exact Action"; } };
-      assert.deepEqual(await run("git tag -d v1", { mode: "fallback" }, { hasUI: true, ui }, store), {});
+      assert.deepEqual(await run("git tag -d v1", { reviewer: "manual" }, { hasUI: true, ui }, store), {});
       assert.match(prompt, /A command rule asks you to approve this action\.[\s\S]*Rule: ask-tag \(ask, .*rules\.jsonc\)\nWhy: Tags are releases\.[\s\S]*Allow it\?/);
       // An exact approval from the user stands for that exact command.
       prompt = "";
-      assert.deepEqual(await run("git tag -d v1", { mode: "fallback" }, { hasUI: true, ui }, store), {});
+      assert.deepEqual(await run("git tag -d v1", { reviewer: "manual" }, { hasUI: true, ui }, store), {});
       assert.equal(prompt, "");
       assert.equal(classifierCalls, before);
       // A prompt nobody answers rejects. The cursor starts on Reject; OMP's
@@ -1344,7 +1492,7 @@ async function run(): Promise<void> {
           return "Allow Once";
         },
       };
-      const timedOut = await run("git tag -d v1", { mode: "fallback", approvalTimeoutSeconds: 7 }, { hasUI: true, ui: unanswered }, new SessionApprovalStore());
+      const timedOut = await run("git tag -d v1", { reviewer: "manual", approvalTimeoutSeconds: 7 }, { hasUI: true, ui: unanswered }, new SessionApprovalStore());
       assert.equal(blocked(timedOut), true);
       assert.match(reason(timedOut), /timed out/i);
       assert.deepEqual(timeouts, [7000]);
@@ -1369,7 +1517,7 @@ async function run(): Promise<void> {
       writeFileSync(join(dir, "rules.jsonc"), '{ "rules": [{ "id": "no-reset", "match": "git reset --hard", "outcome": "block" }, { "id": "log-review", "match": "git log", "outcome": "review" }] }');
       const rules = loadCommandRules(join(dir, "rules.jsonc"));
       for (const command of ["git status | head -1", "git reset --hard", "git log"]) {
-        await evaluateToolCall({ toolName: "bash", input: { command } }, ctx({ cwd: dir }), config({ mode: "auto", audit: true }), new SessionApprovalStore(), { ...classifierDenyOptions(), rules });
+        await evaluateToolCall({ toolName: "bash", input: { command } }, ctx({ cwd: dir }), config({ reviewer: "ai", audit: true }), new SessionApprovalStore(), { ...classifierDenyOptions(), rules });
       }
       const entries = readFileSync(logPath(), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
       assert.deepEqual(entries.map(({ route, outcome, ruleIds, ruleId, ruleSource }) => ({ route, outcome, ruleIds, ruleId, ruleSource })), [
@@ -1457,21 +1605,21 @@ async function run(): Promise<void> {
     mkdirSync(join(workspace, "sub"));
     try {
       const event = { toolName: "bash", input: { command: "git status --short" } as Record<string, unknown> };
-      assert.deepEqual(await evaluateToolCall(event, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), classifierDenyOptions()), {});
+      assert.deepEqual(await evaluateToolCall(event, ctx({ cwd: workspace }), config({ reviewer: "ai" }), new SessionApprovalStore(), classifierDenyOptions()), {});
       assert.match(String(event.input.command), /^\/\S*\/git status --short$/);
 
       const inside = { toolName: "bash", input: { command: "git status", cwd: "sub" } as Record<string, unknown> };
-      assert.deepEqual(await evaluateToolCall(inside, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), classifierDenyOptions()), {});
+      assert.deepEqual(await evaluateToolCall(inside, ctx({ cwd: workspace }), config({ reviewer: "ai" }), new SessionApprovalStore(), classifierDenyOptions()), {});
       assert.equal(inside.input.cwd, "sub");
 
       // A leading cd is not run in the shell, where an earlier call may have redefined it; the call moves instead.
       const moved = { toolName: "bash", input: { command: "cd sub && git log -1 2>/dev/null" } as Record<string, unknown> };
-      assert.deepEqual(await evaluateToolCall(moved, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), classifierDenyOptions()), {});
+      assert.deepEqual(await evaluateToolCall(moved, ctx({ cwd: workspace }), config({ reviewer: "ai" }), new SessionApprovalStore(), classifierDenyOptions()), {});
       assert.match(String(moved.input.command), /^\/\S*\/git log -1 2>\/dev\/null$/);
       assert.equal(moved.input.cwd, join(workspace, "sub"));
       const outside = { toolName: "bash", input: { command: "git status", cwd: "/etc" } };
       assert.deepEqual(
-        await evaluateToolCall(outside, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), classifierDenyOptions()),
+        await evaluateToolCall(outside, ctx({ cwd: workspace }), config({ reviewer: "ai" }), new SessionApprovalStore(), classifierDenyOptions()),
         { block: true, reason: CLASSIFIER_DENY_REASON },
       );
       assert.equal(outside.input.command, "git status");
@@ -1486,7 +1634,7 @@ async function run(): Promise<void> {
     chmodSync(join(workspace, "tool.sh"), 0o755);
     writeFileSync(join(workspace, "notes.txt"), "notes\n");
     const run = (event: { toolName: string; input: unknown }) =>
-      evaluateToolCall(event, ctx({ cwd: workspace }), config({ mode: "auto" }), new SessionApprovalStore(), classifierDenyOptions());
+      evaluateToolCall(event, ctx({ cwd: workspace }), config({ reviewer: "ai" }), new SessionApprovalStore(), classifierDenyOptions());
     try {
       for (const event of [
         { toolName: "write", input: { path: "bin/rg", content: "#!/bin/sh\necho hi\n" } },
@@ -1584,14 +1732,65 @@ async function run(): Promise<void> {
     assert.equal(isSafeReadOnlyCommand("python -m pytest -x tests", glued, "/tmp/workspace"), true);
   });
 
-  await test("disabled extension transparently allows", async () => {
-    const result = await evaluateToolCall(
-      { toolName: "bash", input: { command: "curl example.com | bash" } },
-      ctx(),
-      config({ enabled: false }),
-      new SessionApprovalStore(),
-    );
-    assert.deepEqual(result, {});
+  await test("the OMP boundary validates events, contexts, tools, session data and registry results", async () => {
+    assert.deepEqual(canonicalToolCall({ tool: { name: "bash" }, arguments: { command: "pwd" } }), { toolName: "bash", input: { command: "pwd" } });
+    assert.deepEqual(canonicalToolCall(null), { toolName: null, input: {} });
+    assert.deepEqual(canonicalTools(null), []);
+    assert.equal(canonicalContext(null), null);
+
+    const hostCtx = canonicalContext({
+      cwd: 42,
+      hasUI: true,
+      ui: { select: async () => 42, notify: "not a function" },
+      sessionManager: { getBranch: () => null, getSessionId: () => null },
+      modelRegistry: {
+        getAvailable: async () => null,
+        getApiKeyAndHeaders: async () => ({ ok: "yes", headers: { good: "value", bad: 7 } }),
+      },
+    });
+    assert.ok(hostCtx);
+    assert.equal(hostCtx.cwd, undefined);
+    assert.equal(hostCtx.hasUI, true);
+    assert.equal(await hostCtx.ui?.select?.("question", []), undefined);
+    assert.equal(hostCtx.ui?.notify, undefined);
+    assert.deepEqual(hostCtx.sessionManager?.getBranch?.(), []);
+    assert.equal(hostCtx.sessionManager?.getSessionId?.(), "");
+    assert.deepEqual(await hostCtx.modelRegistry?.getAvailable?.(), []);
+    assert.deepEqual(await hostCtx.modelRegistry?.getApiKeyAndHeaders?.({}), { ok: false, headers: { good: "value" } });
+
+    const missingName = await evaluateToolCall(null, hostCtx, config({ reviewer: "ai" }), new SessionApprovalStore(), classifierDenyOptions());
+    assert.equal("block" in missingName && missingName.block, true);
+    assert.match("reason" in missingName ? missingName.reason : "", /no tool name/);
+
+    const handlers = new Map<string, (event: unknown, context: unknown) => unknown>();
+    ompClearanceExtension({ on: (event, handler) => { handlers.set(event, handler); } });
+    const invalidContext: unknown = await handlers.get("tool_call")?.({ toolName: "bash", input: { command: "pwd" } }, null);
+    assert.deepEqual(invalidContext, { block: true, reason: "Tool call was blocked because OMP supplied an invalid extension context." });
+
+    const throwingContext = new Proxy({}, { get: () => { throw new Error("host context getter failed"); } });
+    const failedContext: unknown = await handlers.get("tool_call")?.({ toolName: "bash", input: { command: "pwd" } }, throwingContext);
+    assert.deepEqual(failedContext, { block: true, reason: "omp-clearance failed to decide this tool call: host context getter failed. Do not retry; report this error to the user." });
+
+    const throwingHandlers = new Map<string, (event: unknown, context: unknown) => unknown>();
+    ompClearanceExtension({
+      on: (event, handler) => { throwingHandlers.set(event, handler); },
+      getAllTools: () => { throw new Error("host tools unavailable"); },
+    });
+    const failed: unknown = await throwingHandlers.get("tool_call")?.({ toolName: "bash", input: { command: "pwd" } }, ctx());
+    assert.deepEqual(failed, { block: true, reason: "omp-clearance failed to decide this tool call: host tools unavailable. Do not retry; report this error to the user." });
+  });
+
+  await test("off runs review without a classifier but still enforces block and ask", async () => {
+    let classifierCalled = false;
+    const classifierClient = async () => {
+      classifierCalled = true;
+      throw new Error("off must not call the classifier");
+    };
+    const store = new SessionApprovalStore();
+    assert.deepEqual(await evaluateToolCall({ toolName: "bash", input: { command: "npm install" } }, ctx(), config({ reviewer: "off" }), store, { classifierClient }), {});
+    assert.equal("block" in await evaluateToolCall({ toolName: "bash", input: { command: "git push --force origin main" } }, ctx(), config({ reviewer: "off" }), store, { classifierClient }), true);
+    assert.equal("block" in await evaluateToolCall({ toolName: "bash", input: { command: "sudo -n true" } }, ctx(), config({ reviewer: "off" }), store, { classifierClient }), true);
+    assert.equal(classifierCalled, false);
   });
 
   await test("todo completion and wait bypass classifier review and audit local_state", async () => {
@@ -1607,7 +1806,7 @@ async function run(): Promise<void> {
         const result = await evaluateToolCall(
           event,
           ctx(),
-          config({ mode: "auto", audit: true }),
+          config({ reviewer: "ai", audit: true }),
           new SessionApprovalStore(),
           {
             classifierClient: async () => {
@@ -1644,7 +1843,7 @@ async function run(): Promise<void> {
     const result = await evaluateToolCall(
       { toolName: "ask", input: { html: '<form><p>Continue?</p><img src="diagram.png" alt="Diagram"></form>' } },
       ctx({ hasUI: true }),
-      config({ mode: "auto" }),
+      config({ reviewer: "ai" }),
       new SessionApprovalStore(),
       {
         classifierClient: async () => {
@@ -1700,7 +1899,7 @@ async function run(): Promise<void> {
       const result = await evaluateToolCall(
         event,
         context,
-        config({ mode: "auto" }),
+        config({ reviewer: "ai" }),
         new SessionApprovalStore(),
         classifierDenyOptions(),
       );
@@ -1716,7 +1915,7 @@ async function run(): Promise<void> {
       const result = await evaluateToolCall(
         event,
         ctx(),
-        config({ mode: "auto" }),
+        config({ reviewer: "ai" }),
         new SessionApprovalStore(),
         classifierDenyOptions(),
       );
@@ -1729,7 +1928,7 @@ async function run(): Promise<void> {
     const result = await evaluateToolCall(
       { toolName: "Custom_State", input: { value: "unfinished work" } },
       ctx(),
-      config(normalizeConfig({ mode: "auto", reviewExemptTools: [" custom_state "] })),
+      config(normalizeConfig({ reviewer: "ai", reviewExemptTools: [" custom_state "] })),
       new SessionApprovalStore(),
       {
         classifierClient: async () => {
@@ -1752,7 +1951,7 @@ async function run(): Promise<void> {
     const result = await evaluateToolCall(
       { toolName: "search_and_replace", input: { path: "/tmp/workspace/a.ts", oldText: "a", newText: "b" } },
       ctx(),
-      config({ mode: "auto" }),
+      config({ reviewer: "ai" }),
       new SessionApprovalStore(),
       classifierDenyOptions(),
     );
@@ -1769,7 +1968,7 @@ async function run(): Promise<void> {
       const result = await evaluateToolCall(
         { toolName: "custom_report", input: { path: "/tmp/workspace/a.ts" } },
         ctx(),
-        config({ mode: "auto" }),
+        config({ reviewer: "ai" }),
         new SessionApprovalStore(),
         { tools: [tool], ...classifierDenyOptions() },
       );
@@ -1790,7 +1989,7 @@ async function run(): Promise<void> {
         const result = await evaluateToolCall(
           event,
           ctx({ hasUI: true }),
-          config({ mode: "auto" }),
+          config({ reviewer: "ai" }),
           new SessionApprovalStore(),
           { tools: [{ name: event.toolName, sourceInfo: { source } }], ...classifierDenyOptions() },
         );
@@ -1801,7 +2000,7 @@ async function run(): Promise<void> {
       const result = await evaluateToolCall(
         event,
         ctx({ hasUI: true }),
-        config({ mode: "auto" }),
+        config({ reviewer: "ai" }),
         new SessionApprovalStore(),
         {
           tools: [{ name: event.toolName, sourceInfo: { source: "builtin" } }, { name: "other", sourceInfo: { source: "extension" } }],
@@ -1813,7 +2012,7 @@ async function run(): Promise<void> {
     const unlisted = await evaluateToolCall(
       { toolName: "read", input: { path: "a.ts" } },
       ctx(),
-      config({ mode: "auto" }),
+      config({ reviewer: "ai" }),
       new SessionApprovalStore(),
       { tools: [{ name: "bash", sourceInfo: { source: "builtin" } }], ...classifierDenyOptions() },
     );
@@ -1847,7 +2046,7 @@ async function run(): Promise<void> {
         const result = await evaluateToolCall(
           event,
           ctx({ cwd: workspace }),
-          config({ mode: "auto" }),
+          config({ reviewer: "ai" }),
           new SessionApprovalStore(),
           { classifierClient: async () => { throw new Error(`classifier called for ${JSON.stringify(event)}`); } },
         );
@@ -1921,7 +2120,7 @@ async function run(): Promise<void> {
         const result = await evaluateToolCall(
           event,
           ctx({ cwd: workspace }),
-          config({ mode: "auto" }),
+          config({ reviewer: "ai" }),
           new SessionApprovalStore(),
           {
             classifierClient: async () => {
@@ -1949,7 +2148,7 @@ async function run(): Promise<void> {
       const result = await evaluateToolCall(
         { toolName: "edit", input: { path: join(workspace, "linked-outside", "a.ts") } },
         ctx({ cwd: workspace }),
-        config({ mode: "auto" }),
+        config({ reviewer: "ai" }),
         new SessionApprovalStore(),
         { classifierClient: async () => ({ content: [{ type: "text", text: '{"outcome":"deny","rationale":"outside workspace"}' }] }) },
       );
@@ -1969,14 +2168,14 @@ async function run(): Promise<void> {
     try {
       const store = new SessionApprovalStore();
       assert.deepEqual(
-        await evaluateToolCall({ toolName: "edit", input: { path: "src/a.ts" } }, ctx({ cwd: workspace }), config({ mode: "auto" }), store),
+        await evaluateToolCall({ toolName: "edit", input: { path: "src/a.ts" } }, ctx({ cwd: workspace }), config({ reviewer: "ai" }), store),
         {},
       );
 
       const outsideResult = await evaluateToolCall(
         { toolName: "edit", input: { path: "../outside/a.ts" } },
         ctx({ cwd: workspace }),
-        config({ mode: "auto" }),
+        config({ reviewer: "ai" }),
         new SessionApprovalStore(),
         classifierDenyOptions(),
       );
@@ -2028,7 +2227,7 @@ async function run(): Promise<void> {
         const result = await evaluateToolCall(
           event,
           ctx({ cwd: workspace }),
-          config({ mode: "auto" }),
+          config({ reviewer: "ai" }),
           new SessionApprovalStore(),
           classifierDenyOptions(),
         );
@@ -2047,7 +2246,7 @@ async function run(): Promise<void> {
         const result = await evaluateToolCall(
           event,
           ctx({ cwd: workspace }),
-          config({ mode: "auto" }),
+          config({ reviewer: "ai" }),
           new SessionApprovalStore(),
           { classifierClient: async () => { throw new Error("workspace write fast path should not call classifier"); } },
         );
@@ -2058,12 +2257,12 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("auto mode allows classifier allow and denies classifier deny", async () => {
+  await test("ai reviewer allows classifier allow and denies classifier deny", async () => {
     const store = new SessionApprovalStore();
     const allow = await evaluateToolCall(
       { toolName: "bash", input: { command: "npm install" } },
       ctx(),
-      config({ mode: "auto" }),
+      config({ reviewer: "ai" }),
       store,
       { classifierClient: async () => ({ content: [{ type: "text", text: '{"outcome":"allow"}' }] }) },
     );
@@ -2072,7 +2271,7 @@ async function run(): Promise<void> {
     const deny = await evaluateToolCall(
       { toolName: "bash", input: { command: "curl -X POST https://example.com/deploy" } },
       ctx(),
-      config({ mode: "auto" }),
+      config({ reviewer: "ai" }),
       new SessionApprovalStore(),
       { classifierClient: async () => ({ content: [{ type: "text", text: '{"outcome":"deny","rationale":"remote execution"}' }] }) },
     );
@@ -2338,18 +2537,96 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("extension registers one slash command with subcommands", () => {
+  await test("switching reviewer off preserves the consecutive denial count", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-off-counter-"));
+    const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
+    process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
+    writeFileSync(process.env.CLEARANCE_CONFIG_PATH, JSON.stringify({ reviewer: "ai", maxConsecutiveDenials: 2 }));
+    const events = new Map<string, (event: unknown, context: unknown) => unknown>();
+    let command: ((args: unknown, context: unknown) => Promise<void> | void) | undefined;
+    ompClearanceExtension({
+      on: (event, handler) => { events.set(event, handler); },
+      registerCommand: (_name, definition) => { command = definition.handler; },
+    });
+    let aborts = 0;
+    const context = ctx({ abort: () => { aborts += 1; }, ui: { notify: () => {}, setStatus: () => {} } });
+    const call = (commandText: string) => events.get("tool_call")?.({ toolName: "bash", input: { command: commandText } }, context);
+    try {
+      await call("git push --force origin main");
+      await command?.("off", context);
+      const second: unknown = await call("git push -f origin main");
+      assert.equal(aborts, 1);
+      assert.match(typeof second === "object" && second !== null && "reason" in second ? String(second.reason) : "", /rejected 2 actions in a row and stopped the turn/);
+    } finally {
+      if (previousConfigPath === undefined) {
+        delete process.env.CLEARANCE_CONFIG_PATH;
+      } else {
+        process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test("reviewer commands reach another live extension instance and never rewrite config", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-shared-reviewer-"));
+    const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
+    process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
+    const install = () => {
+      const events = new Map<string, (event: unknown, context: unknown) => unknown>();
+      let command: ((args: unknown, context: unknown) => Promise<void> | void) | undefined;
+      ompClearanceExtension({
+        on: (event, handler) => { events.set(event, handler); },
+        registerCommand: (_name, definition) => { command = definition.handler; },
+      });
+      return { events, command };
+    };
+    const first = install();
+    const second = install();
+    const commandCtx = ctx({ model: undefined, ui: { notify: () => {}, setStatus: () => {} } });
+    const call = () => second.events.get("tool_call")?.({ toolName: "bash", input: { command: "make deploy" } }, commandCtx);
+    try {
+      const configBefore = readFileSync(process.env.CLEARANCE_CONFIG_PATH, "utf8");
+      assert.deepEqual(await call(), {});
+      await first.command?.("ai", commandCtx);
+      const reviewed: unknown = await call();
+      assert.equal(typeof reviewed === "object" && reviewed !== null && "block" in reviewed && reviewed.block, true);
+      await first.command?.("off", commandCtx);
+      assert.deepEqual(await call(), {});
+
+      writeFileSync(reviewerStatePath(), "{ broken");
+      utimesSync(reviewerStatePath(), 50, 50);
+      const invalid: unknown = await call();
+      assert.equal(typeof invalid === "object" && invalid !== null && "block" in invalid && invalid.block, true);
+      await first.command?.("off", commandCtx);
+      assert.deepEqual(await call(), {});
+      assert.equal(readFileSync(process.env.CLEARANCE_CONFIG_PATH, "utf8"), configBefore);
+    } finally {
+      if (previousConfigPath === undefined) {
+        delete process.env.CLEARANCE_CONFIG_PATH;
+      } else {
+        process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test("extension registers one slash command and rejects unknown subcommands", async () => {
     const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
     const configPath = join(tmpdir(), `omp-clearance-${Date.now()}.jsonc`);
     process.env.CLEARANCE_CONFIG_PATH = configPath;
     const commands: string[] = [];
+    let handler: ((args: string, ctx: ExtensionContextLike) => Promise<void> | void) | undefined;
     ompClearanceExtension({
       on: () => {},
-      registerCommand: (name) => {
+      registerCommand: (name, definition) => {
         commands.push(name);
+        handler = definition.handler;
       },
     });
     assert.deepEqual(commands, ["clearance"]);
+    const messages: string[] = [];
+    await handler?.("unknown", ctx({ ui: { notify: (message) => { messages.push(message); } } }));
+    assert.deepEqual(messages, ['Unknown /clearance subcommand "unknown". Use status, ai, manual, off, model, rules, or explain.']);
     rmSync(configPath, { force: true });
     if (previousConfigPath === undefined) {
       delete process.env.CLEARANCE_CONFIG_PATH;
@@ -2372,12 +2649,12 @@ async function run(): Promise<void> {
       },
     });
     const completions = await getArgumentCompletions?.("");
-    assert.equal(description, "args: status | off | fallback | auto | model | rules | explain");
+    assert.equal(description, "args: status | ai | manual | off | model | rules | explain");
     assert.deepEqual((completions ?? []).map((item) => (item as { value: string }).value), [
       "status",
+      "ai",
+      "manual",
       "off",
-      "fallback",
-      "auto",
       "model",
       "model current",
       "rules",
@@ -2397,7 +2674,7 @@ async function run(): Promise<void> {
     const previousRulesPath = process.env.CLEARANCE_RULES_PATH;
     process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
     process.env.CLEARANCE_RULES_PATH = join(dir, "rules.jsonc");
-    writeFileSync(join(dir, "config.jsonc"), JSON.stringify({ enabled: true, mode: "auto" }));
+    writeFileSync(join(dir, "config.jsonc"), JSON.stringify({ reviewer: "ai" }));
     // A user entry for a program that is installed, so that explain can fast-path it.
     writeFileSync(join(dir, "rules.jsonc"), KUBE_RULES.replace('"programs": {', '"programs": { "whoami": { "opensNoFiles": true, "operands": "none" },'));
     let handler: ((args: string, ctx: ExtensionContextLike) => Promise<void> | void) | undefined;
@@ -2419,7 +2696,8 @@ async function run(): Promise<void> {
       assert.match(await say("explain bash git status"), /allowed by: program:git status \(default\)$/);
       writeFileSync(join(dir, "rules.jsonc"), "{ broken");
       for (const args of ["rules", "rules git"]) {
-        assert.match(await say(args), /^omp-clearance: the command rules could not be loaded, so every bash command asks you first \(and is denied in auto mode\): .*rules\.jsonc: expected a key.*Fix the file, then run \/clearance status to reload it\.$/, args);
+        assert.match(await say(args), /omp-clearance: the command rules could not be loaded, so every bash call is blocked until the file is fixed: .*rules\.jsonc:\d+:\d+: expected a key.*Fixing the file is enough; rules reload automatically\.$/, args);
+        assert.equal(messages.length, 1);
       }
     } finally {
       for (const [name, previous] of [["CLEARANCE_CONFIG_PATH", previousConfigPath], ["CLEARANCE_RULES_PATH", previousRulesPath]] as const) {
@@ -2437,7 +2715,7 @@ async function run(): Promise<void> {
     const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
     const configFile = join(tmpdir(), `omp-clearance-explain-${Date.now()}.jsonc`);
     process.env.CLEARANCE_CONFIG_PATH = configFile;
-    writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, enabled: true, mode: "auto" }));
+    writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, reviewer: "ai" }));
     let handler: ((args: string, ctx: ExtensionContextLike) => Promise<void> | void) | undefined;
     ompClearanceExtension({
       on: () => {},
@@ -2455,7 +2733,7 @@ async function run(): Promise<void> {
         return messages.join("\n");
       };
       assert.match(await routeFor("read src/a.ts"), /tool: read \(builtin\)[\s\S]*route: allowed without review: read-only builtin tool/);
-      assert.match(await routeFor("read ~/.ssh/id_ed25519"), /route: classifier review; blocked if it denies or fails/);
+      assert.match(await routeFor("read ~/.ssh/id_ed25519"), /route: classifier review; a denial goes to the agent/);
       assert.match(await routeFor('read {"path":".env"}'), /arguments: \{"path":".env"\}[\s\S]*route: classifier review/);
       assert.match(await routeFor("bash git status --short"), /arguments: \{"command":"git status --short"\}[\s\S]*route: allowed without review: every command is read-only by the command rules\nruns as: .*\nallowed by: program:git status \(default\)/);
       assert.match(await routeFor("bash git push"), /route: classifier review/);
@@ -2465,9 +2743,12 @@ async function run(): Promise<void> {
       assert.match(await routeFor("git status 2>&1 && git log -1"), /route: allowed without review[\s\S]*runs as: \/\S+\/git status 2>&1 && \/\S+\/git log -1/);
       assert.match(await routeFor(`bash cd ${tmpdir()} && git status`), /route: classifier review/);
       assert.match(await routeFor("read {bad"), /not valid JSON/);
+      writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, reviewer: "manual" }));
+      assert.match(await routeFor("read ~/.ssh/id_ed25519"), /route: blocked: manual review needs an interactive UI/);
+      writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, reviewer: "ai" }));
       writeFileSync(process.env.CLEARANCE_RULES_PATH!, '{ "rules": [{ "id": "no-apply", "match": "terraform apply", "outcome": "block" }] }');
       try {
-        assert.match(await routeFor("bash terraform apply -auto-approve"), /route: blocked: matches a block command rule, never auto-approved or asked\nrule: no-apply \(block, .*no-rules\.jsonc\)/);
+        assert.match(await routeFor("bash terraform apply -auto-approve"), /route: blocked: matches a block command rule and never runs\nrule: no-apply \(block, .*no-rules\.jsonc\)/);
         assert.match(await routeFor("bash git push origin --force"), /route: blocked: [^\n]*\nrule: force-push \(block, default\)\nwhy: A force push rewrites history/);
       } finally {
         rmSync(process.env.CLEARANCE_RULES_PATH!, { force: true });
@@ -2483,27 +2764,22 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("system prompt note is appended only while omp-clearance is enabled", async () => {
+  await test("system prompt denial guidance is appended in every reviewer mode", async () => {
     const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
     const configFile = join(tmpdir(), `omp-clearance-prompt-${Date.now()}.jsonc`);
     process.env.CLEARANCE_CONFIG_PATH = configFile;
     try {
-      for (const enabled of [true, false]) {
-        writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, enabled }));
+      for (const reviewer of ["ai", "manual", "off"] as const) {
+        writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, reviewer }));
         const handlers = new Map<string, (...args: any[]) => any>();
         ompClearanceExtension({ on: (event, handler) => { handlers.set(event, handler); } });
         const beforeAgentStart = handlers.get("before_agent_start");
         assert.ok(beforeAgentStart);
         const fromArray = await beforeAgentStart({ type: "before_agent_start", systemPrompt: ["base"] });
         const fromString = await beforeAgentStart({ type: "before_agent_start", systemPrompt: "base" });
-        if (enabled) {
-          assert.deepEqual(fromArray, { systemPrompt: ["base", SYSTEM_PROMPT_NOTE] });
-          assert.deepEqual(fromString, { systemPrompt: `base\n\n${SYSTEM_PROMPT_NOTE}` });
-          assert.match(SYSTEM_PROMPT_NOTE, /do not retry it in another form/);
-        } else {
-          assert.equal(fromArray, undefined);
-          assert.equal(fromString, undefined);
-        }
+        assert.deepEqual(fromArray, { systemPrompt: ["base", SYSTEM_PROMPT_NOTE] });
+        assert.deepEqual(fromString, { systemPrompt: `base\n\n${SYSTEM_PROMPT_NOTE}` });
+        assert.match(SYSTEM_PROMPT_NOTE, /do not retry it in another form/);
       }
     } finally {
       rmSync(configFile, { force: true });
@@ -2515,9 +2791,9 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("unknown config keys are reported once at session start, not on every tool call", async () => {
+  await test("config notices and read warnings are reported once at session start, not on every tool call", async () => {
     const configFile = join(tmpdir(), `omp-clearance-keys-${Date.now()}.jsonc`);
-    writeFileSync(configFile, JSON.stringify({ $schema: "./schemas/config.schema.json", enabled: true, safeCommandAllowList: ["make"], modes: "auto" }));
+    writeFileSync(configFile, JSON.stringify({ $schema: "./schemas/config.schema.json", safeCommandAllowList: ["make"], modes: "auto" }));
     const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
     process.env.CLEARANCE_CONFIG_PATH = configFile;
     try {
@@ -2539,6 +2815,19 @@ async function run(): Promise<void> {
       await handlers.get("tool_call")?.({ toolName: "read", input: { path: "a.ts" } }, sessionCtx);
       await handlers.get("tool_call")?.({ toolName: "read", input: { path: "b.ts" } }, sessionCtx);
       assert.equal(notices.filter((message) => message.includes("unknown key")).length, 1);
+
+      writeFileSync(configFile, "{");
+      const warningHandlers = new Map<string, (event: unknown, context: ExtensionContextLike) => unknown>();
+      ompClearanceExtension({ on: (event, handler) => { warningHandlers.set(event, handler); } });
+      await warningHandlers.get("session_start")?.({}, sessionCtx);
+      await warningHandlers.get("tool_call")?.({ toolName: "read", input: { path: "a.ts" } }, sessionCtx);
+      await warningHandlers.get("tool_call")?.({ toolName: "read", input: { path: "b.ts" } }, sessionCtx);
+      assert.equal(notices.filter((message) => message.includes("Failed to read omp-clearance config")).length, 1);
+
+      writeFileSync(configFile, JSON.stringify({ reviewer: "ai" }));
+      await warningHandlers.get("tool_call")?.({ toolName: "read", input: { path: "a.ts" } }, sessionCtx);
+      assert.deepEqual(await warningHandlers.get("before_agent_start")?.({ systemPrompt: ["base"] }, sessionCtx), { systemPrompt: ["base", SYSTEM_PROMPT_NOTE] });
+      assert.equal(notices.filter((message) => message.includes("Failed to read omp-clearance config")).length, 1);
     } finally {
       rmSync(configFile, { force: true });
       if (previousConfigPath === undefined) {
@@ -2630,7 +2919,7 @@ async function run(): Promise<void> {
           ],
         },
       }),
-      config({ mode: "auto" }),
+      config({ reviewer: "ai" }),
       new SessionApprovalStore(),
       {
         classifierClient: async (_model, context) => {
@@ -2643,41 +2932,112 @@ async function run(): Promise<void> {
     assert.match(classifierContext, /删除文件/);
   });
 
-  await test("fallback mode routes classifier deny to human approval", async () => {
+  await test("ai denies to the agent first, then asks at the threshold with the classifier reason", async () => {
     const store = new SessionApprovalStore();
-    const result = await evaluateToolCall(
-      { toolName: "bash", input: { command: "echo checking rm -rf build" } },
-      ctx({
-        hasUI: true,
-        ui: {
-          select: async () => "Allow Always This Exact Action",
-        },
-      }),
-      config({ mode: "fallback" }),
+    let prompt = "";
+    const ui = { select: async (title: string) => { prompt = title; return "Allow Always This Exact Action"; } };
+    const cfg = config({ reviewer: "ai", maxConsecutiveDenials: 2 });
+    const first = await evaluateToolCall(
+      { toolName: "bash", input: { command: "make first" } },
+      ctx({ hasUI: true, ui }),
+      cfg,
       store,
-      { classifierClient: async () => ({ content: [{ type: "text", text: '{"outcome":"deny","rationale":"remote execution"}' }] }) },
+      classifierDenyOptions(),
     );
-    assert.deepEqual(result, {});
+    assert.equal("block" in first && first.block, true);
+    assert.equal(prompt, "");
 
-    const cached = await evaluateToolCall(
-      { toolName: "bash", input: { command: "echo checking rm -rf build" } },
-      ctx(),
-      config({ mode: "fallback" }),
+    const second = await evaluateToolCall(
+      { toolName: "bash", input: { command: "make second" } },
+      ctx({ hasUI: true, ui }),
+      cfg,
       store,
-      { classifierClient: async () => { throw new Error("should not be called"); } },
+      classifierDenyOptions(),
     );
-    assert.deepEqual(cached, {});
+    assert.deepEqual(second, {});
+    assert.match(prompt, /AI review recommends blocking this action[\s\S]*Reason: needs review/);
+
+    const exact = await evaluateToolCall(
+      { toolName: "bash", input: { command: "make second" } },
+      ctx(),
+      cfg,
+      store,
+      { classifierClient: async () => { throw new Error("exact approval should not call the classifier"); } },
+    );
+    assert.deepEqual(exact, {});
 
     // The approval is for that exact text: other whitespace can be another command.
     let reviewed = false;
     await evaluateToolCall(
-      { toolName: "bash", input: { command: "echo checking\nrm -rf build" } },
+      { toolName: "bash", input: { command: "make second\nmake third" } },
       ctx(),
-      config({ mode: "fallback" }),
+      cfg,
       store,
       { classifierClient: async () => { reviewed = true; return { content: [{ type: "text", text: '{"outcome":"deny","rationale":"x"}' }] }; } },
     );
     assert.equal(reviewed, true);
+  });
+
+  await test("exact session approval audits do not repeat an earlier classifier denial", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-exact-audit-"));
+    const previousLogsDir = process.env.CLEARANCE_LOGS_DIR;
+    process.env.CLEARANCE_LOGS_DIR = dir;
+    const store = new SessionApprovalStore();
+    const event = { toolName: "bash", input: { command: "make deploy" } };
+    try {
+      await evaluateToolCall(event, ctx({ hasUI: true, ui: { select: async () => "Allow Always This Exact Action" } }), config({ reviewer: "ai", maxConsecutiveDenials: 1, audit: true }), store, classifierDenyOptions());
+      await evaluateToolCall(event, ctx(), config({ reviewer: "ai", audit: true }), store, classifierDenyOptions());
+      const entries = readFileSync(logPath(), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+      assert.equal(entries.length, 2);
+      assert.equal(entries[0]?.route, "human");
+      assert.equal(entries[1]?.route, "session_approval");
+      assert.equal(entries[1]?.classifierDecision, undefined);
+    } finally {
+      if (previousLogsDir === undefined) {
+        delete process.env.CLEARANCE_LOGS_DIR;
+      } else {
+        process.env.CLEARANCE_LOGS_DIR = previousLogsDir;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test("manual review does not reuse an ai cache verdict", async () => {
+    const store = new SessionApprovalStore();
+    let classifierCalls = 0;
+    const client = async () => {
+      classifierCalls += 1;
+      return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
+    };
+    const event = { toolName: "bash", input: { command: "make deploy" } };
+    assert.deepEqual(await evaluateToolCall(event, ctx(), config({ reviewer: "ai" }), store, { classifierClient: client }), {});
+    let prompted = false;
+    const manual = await evaluateToolCall(
+      event,
+      ctx({ hasUI: true, ui: { select: async () => { prompted = true; return "Allow Once"; } } }),
+      config({ reviewer: "manual" }),
+      store,
+      { classifierClient: client },
+    );
+    assert.deepEqual(manual, {});
+    assert.equal(prompted, true);
+    assert.equal(classifierCalls, 1);
+  });
+
+  await test("a classifier verdict cannot be discarded by a later static re-plan", async () => {
+    const input: { command: string; pty?: boolean } = { command: "git status", pty: true };
+    assert.equal(staticRoute("bash", input, { cwd: "/tmp/workspace", config: config(), tools: [], hasUI: false }), null);
+    const result = await evaluateToolCall(
+      { toolName: "bash", input },
+      ctx(),
+      config({ reviewer: "ai" }),
+      new SessionApprovalStore(),
+      { classifierClient: async () => {
+        delete input.pty;
+        return { content: [{ type: "text", text: '{"outcome":"deny","rationale":"needs review"}' }] };
+      } },
+    );
+    assert.deepEqual(result, { block: true, reason: CLASSIFIER_DENY_REASON });
   });
 
   await test("the classifier and its cache see the command exactly as bash will run it", async () => {
@@ -2688,7 +3048,7 @@ async function run(): Promise<void> {
       seen.push(JSON.stringify(request));
       return { content: [{ type: "text", text: `{"outcome":"${verdict}","rationale":"x"}` }] };
     };
-    const run = (command: string) => evaluateToolCall({ toolName: "bash", input: { command } }, ctx(), config({ mode: "auto" }), store, { classifierClient: client });
+    const run = (command: string) => evaluateToolCall({ toolName: "bash", input: { command } }, ctx(), config({ reviewer: "ai" }), store, { classifierClient: client });
     // A harmless-looking one-liner is allowed and cached...
     assert.deepEqual(await run("logger checking rm -rf demo-target"), {});
     // ...and the same words split by a newline, which run `rm`, are reviewed again.
@@ -2703,7 +3063,7 @@ async function run(): Promise<void> {
   await test("bash calls with fields that change how they run are not fast-pathed", () => {
     const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-fields-"));
     try {
-      const route = (input: Record<string, unknown>) => selectFastPath("bash", input, { cwd: workspace, config: config(), tools: [], hasUI: false });
+      const route = (input: Record<string, unknown>) => staticRoute("bash", input, { cwd: workspace, config: config(), tools: [], hasUI: false });
       assert.equal(route({ command: "git status", timeout: 30, description: "status" }), "safe_command");
       assert.equal(route({ command: "git status", pty: false, async: false }), "safe_command");
       for (const extra of [{ pty: true }, { async: true }, { name: "svc" }, { env: { LD_PRELOAD: "/tmp/x.so" } }, { ready: "listening" }, { log: "out.log" }, { surprise: 1 }]) {
@@ -2791,7 +3151,7 @@ async function run(): Promise<void> {
     };
     let session = "s1";
     const sessionCtx = () => ctx({ cwd: workspace, ui: { notify: (message) => { notices.push(message); } }, sessionManager: { getBranch: () => [], getSessionId: () => session } });
-    const run = (command: string, cfg = config({ mode: "auto" })) => evaluateToolCall(
+    const run = (command: string, cfg = config({ reviewer: "ai" })) => evaluateToolCall(
       { toolName: "bash", input: { command } },
       sessionCtx(),
       cfg,
@@ -2821,8 +3181,9 @@ async function run(): Promise<void> {
       assert.equal(classifierCalls, before + 1);
 
       // Commands run while the extension is off count too.
-      assert.deepEqual(await run("source missing.sh", config({ enabled: false })), {});
+      assert.deepEqual(await run("source missing.sh", config({ reviewer: "off" })), {});
       assert.equal(store.shellLatch(session), "`source` of a file that could not be read");
+      assert.match(notices.at(-1) ?? "", /Safe-command fast paths are off for the rest of this session/);
 
       // While a hooking command waits for review, other calls are already reviewed.
       session = "s4";
@@ -2831,7 +3192,7 @@ async function run(): Promise<void> {
       const pending = evaluateToolCall(
         { toolName: "bash", input: { command: "trap x DEBUG" } },
         sessionCtx(),
-        config({ mode: "auto" }),
+        config({ reviewer: "ai" }),
         store,
         { classifierClient: async () => { await slow; return { content: [{ type: "text", text: '{"outcome":"deny","rationale":"no"}' }] }; } },
       );
@@ -2846,18 +3207,18 @@ async function run(): Promise<void> {
 
       // A blocked command never ran, so it latches nothing.
       session = "s3";
-      await evaluateToolCall({ toolName: "bash", input: { command: "trap x DEBUG" } }, sessionCtx(), config({ mode: "auto" }), store, classifierDenyOptions());
+      await evaluateToolCall({ toolName: "bash", input: { command: "trap x DEBUG" } }, sessionCtx(), config({ reviewer: "ai" }), store, classifierDenyOptions());
       assert.equal(store.shellLatch(session), null);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
 
-  await test("fallback without UI denies classifier failure", async () => {
+  await test("ai without UI denies classifier failure", async () => {
     const result = await evaluateToolCall(
       { toolName: "bash", input: { command: "npm install" } },
       ctx({ hasUI: false }),
-      config({ mode: "fallback" }),
+      config({ reviewer: "ai" }),
       new SessionApprovalStore(),
       { classifierClient: async () => { throw new Error("model down"); } },
     );
@@ -2868,7 +3229,7 @@ async function run(): Promise<void> {
     const result = await evaluateToolCall(
       { toolName: "bash", input: { command: "npm install" } },
       ctx({ hasUI: false }),
-      config({ mode: "auto" }),
+      config({ reviewer: "ai" }),
       new SessionApprovalStore(),
       // Simulates pi-ai lazyStream turning an upstream setup failure (HTTP 403
       // upgrade_required, auth error, etc.) into a content-empty assistant
@@ -2895,7 +3256,7 @@ async function run(): Promise<void> {
     const result = await evaluateToolCall(
       { toolName: "bash", input: { command: "npm install" } },
       ctx({ hasUI: false }),
-      config({ mode: "auto" }),
+      config({ reviewer: "ai" }),
       new SessionApprovalStore(),
       { classifierClient: async () => ({ role: "assistant", content: [] }) },
     );
@@ -3045,8 +3406,8 @@ async function run(): Promise<void> {
     assert.equal("env" in (capturedOptions ?? {}), false);
   });
 
-  await test("auto mode end-to-end allow with injected custom provider auth", async () => {
-    // End-to-end: evaluateToolCall in auto mode must allow a classifier "allow"
+  await test("ai reviewer end-to-end allow with injected custom provider auth", async () => {
+    // End-to-end: evaluateToolCall with the ai reviewer must allow a classifier "allow"
     // when the custom provider's models.json key is injected via
     // getApiKeyAndHeaders. Verifies the auth fix is wired through the full
     // decision pipeline, not just classifyAction in isolation.
@@ -3063,7 +3424,7 @@ async function run(): Promise<void> {
           }),
         },
       }),
-      config({ mode: "auto", classifierModel: "my-proxy/my-model" }),
+      config({ reviewer: "ai", classifierModel: "my-proxy/my-model" }),
       new SessionApprovalStore(),
       {
         classifierClient: async (_model, _context, options) => {
@@ -3076,11 +3437,10 @@ async function run(): Promise<void> {
     assert.equal(capturedApiKey, "proxy-key-from-models-json");
   });
 
-  await test("fallback mode routes auth resolution failure to human approval", async () => {
-    // When getApiKeyAndHeaders returns ok:false, fallback + UI must defer to
-    // human approval (not deny opaquely), mirroring how other classifier
-    // failures are handled in fallback mode. Verifies the auth fix does not
-    // regress the fallback-to-human safety net.
+  await test("ai routes auth resolution failure to human approval", async () => {
+    // When getApiKeyAndHeaders returns ok:false, the ai reviewer + UI must defer to
+    // human approval (not deny opaquely), mirroring other classifier failures.
+    // Verifies the auth fix is wired through the full decision pipeline.
     const store = new SessionApprovalStore();
     const result = await evaluateToolCall(
       { toolName: "bash", input: { command: "rm -rf build" } },
@@ -3097,7 +3457,7 @@ async function run(): Promise<void> {
           }),
         },
       }),
-      config({ mode: "fallback", classifierModel: "my-proxy/my-model" }),
+      config({ reviewer: "ai", classifierModel: "my-proxy/my-model" }),
       store,
       {
         classifierClient: async () => {
@@ -3158,17 +3518,17 @@ async function run(): Promise<void> {
     try {
       const created = loadConfig(file);
       assert.equal(created.created, true);
-      assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { enabled: false, mode: "fallback" });
+      assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), {});
       assert.equal(created.config.classifierTimeoutSeconds, 25);
 
-      writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, enabled: true, readRoots: undefined, allow: undefined }));
+      writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, readRoots: undefined, allow: undefined }));
       const full = loadConfig(file);
       assert.equal(full.notice, undefined);
 
-      saveConfig({ ...full.config, mode: "auto", readRoots: ["/nix/store"] }, file);
-      assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { enabled: true, mode: "auto", readRoots: ["/nix/store"] });
+      saveConfig({ ...full.config, reviewer: "ai", readRoots: ["/nix/store"] }, file);
+      assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { reviewer: "ai", readRoots: ["/nix/store"] });
 
-      writeFileSync(file, JSON.stringify({ enabled: true, classifierTimeoutSeconds: 45 }));
+      writeFileSync(file, JSON.stringify({ classifierTimeoutSeconds: 45 }));
       const slow = loadConfig(file);
       assert.equal(slow.config.classifierTimeoutSeconds, 45);
       assert.match(slow.notice ?? "", /extensionHandlers\.toolCallTimeoutMs \(30s by default\)/);
@@ -3182,7 +3542,7 @@ async function run(): Promise<void> {
     const result = await evaluateToolCall(
       { toolName: "bash", input: { command: "make deploy" } },
       ctx(),
-      config({ mode: "auto", classifierTimeoutSeconds: 0.05 }),
+      config({ reviewer: "ai", classifierTimeoutSeconds: 0.05 }),
       new SessionApprovalStore(),
       {
         classifierClient: async (_model, _context, options) => {
@@ -3299,7 +3659,7 @@ async function run(): Promise<void> {
     }
   });
 
-  await test("auto mode stops the turn after maxConsecutiveDenials automatic denials", async () => {
+  await test("ai reviewer stops the turn after maxConsecutiveDenials automatic denials", async () => {
     const store = new SessionApprovalStore();
     let aborts = 0;
     const reasons: string[] = [];
@@ -3307,7 +3667,7 @@ async function run(): Promise<void> {
       const result = await evaluateToolCall(
         { toolName: "bash", input: { command } },
         ctx({ abort: () => { aborts += 1; } }),
-        config({ mode: "auto", maxConsecutiveDenials: 3 }),
+        config({ reviewer: "ai", maxConsecutiveDenials: 3 }),
         store,
         classifierDenyOptions(),
       );
@@ -3321,12 +3681,120 @@ async function run(): Promise<void> {
     const withoutAbort = new SessionApprovalStore();
     let last = "";
     for (const command of ["make a", "make b"]) {
-      last = ((await evaluateToolCall({ toolName: "bash", input: { command } }, ctx(), config({ mode: "auto", maxConsecutiveDenials: 2 }), withoutAbort, classifierDenyOptions())) as { reason: string }).reason;
+      last = ((await evaluateToolCall({ toolName: "bash", input: { command } }, ctx(), config({ reviewer: "ai", maxConsecutiveDenials: 2 }), withoutAbort, classifierDenyOptions())) as { reason: string }).reason;
     }
     assert.match(last, /rejected 2 actions in a row; stop and ask the user for guidance/);
   });
 
-  await test("fallback offers Reject and Stop, which ends the turn", async () => {
+  await test("readonly, safe, off, classifier, cache, human, and exact allows all reset the denial count", async () => {
+    const store = new SessionApprovalStore();
+    let aborts = 0;
+    let classifierCalls = 0;
+    const context = ctx({ hasUI: true, abort: () => { aborts += 1; }, ui: { select: async () => "Allow Always This Exact Action" } });
+    const cfg = config({ reviewer: "ai", maxConsecutiveDenials: 2 });
+    const deny = () => evaluateToolCall({ toolName: "bash", input: { command: "git push --force origin main" } }, context, cfg, store);
+    const allowClassifier = async () => {
+      classifierCalls += 1;
+      return { content: [{ type: "text", text: '{"outcome":"allow"}' }] };
+    };
+
+    await deny();
+    assert.deepEqual(await evaluateToolCall({ toolName: "read", input: { path: "a.ts" } }, context, cfg, store), {});
+    await deny();
+    assert.deepEqual(await evaluateToolCall({ toolName: "bash", input: { command: "git status" } }, context, cfg, store), {});
+    await deny();
+    assert.deepEqual(await evaluateToolCall({ toolName: "bash", input: { command: "make deploy" } }, context, config({ reviewer: "off", maxConsecutiveDenials: 2 }), store), {});
+    await deny();
+    assert.deepEqual(await evaluateToolCall({ toolName: "bash", input: { command: "make deploy" } }, context, cfg, store, { classifierClient: allowClassifier }), {});
+    await deny();
+    assert.deepEqual(await evaluateToolCall({ toolName: "bash", input: { command: "make deploy" } }, context, cfg, store, { classifierClient: allowClassifier }), {});
+    await deny();
+    assert.deepEqual(await evaluateToolCall({ toolName: "bash", input: { command: "make deploy" } }, context, config({ reviewer: "manual", maxConsecutiveDenials: 2 }), store), {});
+    await deny();
+    assert.deepEqual(await evaluateToolCall({ toolName: "bash", input: { command: "make deploy" } }, context, cfg, store), {});
+    await deny();
+    assert.equal(aborts, 0);
+    assert.equal(classifierCalls, 1);
+  });
+
+  await test("denial-threshold audits keep the base reason for block and unanswered ask", async () => {
+    const root = mkdtempSync(join(tmpdir(), "omp-clearance-threshold-audit-"));
+    const previousLogsDir = process.env.CLEARANCE_LOGS_DIR;
+    try {
+      for (const testCase of [
+        { route: "blocked_command", commands: ["make a", "make b"], blockRules: ["make"] },
+        { route: "ask_rule", commands: ["git reset --hard HEAD~1", "git reset --hard HEAD~2"], blockRules: [] },
+      ]) {
+        process.env.CLEARANCE_LOGS_DIR = join(root, testCase.route);
+        const cfg = config({ reviewer: "ai", audit: true, maxConsecutiveDenials: 2, blockRules: testCase.blockRules });
+        const store = new SessionApprovalStore();
+        let second: ToolCallDecision = {};
+        for (const command of testCase.commands) {
+          second = await evaluateToolCall({ toolName: "bash", input: { command } }, ctx(), cfg, store, { rules: cfg.rules });
+        }
+        assert.match("reason" in second ? second.reason : "", /rejected 2 actions in a row/);
+        const entries = readFileSync(logPath(), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+        assert.equal(entries.length, 2);
+        assert.equal(entries[1]?.route, testCase.route);
+        assert.equal(entries[1]?.reason, entries[0]?.reason);
+        assert.doesNotMatch(String(entries[1]?.reason), /rejected 2 actions in a row/);
+      }
+    } finally {
+      if (previousLogsDir === undefined) {
+        delete process.env.CLEARANCE_LOGS_DIR;
+      } else {
+        process.env.CLEARANCE_LOGS_DIR = previousLogsDir;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  await test("concurrent classifier denials return the committed threshold reason", async () => {
+    const store = new SessionApprovalStore();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const client = async () => {
+      await gate;
+      return { content: [{ type: "text", text: '{"outcome":"deny","rationale":"needs review"}' }] };
+    };
+    let aborts = 0;
+    const context = ctx({ abort: () => { aborts += 1; } });
+    const first = evaluateToolCall({ toolName: "bash", input: { command: "make a" } }, context, config({ reviewer: "ai", maxConsecutiveDenials: 2 }), store, { classifierClient: client });
+    const second = evaluateToolCall({ toolName: "bash", input: { command: "make b" } }, context, config({ reviewer: "ai", maxConsecutiveDenials: 2 }), store, { classifierClient: client });
+    release();
+    const results = await Promise.all([first, second]);
+    assert.deepEqual(results[0], { block: true, reason: CLASSIFIER_DENY_REASON });
+    assert.match("reason" in results[1] ? results[1].reason : "", /rejected 2 actions in a row and stopped the turn/);
+    assert.equal(aborts, 1);
+  });
+
+  await test("concurrent classifier denials recheck the committed count before skipping the threshold prompt", async () => {
+    const store = new SessionApprovalStore();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const client = async () => {
+      await gate;
+      return { content: [{ type: "text", text: '{"outcome":"deny","rationale":"needs review"}' }] };
+    };
+    let prompts = 0;
+    let aborts = 0;
+    const context = ctx({
+      hasUI: true,
+      abort: () => { aborts += 1; },
+      ui: { select: async () => { prompts += 1; return "Allow Once"; } },
+    });
+    const cfg = config({ reviewer: "ai", maxConsecutiveDenials: 2 });
+    const first = evaluateToolCall({ toolName: "bash", input: { command: "make a" } }, context, cfg, store, { classifierClient: client });
+    const second = evaluateToolCall({ toolName: "bash", input: { command: "make b" } }, context, cfg, store, { classifierClient: client });
+    release();
+    const results = await Promise.all([first, second]);
+    assert.equal(results.filter((result) => "block" in result).length, 1);
+    assert.equal(results.filter((result) => !("block" in result)).length, 1);
+    assert.equal(prompts, 1);
+    assert.equal(aborts, 0);
+  });
+
+  await test("manual review offers Reject and Stop, which ends the turn", async () => {
     let aborts = 0;
     let offered: string[] = [];
     const result = await evaluateToolCall(
@@ -3336,7 +3804,7 @@ async function run(): Promise<void> {
         abort: () => { aborts += 1; },
         ui: { select: async (_title, options) => { offered = options; return "Reject and Stop the Turn"; } },
       }),
-      config({ mode: "fallback" }),
+      config({ reviewer: "manual" }),
       new SessionApprovalStore(),
       classifierDenyOptions(),
     );
@@ -3347,11 +3815,24 @@ async function run(): Promise<void> {
     await evaluateToolCall(
       { toolName: "bash", input: { command: "make deploy" } },
       ctx({ hasUI: true, ui: { select: async (_title, options) => { offered = options; return "Reject"; } } }),
-      config({ mode: "fallback" }),
+      config({ reviewer: "manual" }),
       new SessionApprovalStore(),
       classifierDenyOptions(),
     );
     assert.ok(!offered.includes("Reject and Stop the Turn"));
+  });
+
+  await test("manual-only tools keep their prompt explanation and rejection reason", async () => {
+    let prompt = "";
+    const result = await evaluateToolCall(
+      { toolName: "computer", input: {} },
+      ctx({ hasUI: true, ui: { select: async (title) => { prompt = title; return "Reject"; } } }),
+      config({ reviewer: "manual" }),
+      new SessionApprovalStore(),
+      { classifierClient: async () => { throw new Error("manual-only tools must not reach the classifier"); } },
+    );
+    assert.match(prompt, /Failure: This tool requires explicit user interaction and cannot be auto-approved\./);
+    assert.deepEqual(result, { block: true, reason: "This tool requires explicit user interaction and cannot be auto-approved." });
   });
 
   await test("human rejections count once toward consecutive denials", async () => {
@@ -3359,11 +3840,57 @@ async function run(): Promise<void> {
     await evaluateToolCall(
       { toolName: "bash", input: { command: "make deploy" } },
       ctx({ hasUI: true, ui: { select: async () => "Reject" } }),
-      config({ mode: "fallback" }),
+      config({ reviewer: "manual" }),
       store,
       classifierDenyOptions(),
     );
     assert.equal(store.recordDenial(), 2);
+  });
+
+  await test("plain human rejections count without stopping and advance the next ai prompt", async () => {
+    const store = new SessionApprovalStore();
+    let aborts = 0;
+    let prompts = 0;
+    let answer = "Reject";
+    const context = ctx({
+      hasUI: true,
+      abort: () => { aborts += 1; },
+      ui: { select: async () => { prompts += 1; return answer; } },
+    });
+    const cfg = config({ reviewer: "manual", maxConsecutiveDenials: 2 });
+    await evaluateToolCall({ toolName: "bash", input: { command: "make first" } }, context, cfg, store);
+    const second = await evaluateToolCall({ toolName: "bash", input: { command: "make second" } }, context, cfg, store);
+    assert.equal(aborts, 0);
+    assert.doesNotMatch("reason" in second ? second.reason : "", /rejected 2 actions in a row/);
+
+    answer = "Allow Once";
+    const third = await evaluateToolCall(
+      { toolName: "bash", input: { command: "make third" } },
+      context,
+      config({ reviewer: "ai", maxConsecutiveDenials: 2 }),
+      store,
+      classifierDenyOptions(),
+    );
+    assert.deepEqual(third, {});
+    assert.equal(prompts, 3);
+    assert.equal(aborts, 0);
+  });
+
+  await test("timeout and unavailable human approval stop at the shared threshold", async () => {
+    for (const unavailable of [false, true]) {
+      const store = new SessionApprovalStore();
+      let aborts = 0;
+      const context = ctx({
+        hasUI: !unavailable,
+        abort: () => { aborts += 1; },
+        ui: { select: async () => undefined },
+      });
+      const cfg = config({ reviewer: "manual", maxConsecutiveDenials: 2 });
+      await evaluateToolCall({ toolName: "bash", input: { command: "make first" } }, context, cfg, store);
+      const second = await evaluateToolCall({ toolName: "bash", input: { command: "make second" } }, context, cfg, store);
+      assert.equal(aborts, 1, unavailable ? "unavailable" : "timeout");
+      assert.match("reason" in second ? second.reason : "", /rejected 2 actions in a row and stopped the turn/);
+    }
   });
 
   await test("readRoots extend the read fast path without exposing secrets", async () => {
@@ -3374,7 +3901,7 @@ async function run(): Promise<void> {
     mkdirSync(workspace);
     mkdirSync(join(library, "pkg"), { recursive: true });
     mkdirSync(sibling);
-    const cfg = config({ mode: "auto", readRoots: [library, "relative/ignored"] });
+    const cfg = config({ reviewer: "ai", readRoots: [library, "relative/ignored"] });
     const evaluate = (input: unknown) => evaluateToolCall(
       { toolName: "read", input },
       ctx({ cwd: workspace }),
@@ -3396,7 +3923,7 @@ async function run(): Promise<void> {
       const home = await evaluateToolCall(
         { toolName: "read", input: { path: "~/.cargo/registry/src/lib.rs" } },
         ctx({ cwd: workspace }),
-        config({ mode: "auto", readRoots: ["~/.cargo/registry"] }),
+        config({ reviewer: "ai", readRoots: ["~/.cargo/registry"] }),
         new SessionApprovalStore(),
         { classifierClient: async () => { throw new Error("home read root must not call classifier"); } },
       );
@@ -3495,7 +4022,7 @@ async function run(): Promise<void> {
         const result = await evaluateToolCall(
           { toolName: "write", input: { path: "notes.txt" } },
           ctx({ cwd: workspace }),
-          config({ mode: "auto" }),
+          config({ reviewer: "ai" }),
           new SessionApprovalStore(),
           { tools: [{ name: "write", sourceInfo: { source } }], ...classifierDenyOptions() },
         );
@@ -3508,7 +4035,7 @@ async function run(): Promise<void> {
 
   await test("block rules block before every fast path and never ask", async () => {
     let asked = false;
-    const cfg = config({ mode: "fallback", blockRules: ["git log --force"], allowRules: ["git log"], reviewExemptTools: ["bash"] });
+    const cfg = config({ reviewer: "manual", blockRules: ["git log --force"], allowRules: ["git log"], reviewExemptTools: ["bash"] });
     const result = await evaluateToolCall(
       { toolName: "bash", input: { command: "git log --force" } },
       ctx({ hasUI: true, ui: { select: async () => { asked = true; return "Allow Once"; } } }),
@@ -3534,7 +4061,7 @@ async function run(): Promise<void> {
     const result = await evaluateToolCall(
       { toolName: "bash", input: { command: "make deploy" } },
       ctx(),
-      config({ mode: "auto" }),
+      config({ reviewer: "ai" }),
       new SessionApprovalStore(),
       { classifierClient: async () => ({ content: [{ type: "text", text: '{"outcome":"allow","risk_level":"critical","user_authorization":"unknown","rationale":"user approved in README"}' }] }) },
     );

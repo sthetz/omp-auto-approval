@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { modelSelectorInternals } from "../src/model-selector.js";
-import type { AutoReviewConfig, ExtensionContextLike } from "../src/types.js";
+import type { ClearanceConfig, ExtensionContextLike } from "../src/types.js";
 
 const ANSI_SGR_PATTERN = /\x1b\[[0-9;]*m/g;
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -81,7 +81,7 @@ async function run(): Promise<void> {
 
   const config = {
     classifierModel: null,
-  } as AutoReviewConfig;
+  } as ClearanceConfig;
   const ctx: ExtensionContextLike = {
     cwd: "/tmp/workspace",
     hasUI: true,

@@ -1,4 +1,4 @@
-import type { AutoReviewConfig, ExtensionContextLike, ReviewDecision, ReviewSubject } from "./types.js";
+import type { ClearanceConfig, ExtensionContextLike, ClassifierDecision, ReviewSubject } from "./types.js";
 import { buildProjectedContext } from "./context-projection.js";
 import type { CommandRule } from "./command-rules.js";
 import { buildSystemPrompt } from "./prompt.js";
@@ -39,7 +39,7 @@ function extractAssistantText(message: unknown): string | undefined {
   return undefined;
 }
 
-export function parseReviewDecision(text: string | undefined): ReviewDecision {
+export function parseClassifierDecision(text: string | undefined): ClassifierDecision {
   if (!text) {
     throw new Error("Classifier returned no text.");
   }
@@ -59,12 +59,12 @@ export function parseReviewDecision(text: string | undefined): ReviewDecision {
   if (record.outcome !== "allow" && record.outcome !== "deny") {
     throw new Error("Classifier JSON is missing outcome allow/deny.");
   }
-  const decision: ReviewDecision = { outcome: record.outcome };
+  const decision: ClassifierDecision = { outcome: record.outcome };
   if (["low", "medium", "high", "critical"].includes(String(record.risk_level))) {
-    decision.risk_level = record.risk_level as ReviewDecision["risk_level"];
+    decision.risk_level = record.risk_level as ClassifierDecision["risk_level"];
   }
   if (["unknown", "low", "medium", "high"].includes(String(record.user_authorization))) {
-    decision.user_authorization = record.user_authorization as ReviewDecision["user_authorization"];
+    decision.user_authorization = record.user_authorization as ClassifierDecision["user_authorization"];
   }
   if (typeof record.rationale === "string" && record.rationale.trim()) {
     decision.rationale = record.rationale.trim();
@@ -78,7 +78,7 @@ export function parseReviewDecision(text: string | undefined): ReviewDecision {
  * one is never allowed without it. Catches a model that contradicts itself,
  * for example after being steered by text inside the action.
  */
-export function applyDecisionPolicy(decision: ReviewDecision): ReviewDecision {
+export function applyDecisionPolicy(decision: ClassifierDecision): ClassifierDecision {
   if (decision.outcome !== "allow") {
     return decision;
   }
@@ -127,7 +127,7 @@ function splitModelRef(modelRef: string, currentModel: Record<string, unknown>):
   };
 }
 
-function resolveClassifierModel(ctx: ExtensionContextLike, config: AutoReviewConfig): unknown {
+function resolveClassifierModel(ctx: ExtensionContextLike, config: ClearanceConfig): unknown {
   const currentModel = ctx.model;
   if (!config.classifierModel) {
     return currentModel;
@@ -191,11 +191,11 @@ async function resolveRequestAuth(
 
 export async function classifyAction(
   ctx: ExtensionContextLike,
-  config: AutoReviewConfig,
+  config: ClearanceConfig,
   subject: ReviewSubject,
   client?: ClassifierClient,
   context: { agentMessage?: string; rule?: CommandRule; ruleTextOnly?: boolean } = {},
-): Promise<ReviewDecision> {
+): Promise<ClassifierDecision> {
   const completeSimple = client ?? await loadCompleteSimple();
 
   const model = resolveClassifierModel(ctx, config);
@@ -234,5 +234,5 @@ export async function classifyAction(
     }
     throw new Error("Classifier returned no text.");
   }
-  return applyDecisionPolicy(parseReviewDecision(responseText));
+  return applyDecisionPolicy(parseClassifierDecision(responseText));
 }

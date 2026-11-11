@@ -48,7 +48,7 @@ interface RunResult {
 
 interface Scenario {
   name: string;
-  mode: "auto" | "fallback";
+  reviewer: "ai" | "manual" | "off";
   verdict: "allow" | "deny";
   steps: ToolCall[];
   /** Contents of the user's rules.jsonc, if any. */
@@ -70,7 +70,7 @@ const expect = (problems: string[], ok: boolean, message: string) => {
 const SCENARIOS: Scenario[] = [
   {
     name: "a read-only command runs pinned, without the classifier",
-    mode: "auto",
+    reviewer: "ai",
     verdict: "deny",
     steps: [bash("git status --short")],
     check(result) {
@@ -84,7 +84,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     name: "a reviewed command goes to the classifier, which never sees tool output",
-    mode: "auto",
+    reviewer: "ai",
     verdict: "allow",
     steps: [bash("cat README.md"), bash("touch made-by-agent.txt")],
     check(result) {
@@ -100,8 +100,8 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
-    name: "in auto mode a classifier denial blocks the call",
-    mode: "auto",
+    name: "with the ai reviewer a classifier denial blocks the call",
+    reviewer: "ai",
     verdict: "deny",
     steps: [bash("touch denied.txt")],
     check(result) {
@@ -115,7 +115,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     name: "a built-in block rule blocks without the classifier",
-    mode: "fallback",
+    reviewer: "manual",
     verdict: "allow",
     steps: [bash("git push --force origin main")],
     check(result) {
@@ -127,8 +127,8 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
-    name: "a built-in ask rule is denied in auto mode",
-    mode: "auto",
+    name: "a built-in ask rule is denied without a UI",
+    reviewer: "ai",
     verdict: "allow",
     steps: [bash("sudo -n true")],
     check(result) {
@@ -140,8 +140,24 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
+    name: "off runs review but still enforces block and ask",
+    reviewer: "off",
+    verdict: "deny",
+    steps: [bash("touch review-runs.txt"), bash("git push --force origin main"), bash("sudo -n true")],
+    check(result) {
+      const problems: string[] = [];
+      const [review, block, ask] = decisions(result);
+      expect(problems, review?.route === "reviewer_off" && review.outcome === "allow", `review route ${review?.route}/${review?.outcome}, wanted reviewer_off/allow`);
+      expect(problems, existsSync(join(result.workspace, "review-runs.txt")), "the review call did not run with reviewer off");
+      expect(problems, block?.route === "blocked_command" && block.outcome === "deny", `block route ${block?.route}/${block?.outcome}`);
+      expect(problems, ask?.route === "ask_rule" && ask.outcome === "deny", `ask route ${ask?.route}/${ask?.outcome}`);
+      expect(problems, result.model.classifier.length === 0, `classifier called ${result.model.classifier.length} times with reviewer off`);
+      return problems;
+    },
+  },
+  {
     name: "the user's allow rule fast-paths and their block rule blocks",
-    mode: "auto",
+    reviewer: "ai",
     verdict: "allow",
     rules: JSON.stringify({ rules: [
       { id: "touch-marker", prefix: "touch allowed.txt", outcome: "allow" },
@@ -161,22 +177,22 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
-    name: "a broken rules file makes every bash command ask",
-    mode: "auto",
+    name: "a broken rules file blocks every bash command",
+    reviewer: "ai",
     verdict: "allow",
     rules: "{ \"rules\": [ broken",
     steps: [bash("git status")],
     check(result) {
       const problems: string[] = [];
       const [line] = decisions(result);
-      expect(problems, line?.route === "ask_rule" && line.outcome === "deny", `route ${line?.route}/${line?.outcome}, wanted ask_rule/deny`);
-      expect(problems, result.model.toolResults.flat().some((text) => text.includes("rules file")), "the agent was not told the rules file is broken");
+      expect(problems, line?.route === "blocked_command" && line.outcome === "deny", `route ${line?.route}/${line?.outcome}, wanted blocked_command/deny`);
+      expect(problems, result.model.toolResults.flat().some((text) => text.includes("Report this rules error")), "the agent was not told to report the rules error");
       return problems;
     },
   },
   {
     name: "a shell hook turns the bash fast path off for the session",
-    mode: "auto",
+    reviewer: "ai",
     verdict: "allow",
     steps: [bash("trap 'true' DEBUG"), bash("git status --short")],
     check(result) {
@@ -190,7 +206,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     name: "three denials in a row stop the turn",
-    mode: "auto",
+    reviewer: "ai",
     verdict: "allow",
     interrupts: true,
     steps: [
@@ -210,7 +226,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     name: "a workspace write skips review, a write into .git does not",
-    mode: "auto",
+    reviewer: "ai",
     verdict: "deny",
     steps: [
       { name: "write", arguments: { path: "written.txt", content: "hello\n" } },
@@ -262,7 +278,7 @@ async function runScenario(omp: string, scenario: Scenario, keep: boolean): Prom
   spawnSync("git", ["init", "-q"], { cwd: workspace });
   writeFileSync(join(workspace, "notes.txt"), "notes\n");
   writeFileSync(join(workspace, "README.md"), `${INJECTION}\n`);
-  writeFileSync(join(state, "config.jsonc"), JSON.stringify({ enabled: true, mode: scenario.mode }));
+  writeFileSync(join(state, "config.jsonc"), JSON.stringify({ reviewer: scenario.reviewer }));
   const rulesPath = join(state, "rules.jsonc");
   if (scenario.rules !== undefined) {
     writeFileSync(rulesPath, scenario.rules);

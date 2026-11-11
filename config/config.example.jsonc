@@ -1,7 +1,8 @@
 {
   // Only values that differ from the defaults need to be listed.
-  "enabled": true,
-  "mode": "fallback",
+  // Starting reviewer only while reviewer-state.json does not exist.
+  // /clearance ai|manual|off writes that shared state file, not this config.
+  "reviewer": "ai",
   "classifierModel": null,
   "approvalTimeoutSeconds": 30,
   // Keep below OMP's extensionHandlers.toolCallTimeoutMs (30 s by default).

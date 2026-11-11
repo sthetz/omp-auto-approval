@@ -1,6 +1,6 @@
-import type { AutoReviewConfig } from "./types.js";
+import type { ClearanceConfig } from "./types.js";
 
-export function buildSystemPrompt(config: AutoReviewConfig): string {
+export function buildSystemPrompt(config: ClearanceConfig): string {
   const allow = config.allow.length ? `\nAdditional allow guidance:\n${config.allow.map((item) => `- ${item}`).join("\n")}` : "";
   const deny = config.deny.length ? `\nAdditional deny guidance:\n${config.deny.map((item) => `- ${item}`).join("\n")}` : "";
   const environment = config.environment.trim() ? `\nEnvironment:\n${config.environment.trim()}` : "";

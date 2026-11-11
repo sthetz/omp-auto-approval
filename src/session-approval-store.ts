@@ -1,8 +1,8 @@
-import type { ReviewDecision } from "./types.js";
+import type { ClassifierDecision } from "./types.js";
 
 export class SessionApprovalStore {
   private readonly approvedExactActions = new Set<string>();
-  private readonly classifierDecisions = new Map<string, ReviewDecision>();
+  private readonly classifierDecisions = new Map<string, ClassifierDecision>();
   private consecutiveDenials = 0;
   // Why a session's shell may now run code on its own (see shellHook), by
   // session id: OMP keeps one shell per session.
@@ -17,12 +17,16 @@ export class SessionApprovalStore {
     return this.approvedExactActions.has(actionHash);
   }
 
-  getCachedDecision(actionHash: string): ReviewDecision | undefined {
+  getCachedDecision(actionHash: string): ClassifierDecision | undefined {
     return this.classifierDecisions.get(actionHash);
   }
 
-  cacheDecision(actionHash: string, decision: ReviewDecision): void {
+  cacheDecision(actionHash: string, decision: ClassifierDecision): void {
     this.classifierDecisions.set(actionHash, decision);
+  }
+
+  get consecutiveDenialCount(): number {
+    return this.consecutiveDenials;
   }
 
   recordDenial(): number {
@@ -37,8 +41,8 @@ export class SessionApprovalStore {
   /**
    * Turn the bash fast path off for the rest of the session: an approved
    * command may have left the shell running code before later commands.
+   * Return whether this call set it (an earlier latch stays as it was).
    */
-  /** Latch, and say whether this call set it (an earlier latch stays as it was). */
   latchShell(session: string, reason: string): boolean {
     if (this.shellHooks.has(session)) {
       return false;

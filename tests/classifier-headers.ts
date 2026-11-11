@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { classifyAction } from "../src/classifier.js";
-import type { AutoReviewConfig, ExtensionContextLike } from "../src/types.js";
+import type { ClearanceConfig, ExtensionContextLike } from "../src/types.js";
 
-const config: AutoReviewConfig = {
-  enabled: true,
-  mode: "auto",
+const config: ClearanceConfig = {
+  reviewer: "ai",
   classifierModel: "openrouter/some-model",
   approvalTimeoutSeconds: 30,
   classifierTimeoutSeconds: 30,

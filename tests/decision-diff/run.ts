@@ -52,7 +52,7 @@ async function loadSide(root: string, workspace: string, rulesPath: string): Pro
   if (rules.problem) {
     throw new Error(`rules in ${root}: ${rules.problem}`);
   }
-  const settings = { ...config.DEFAULT_CONFIG, enabled: true };
+  const settings = { ...config.DEFAULT_CONFIG, reviewer: "ai" as const };
   const options = { workspace, searchPath: process.env.PATH ?? "", rules };
   return {
     rules,

@@ -191,14 +191,14 @@
   // loops, `sh -c '…'` and `ssh host '…'`. Among those that match, the most
   // restrictive decides, and any of them overrides the table above.
   "rules": [
-    // Review: the classifier, then you in fallback mode.
+    // Review: handled by the session reviewer; manual asks you.
     { "id": "kube-secrets", "match": "kubectl get *[Ss][Ee][Cc][Rr][Ee][Tt]*", "outcome": "review",
       "why": "Secret values would reach the model." },
     { "id": "kube-identity", "match": "kubectl --as|--as-group|--as-uid|--token|--raw|--flatten", "outcome": "review",
       "why": "Acts as someone else, or reads credentials or raw API paths." },
     { "id": "kube-rollout-change", "match": "kubectl rollout restart|undo|pause|resume", "outcome": "review" },
 
-    // Ask: you decide, without the classifier; denied in auto mode.
+    // Ask: you decide, without the classifier; denied without a UI.
     { "id": "kube-kubeconfig", "match": "kubectl config use-context|use|set|unset|set-context|set-cluster|set-credentials|delete-context|delete-cluster|delete-user|rename-context",
       "outcome": "ask", "why": "Changes which cluster or identity later commands use." },
     { "id": "kube-destructive", "match": "kubectl delete|drain|cordon|uncordon|taint|replace", "outcome": "ask",

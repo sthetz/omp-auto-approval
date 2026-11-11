@@ -1,4 +1,4 @@
-export type AutoReviewMode = "fallback" | "auto";
+export type Reviewer = "ai" | "manual" | "off";
 
 export interface AuthResolution {
   ok: boolean;
@@ -8,9 +8,8 @@ export interface AuthResolution {
   error?: string;
 }
 
-export interface AutoReviewConfig {
-  enabled: boolean;
-  mode: AutoReviewMode;
+export interface ClearanceConfig {
+  reviewer: Reviewer;
   classifierModel: string | null;
   approvalTimeoutSeconds: number;
   classifierTimeoutSeconds: number;
@@ -23,20 +22,11 @@ export interface AutoReviewConfig {
   audit: boolean;
 }
 
-export interface ReviewDecision {
+export interface ClassifierDecision {
   risk_level?: "low" | "medium" | "high" | "critical";
   user_authorization?: "unknown" | "low" | "medium" | "high";
   outcome: "allow" | "deny";
   rationale?: string;
-}
-
-export interface ToolCallEventLike {
-  toolCallId?: string;
-  tool?: unknown;
-  toolName?: unknown;
-  name?: unknown;
-  input?: unknown;
-  arguments?: unknown;
 }
 
 export interface ExtensionContextLike {
@@ -58,11 +48,11 @@ export interface ExtensionContextLike {
     notify?: (message: string, type?: "info" | "warning" | "error") => void;
     setStatus?: (key: string, value: string | undefined) => void;
   };
-  // Ends the current agent turn (OMP and Pi extension contexts).
+  // Ends the current OMP agent turn.
   abort?: () => void;
   model?: unknown;
   modelRegistry?: {
-    refresh?: () => void;
+    refresh?: () => unknown;
     getError?: () => string | undefined;
     find?: (provider: string, id: string) => unknown;
     getAvailable?: () => unknown[] | Promise<unknown[]>;
@@ -93,7 +83,7 @@ export interface ReviewSubject {
 }
 
 export type RouteName =
-  | "disabled"
+  | "reviewer_off"
   | "local_state"
   | "ui_only"
   | "tool_allowlist"
@@ -104,6 +94,7 @@ export type RouteName =
   | "classifier_cache"
   | "classifier"
   | "human"
+  | "manual_unavailable"
   | "manual_only"
   | "blocked_command"
   | "ask_rule";
@@ -111,12 +102,12 @@ export type RouteName =
 export interface AuditEntry {
   event: string;
   route: RouteName;
-  mode: AutoReviewMode;
+  reviewer: Reviewer;
   toolName: string;
   actionSummary: string;
   actionHash: string;
   outcome: "allow" | "deny";
-  classifierDecision?: ReviewDecision;
+  classifierDecision?: ClassifierDecision;
   humanDecision?: string;
   reason?: string;
   // The command that ran instead, for a bash command pinned to its program's path.
@@ -134,7 +125,7 @@ export interface AuditEntry {
 /** An approved bash command turned the session's bash fast path off (see shellHook). */
 export interface ShellLatchEntry {
   event: "shell_latch";
-  mode: AutoReviewMode;
+  reviewer: Reviewer;
   toolName: string;
   actionSummary: string;
   actionHash: string;

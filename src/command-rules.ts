@@ -156,11 +156,25 @@ export interface CommandRules {
   // empty when there is none.
   files: string[];
   // Why the rules could not be used; when set, `programs` is empty and every
-  // bash command is reviewed.
+  // bash call is blocked.
   problem: string | null;
 }
 
-class RulesError extends Error {}
+class RulesError extends Error {
+  file?: string;
+}
+
+/** Name the file and line:column for syntax and file-level validation errors. */
+function rulesProblem(label: string, error: unknown): string {
+  const message = typeof error === "string" ? error : (error as Error).message;
+  const location = message.match(/line (\d+), column (\d+)/);
+  return `${label}:${location?.[1] ?? "1"}:${location?.[2] ?? "1"}: ${message}`;
+}
+
+function normalizeRulesProblem(message: string): string {
+  const separator = message.indexOf(": ");
+  return separator < 0 ? message : rulesProblem(message.slice(0, separator), message.slice(separator + 2));
+}
 
 const RULE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -470,12 +484,20 @@ export function compileRules(raw: unknown, sources: ReadonlyMap<string, string> 
   onlyKeys(top, ["$schema", "programs", "rules"], "");
   const programs = new Map<string, ProgramEntry>();
   for (const [key, entry] of Object.entries(record(top.programs ?? {}, "programs"))) {
-    const where = `programs[${JSON.stringify(key)}]`;
-    const [name, ...extra] = names(key, PROGRAM_NAME, where);
-    if (extra.length) {
-      throw new RulesError(`${where}: one program per entry`);
+    try {
+      const where = `programs[${JSON.stringify(key)}]`;
+      const [name, ...extra] = names(key, PROGRAM_NAME, where);
+      if (extra.length) {
+        throw new RulesError(`${where}: one program per entry`);
+      }
+      programs.set(name, compileEntry(entry, `program:${name}`, where, { subcommand: false, inheritedExcept: [], source: "default", sources }));
+    } catch (error) {
+      const source = sources.get(`program:${key}`);
+      if (source) {
+        (error as RulesError).file = source.startsWith("default, ") ? source.slice("default, ".length) : source === "default" ? defaultRulesPath() : source;
+      }
+      throw error;
     }
-    programs.set(name, compileEntry(entry, `program:${name}`, where, { subcommand: false, inheritedExcept: [], source: "default", sources }));
   }
   return programs;
 }
@@ -486,7 +508,7 @@ export function loadRulesFile(path: string, label = path): CommandRules {
     const document = record(parseJsonc(readFileSync(path, "utf8")), "");
     return { programs: compileRules(document), rules: compileRuleList(document.rules ?? [], "default", "rules", new Set()), files: [], problem: null };
   } catch (error) {
-    return { programs: new Map(), rules: [], files: [], problem: `${label}: ${(error as Error).message}` };
+    return { programs: new Map(), rules: [], files: [], problem: rulesProblem(label, error) };
   }
 }
 
@@ -501,14 +523,14 @@ export function userRulesPath(): string {
 
 let defaults: { rules: CommandRules; document: Record<string, unknown> | null } | undefined;
 
-function loadDefaults(): { rules: CommandRules; document: Record<string, unknown> | null } {
-  if (!defaults) {
+function loadDefaults(fresh = false): { rules: CommandRules; document: Record<string, unknown> | null } {
+  if (fresh || !defaults) {
     try {
       const document = record(parseJsonc(readFileSync(defaultRulesPath(), "utf8")), "");
       const rules = compileRuleList(document.rules ?? [], "default", "rules", new Set());
       defaults = { rules: { programs: compileRules(document), rules, files: [], problem: null }, document };
     } catch (error) {
-      defaults = { rules: { programs: new Map(), rules: [], files: [], problem: `config/default-rules.jsonc: ${(error as Error).message}` }, document: null };
+      defaults = { rules: { programs: new Map(), rules: [], files: [], problem: rulesProblem("config/default-rules.jsonc", error) }, document: null };
     }
   }
   return defaults;
@@ -724,8 +746,8 @@ function noExtends(entry: Record<string, unknown>, where: string): void {
  * entries by id. With no user file, the built-in rules alone. Any problem
  * in any file means no rules at all (see CommandRules.problem). Never throws.
  */
-export function loadCommandRules(path = userRulesPath()): CommandRules {
-  const { rules: base, document } = loadDefaults();
+export function loadCommandRules(path = userRulesPath(), freshDefaults = false): CommandRules {
+  const { rules: base, document } = loadDefaults(freshDefaults);
   if (base.problem || !document) {
     return base;
   }
@@ -792,16 +814,16 @@ export function loadCommandRules(path = userRulesPath()): CommandRules {
     try {
       return { programs: compileRules({ programs }, sources), rules, files: layer.files, problem: null };
     } catch (error) {
-      throw new RulesError(`${displayPath(path)}${layer.files.length > 1 ? " (or a file it includes)" : ""}: ${(error as Error).message}`);
+      return { programs: new Map(), rules: [], files: layer.files, problem: rulesProblem((error as RulesError).file ?? displayPath(path), error) };
     }
   } catch (error) {
-    return { programs: new Map(), rules: [], files: layer.files, problem: (error as Error).message };
+    return { programs: new Map(), rules: [], files: layer.files, problem: normalizeRulesProblem((error as Error).message) };
   }
 }
 
 const RESTRICTION: Record<RuleOutcome, number> = { review: 1, ask: 2, block: 3 };
 
-/** The id of the ask rule that stands in for rules that could not be loaded. */
+/** The id of the block rule that stands in for rules that could not be loaded. */
 export const RULES_PROBLEM_ID = "rules-unreadable";
 
 /** What a bash command's text calls for beyond the fast path's own checks. */
@@ -821,16 +843,15 @@ export interface Escalation {
  * cannot be matched.
  */
 export function escalateCommand(command: string, rules: CommandRules): Escalation | null {
-  // Rules that cannot be read might have held any block or ask rule: ask
-  // the user about every command until they are fixed.
+  // A broken file blocks every bash call until it is fixed.
   if (rules.problem) {
     return {
-      outcome: "ask",
+      outcome: "block",
       rule: {
         id: RULES_PROBLEM_ID,
         match: [],
         patterns: [],
-        outcome: "ask",
+        outcome: "block",
         prefix: null,
         why: rules.problem,
         source: rules.files[0] ?? "config/default-rules.jsonc",

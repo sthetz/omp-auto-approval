@@ -8,6 +8,32 @@ export function dictionary<T>(): Record<string, T> {
   return Object.create(null) as Record<string, T>;
 }
 
+/**
+ * `items[index]` where the caller's loop or check keeps `index` in range.
+ * Throws if it isn't, so a bug there blocks the call instead of passing
+ * `undefined` on.
+ */
+export function itemAt<T>(items: readonly T[], index: number): T {
+  // at() counts a negative index from the end; here it is out of range.
+  const item = index < 0 ? undefined : items.at(index);
+  if (item === undefined) {
+    throw new Error(`internal error: index ${index} is outside a list of ${items.length}`);
+  }
+  return item;
+}
+
+/**
+ * Capture group `n` of `match`, for a group the pattern always fills when it
+ * matches. Throws if it didn't, like itemAt().
+ */
+export function group(match: RegExpExecArray, n: number): string {
+  const value = match[n];
+  if (value === undefined) {
+    throw new Error(`internal error: capture group ${n} is empty in a match of ${JSON.stringify(match.input)}`);
+  }
+  return value;
+}
+
 /** A JSON-style object: not null, not an array. */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

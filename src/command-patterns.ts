@@ -1,3 +1,4 @@
+import { group, itemAt } from "./common.js";
 import { commandLines } from "./shell-hooks.js";
 import { recognizeShell } from "./shell-syntax.js";
 
@@ -92,22 +93,23 @@ function resolveExpansions(lines: string[][]): string[][] {
     const setters =
       first < 0
         ? words
-        : ["export", "declare", "typeset", "local", "readonly"].includes(words[first])
+        : ["export", "declare", "typeset", "local", "readonly"].includes(itemAt(words, first))
           ? words.slice(first + 1)
           : [];
     for (const word of setters) {
       const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(word);
       if (assignment) {
-        if (EXPANSION.test(assignment[2])) {
-          literals.delete(assignment[1]);
+        const [name, value] = [group(assignment, 1), group(assignment, 2)];
+        if (EXPANSION.test(value)) {
+          literals.delete(name);
         } else {
-          literals.set(assignment[1], assignment[2]);
+          literals.set(name, value);
         }
       }
     }
     return words.flatMap((word) => {
       const variable = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(word);
-      const value = variable ? literals.get(variable[1]) : undefined;
+      const value = variable ? literals.get(group(variable, 1)) : undefined;
       if (value !== undefined) {
         return value.split(/\s+/).filter(Boolean);
       }
@@ -161,7 +163,7 @@ function commandPositions(line: string[]): number[] {
   const positions: number[] = [];
   let index = 0;
   while (index < line.length) {
-    const word = line[index];
+    const word = itemAt(line, index);
     if (ASSIGNMENT.test(word)) {
       index += 1;
     } else if (REDIRECTION.test(word)) {
@@ -173,8 +175,8 @@ function commandPositions(line: string[]): number[] {
         break;
       }
       index += 1;
-      while (index < line.length && line[index].startsWith("-")) {
-        index += values.includes(line[index]) ? 2 : 1;
+      while (index < line.length && itemAt(line, index).startsWith("-")) {
+        index += values.includes(itemAt(line, index)) ? 2 : 1;
       }
     }
   }
@@ -192,7 +194,8 @@ function commandStart(line: string[]): number {
  * (`grep $pattern -i`, `which sudo`).
  */
 function atCommandPosition(segment: string[], index: number): boolean {
-  return commandPositions(segment).includes(index) || (index > 0 && EXEC_OPTIONS.has(segment[index - 1]));
+  const previous = segment[index - 1];
+  return commandPositions(segment).includes(index) || (previous !== undefined && EXEC_OPTIONS.has(previous));
 }
 
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/;
@@ -208,14 +211,14 @@ type WordTest = (word: string) => boolean;
 function literalWord(wanted: string): WordTest {
   return (word) =>
     word === wanted ||
-    (SHORT_FLAG.test(wanted) && SHORT_FLAG_GROUP.test(word) && word.includes(wanted[1])) ||
+    (SHORT_FLAG.test(wanted) && SHORT_FLAG_GROUP.test(word) && word.includes(wanted.charAt(1))) ||
     (wanted.startsWith("--") && word.startsWith(`${wanted}=`));
 }
 
 function globWord(glob: string): WordTest {
   let source = "";
   for (let index = 0; index < glob.length; index += 1) {
-    const char = glob[index];
+    const char = glob.charAt(index);
     if (char === "*") {
       source += ".*";
     } else if (char === "?") {
@@ -296,16 +299,19 @@ export function compileCommandPattern(raw: string): CommandPattern {
   const regex = /^\/(.+)\/([a-z]*)$/.exec(pattern);
   if (regex) {
     // Without g and y, test() keeps no state between commands.
-    const compiled = new RegExp(regex[1], regex[2].replace(/[gy]/g, ""));
+    const compiled = new RegExp(group(regex, 1), group(regex, 2).replace(/[gy]/g, ""));
     return (command) => (compiled.test(command) ? "structural" : null);
   }
   const words = pattern.split(/\s+/);
-  if (words[0].includes("/")) {
+  // A trimmed, non-empty pattern has a first word.
+  const first = itemAt(words, 0);
+  if (first.includes("/")) {
     throw new Error(
-      `programs are matched by name, so "${words[0]}" never matches; write "${words[0].slice(words[0].lastIndexOf("/") + 1)}"`,
+      `programs are matched by name, so "${first}" never matches; write "${first.slice(first.lastIndexOf("/") + 1)}"`,
     );
   }
-  const [program, ...rest] = words.map(wordTest);
+  const program = wordTest(first);
+  const rest = words.slice(1).map(wordTest);
   // A one-word pattern (`sudo`, `mkfs*`) matches only where a program runs,
   // not an argument (`which sudo`), and never in the quote-blind reading. A
   // longer pattern matches its program anywhere, since a wrapper it does not
@@ -330,7 +336,7 @@ export function compileCommandPattern(raw: string): CommandPattern {
         }
         let next = start + 1;
         return rest.every((wanted) => {
-          while (next < segment.length && !wanted(segment[next].replace(EXPANDED, ""))) {
+          while (next < segment.length && !wanted(itemAt(segment, next).replace(EXPANDED, ""))) {
             next += 1;
           }
           next += 1;

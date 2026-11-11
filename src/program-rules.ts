@@ -1,3 +1,4 @@
+import { itemAt } from "./common.js";
 import {
   defaultRules,
   type CommandRules,
@@ -95,7 +96,7 @@ export function parseOptions(spec: OptionTable, words: ShellWord[]): ParsedComma
     return next && !next.expands ? next : null;
   };
   for (let index = 1; index < words.length; index += 1) {
-    const word = words[index];
+    const word = itemAt(words, index);
     const text = word.text;
     if (endOfOptions || text === "-" || !text.startsWith("-")) {
       operands.push(word);
@@ -152,10 +153,10 @@ export function parseOptions(spec: OptionTable, words: ShellWord[]): ParsedComma
       continue;
     }
     for (let position = 1; position < text.length; position += 1) {
-      const letter = text[position];
+      const letter = text.charAt(position);
       if (spec.numeric && /[0-9]/.test(letter)) {
         let end = position + 1;
-        while (end < text.length && /[0-9]/.test(text[end])) {
+        while (end < text.length && /[0-9]/.test(text.charAt(end))) {
           end += 1;
         }
         const digits = text.slice(position, end);
@@ -458,17 +459,17 @@ const FIND_TESTS_WITH_PATH = new Set(["-newer", "-anewer", "-cnewer", "-samefile
 function parseFind(words: ShellWord[]): ParsedCommand | null {
   let index = 1;
   const options: ParsedOption[] = [];
-  while (index < words.length && /^-(H|P|O[0-3])$/.test(words[index].text)) {
+  while (index < words.length && /^-(H|P|O[0-3])$/.test(itemAt(words, index).text)) {
     index += 1;
   }
   const operands: ShellWord[] = [];
   const startsExpression = (text: string) => text.startsWith("-") || ["(", "!", ")", ","].includes(text);
-  while (index < words.length && !startsExpression(words[index].text)) {
-    operands.push(words[index]);
+  while (index < words.length && !startsExpression(itemAt(words, index).text)) {
+    operands.push(itemAt(words, index));
     index += 1;
   }
   while (index < words.length) {
-    const word = words[index];
+    const word = itemAt(words, index);
     if (word.expands) {
       return null;
     }
@@ -603,12 +604,16 @@ const OPERAND_CHECK_FUNCTIONS: Record<OperandCheckName, OperandCheck> = {
  */
 function isExcepted(text: string, except: string[]): boolean {
   if (text.startsWith("--")) {
-    const name = text.split("=", 1)[0];
+    const equals = text.indexOf("=");
+    const name = equals < 0 ? text : text.slice(0, equals);
     return except.some(
       (option) => option.startsWith("--") && (name.startsWith(option) || (name.length > 2 && option.startsWith(name))),
     );
   }
-  return text.startsWith("-") && except.some((option) => !option.startsWith("--") && text.slice(1).includes(option[1]));
+  return (
+    text.startsWith("-") &&
+    except.some((option) => !option.startsWith("--") && option.length > 1 && text.slice(1).includes(option.charAt(1)))
+  );
 }
 
 /**
@@ -639,7 +644,8 @@ function parseAnyOptions(entry: ProgramEntry, args: ShellWord[]): ParsedCommand 
 
 function globalOptionKind(entry: ProgramEntry, text: string): OptionKind | null {
   if (/^-[A-Za-z0-9]$/.test(text)) {
-    return entry.flags.includes(text[1]) ? "flag" : (entry.values[text[1]] ?? null);
+    const letter = text.charAt(1);
+    return entry.flags.includes(letter) ? "flag" : (entry.values[letter] ?? null);
   }
   if (text.startsWith("--")) {
     const name = text.slice(2);
@@ -751,7 +757,7 @@ function isSafeByEntry(
  * checked with the context, operands by the entry's operand check.
  */
 export function safeByProgramRule(words: ShellWord[], context: RuleContext, rules: CommandRules): ProgramEntry | null {
-  const entry = rules.programs.get(words[0].text);
+  const entry = rules.programs.get(itemAt(words, 0).text);
   const used: { entry?: ProgramEntry } = {};
   return entry !== undefined && isSafeByEntry(entry, words, context, used) ? (used.entry ?? null) : null;
 }

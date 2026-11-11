@@ -5,7 +5,7 @@ import { commandSegments, compileCommandPattern, type CommandPattern } from "./c
 import { allowPrefixProblem } from "./allow-prefix.js";
 import { configPath, extensionRoot } from "./extension-config.js";
 import { parseJsonc } from "./jsonc.js";
-import { dictionary } from "./common.js";
+import { dictionary, group, itemAt } from "./common.js";
 
 /**
  * Command rules: which programs, options and operands the bash fast path
@@ -322,7 +322,7 @@ function compileOperands(value: unknown, where: string): OperandRule {
     if (keys.length !== 1) {
       throw new RulesError(`${where}: expected a check name, or an object with one check name as its key`);
     }
-    name = keys[0];
+    name = itemAt(keys, 0);
     parameters = record(object[name], `${where}.${name}`);
   }
   if (!Object.hasOwn(OPERAND_CHECKS, name)) {
@@ -488,7 +488,8 @@ function compileOptions(options: Record<string, unknown>, entry: ProgramEntry, w
       }
       seen.add(name);
     }
-    const reported = longs[0] ?? shorts[0];
+    // names() returns at least one name, so one of the two lists has it.
+    const reported = longs[0] ?? itemAt(shorts, 0);
     for (const letter of shorts) {
       if (kind === "flag") {
         entry.flags += letter;
@@ -520,8 +521,9 @@ export function compileRules(
   for (const [key, entry] of Object.entries(record(top.programs ?? {}, "programs"))) {
     try {
       const where = `programs[${JSON.stringify(key)}]`;
-      const [name, ...extra] = names(key, PROGRAM_NAME, where);
-      if (extra.length) {
+      const list = names(key, PROGRAM_NAME, where);
+      const name = itemAt(list, 0);
+      if (list.length > 1) {
         throw new RulesError(`${where}: one program per entry`);
       }
       programs.set(
@@ -870,7 +872,8 @@ export function loadCommandRules(path = userRulesPath(), freshDefaults = false):
         // Ids were checked against PROGRAM_ID or RULE_NAME, which has no colon.
         throw new Error(`internal error: disable id "${id}" is not a program id`);
       }
-      const [, name, subcommand] = programId;
+      const name = group(programId, 1);
+      const subcommand = programId[2];
       const entry = Object.hasOwn(programs, name) ? record(programs[name], name) : undefined;
       if (!entry) {
         throw new RulesError(`${file}: disable: no built-in rule "${id}"`);

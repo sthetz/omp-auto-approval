@@ -33,7 +33,7 @@ function testVisibleWidth(text: string): number {
 let truncateCalls = 0;
 const piLikeTextUtils = {
   visibleWidth: testVisibleWidth,
-  truncateToWidth(text: string, maxWidth: number): string {
+  truncateToWidth: (text: string, maxWidth: number): string => {
     truncateCalls += 1;
     if (testVisibleWidth(text) <= maxWidth) return text;
     const clean = text.replace(ANSI_SGR_PATTERN, "");

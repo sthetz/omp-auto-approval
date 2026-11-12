@@ -88,7 +88,7 @@ The first row that applies decides. `/clearance explain` runs the same decision 
 | 7 | A tool that needs a human: computer use, browser clicks and typing, plugin installs, MCP or permission settings | You are asked in every reviewer mode; denied without a UI | `manual_only` |
 | 8 | A bash command made only of read-only programs, or ones your allow rules name | Allowed, with every program run by its absolute path | `safe_command` |
 | 9 | You chose "Allow Always This Exact Action" for this exact call earlier | Allowed | `session_approval` |
-| 10 | Under `ai`, the classifier already judged this exact call in this session | Its earlier answer is reused | `classifier_cache` |
+| 10 | Under `ai`, the classifier already judged this exact call in this session, and you have written nothing since | Its earlier answer is reused | `classifier_cache` |
 | 11 | Anything else, including a **review** rule | Handled by the reviewer: run under `off`, ask under `manual`, classify under `ai` | `reviewer_off`, `human`, `manual_unavailable`, `classifier` |
 
 A bash command that matches a **review** rule skips rows 5 and 8. Row 8 is also skipped for the rest of a session once a bash command may have changed how the shell runs later commands, as a `trap` or an `eval` can ([details](docs/fast-paths.md#when-the-bash-fast-path-turns-off)).
@@ -156,9 +156,11 @@ By default the classifier uses the session's model; `/clearance model` picks ano
 
 The classifier sees:
 
-- the latest user request and up to six earlier user messages;
+- the latest user request and up to six earlier user messages, from anywhere in the session, however much the agent has done since;
 - the agent's latest message, marked as untrusted;
 - the pending action, and the rule that sent it to review, if any.
+
+A verdict is reused for the same action until you write something new, steering messages sent mid-turn included: the next attempt is then reviewed again with your new message. So is it after a change to the classifier's settings (`classifierModel`, `allow`, `deny`, `environment`) or to your rules files. Nothing the agent writes, and no tool output, makes it review again.
 
 It does not see tool output (file contents, command output, fetched pages), since that is where prompt injections come from. Only your own messages can authorize anything. Messages that OMP puts in the user role on someone else's behalf are not yours: a subagent's assignment, compaction and branch summaries, messages from other agents, MCP notices. The classifier sees the latest of them separately, marked as untrusted; otherwise an agent could write "the user approved this" into a `task` assignment. A subagent's classifier reads your messages from the parent session's file; with `--no-session` there is none, so only low-risk actions pass.
 
@@ -190,6 +192,8 @@ An answer that allows a `high`-risk action without `high` user authorization, or
 ```
 
 Entries are absolute or start with `~/`. Credential-like files below a read root are still reviewed. Read roots also cover the files a fast-pathed bash command reads, but never add a program to the fast path.
+
+Changes to `config.jsonc` apply from the next session, or after any `/clearance` command, such as `/clearance status`.
 
 ## Audit log
 

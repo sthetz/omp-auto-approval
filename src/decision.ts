@@ -33,8 +33,9 @@ import {
   isWorkspaceWriteFastPath,
   resolveReadRoots,
 } from "./tool-routing.js";
-import { getString, relativePathWithin, resolvePathForCwd, toRecord } from "./common.js";
+import { getString, relativePathWithin, resolvePathForCwd, sha256, stableStringify, toRecord } from "./common.js";
 import { shellHook } from "./shell-hooks.js";
+import { userContextKey } from "./context-projection.js";
 import { isLspEditApply, isLspEditPreview, lspEditKey } from "./lsp-edits.js";
 import { requestHumanApproval, type HumanDecision } from "./human-approval.js";
 
@@ -81,6 +82,8 @@ export interface DecisionState {
   shellLatchEffect?: { session: string; reason: string };
   rules: CommandRules;
   exactApproved: boolean;
+  // Where this call's classifier verdict is cached; see classifierKey.
+  classifierCacheKey?: string;
   // For an lsp rename or rename_file: what identifies its preview (see
   // lsp-edits.ts), and whether a usable one exists for this call.
   lspEditKey?: string;
@@ -436,6 +439,53 @@ export function decide(call: CanonicalToolCall, state: DecisionState): Decision 
   };
 }
 
+/**
+ * The key a classifier verdict is cached under: the action, the user's
+ * messages so far (see userContextKey), and the settings that shape the
+ * classifier's answer. A verdict is only as good as what the classifier was
+ * shown; a new message from the user, such as an authorization after a
+ * denial, or new guidance needs a new review. Undefined when the session
+ * cannot be read, which means no caching.
+ */
+function classifierKey(actionHash: string, ctx: ExtensionContextLike, config: ClearanceConfig): string | undefined {
+  try {
+    const { classifierModel, allow, deny, environment } = config;
+    const settings = sha256(stableStringify({ classifierModel, allow, deny, environment }));
+    return `${actionHash}:${userContextKey(ctx)}:${settings}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * decide(), with an earlier classifier verdict for the same key when the
+ * call needs one. The key is built only for calls that reach the
+ * classifier: it reads the session.
+ */
+export function decideWithCache(
+  call: CanonicalToolCall,
+  state: DecisionState,
+  ctx: ExtensionContextLike,
+  store: SessionApprovalStore,
+): Decision {
+  const decision = decide(call, state);
+  if (decision.outcome !== "review" || state.classifier || !decision.subject) {
+    return decision;
+  }
+  const classifierCacheKey = classifierKey(decision.subject.actionHash, ctx, state.config);
+  if (classifierCacheKey === undefined) {
+    return decision;
+  }
+  const cached = store.getCachedDecision(classifierCacheKey);
+  return decide(call, {
+    ...state,
+    classifierCacheKey,
+    ...(cached
+      ? { classifier: { evaluator: "classifier", outcome: cached.outcome, decision: cached, cached: true } }
+      : {}),
+  });
+}
+
 /** Snapshot the session-owned inputs to decide(). */
 export function snapshotDecisionState(
   call: CanonicalToolCall,
@@ -446,7 +496,6 @@ export function snapshotDecisionState(
 ): DecisionState {
   const subject = call.toolName ? createReviewSubject(call.toolName, call.input, ctx.cwd || process.cwd()) : null;
   const reviewer = options.reviewer ?? config.reviewer;
-  const cached = reviewer === "ai" && subject ? store.getCachedDecision(subject.actionHash) : undefined;
   return {
     config,
     reviewer,
@@ -460,9 +509,6 @@ export function snapshotDecisionState(
     exactApproved: subject ? store.isExactApproved(subject.actionHash) : false,
     ...lspEditState(call, ctx, store),
     ...(subject ? { subject } : {}),
-    ...(cached
-      ? { classifier: { evaluator: "classifier", outcome: cached.outcome, decision: cached, cached: true } }
-      : {}),
   };
 }
 
@@ -670,7 +716,13 @@ export async function apply(
         rule: decision.staticVerdict?.escalation?.rule ?? undefined,
         ruleTextOnly: decision.staticVerdict?.escalation?.textOnly,
       });
-      store.cacheDecision(decision.subject.actionHash, verdict);
+      // Cache it only if nothing the key stands for changed while the
+      // classifier ran: a message the user sent meanwhile may or may not
+      // have been in what it was shown.
+      const key = decision.state.classifierCacheKey;
+      if (key !== undefined && key === classifierKey(decision.subject.actionHash, ctx, decision.state.config)) {
+        store.cacheDecision(key, verdict);
+      }
       classifier = { evaluator: "classifier", outcome: verdict.outcome, decision: verdict, cached: false };
     } catch (error) {
       classifier = {
@@ -764,5 +816,5 @@ export async function runDecision(
     shellLatched: latchedBefore,
     ...(latched && reason ? { shellLatchEffect: { session, reason } } : {}),
   };
-  return apply(decide(call, state), ctx, store, { ...options, started: Date.now() });
+  return apply(decideWithCache(call, state, ctx, store), ctx, store, { ...options, started: Date.now() });
 }

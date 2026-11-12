@@ -168,8 +168,9 @@ class RulesError extends Error {
 /** Name the file and line:column for syntax and file-level validation errors. */
 function rulesProblem(label: string, error: unknown): string {
   const message = typeof error === "string" ? error : (error as Error).message;
-  const location = message.match(/line (\d+), column (\d+)/);
-  return `${label}:${location?.[1] ?? "1"}:${location?.[2] ?? "1"}: ${message}`;
+  const location = / at line (\d+), column (\d+)$/.exec(message);
+  const detail = location ? message.slice(0, location.index) : message;
+  return `${label}:${location?.[1] ?? "1"}:${location?.[2] ?? "1"}: ${detail}`;
 }
 
 function normalizeRulesProblem(message: string): string {

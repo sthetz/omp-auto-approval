@@ -94,7 +94,7 @@ await test("a rules file with any problem is not used, and every bash call is bl
       ['{ "programs": { "cat": { "operands": { "read-files": { "pattern": "x" } } } } }', /unknown key "pattern"/],
       [
         '{ "programs": { "cat": { "operands": "read-files" }, "cat": { "operands": "none" } } }',
-        /duplicate key "cat" at line 1/,
+        /duplicate key "cat"$/,
       ],
       ['{ "programs": { "seq": { "operands": { "literals": { "min": 2, "max": 1 } } } } }', /min is more than max/],
       ['{ "programs": { "seq": { "operands": { "literals": { "pattern": "(" } } } } }', /pattern/],
@@ -125,6 +125,8 @@ await test("a rules file with any problem is not used, and every bash call is bl
         );
       }
     }
+    writeFileSync(file, "{\n" + "// malformed rules\n".repeat(13) + "  oops}");
+    assert.equal(loadRulesFile(file, "rules.jsonc").problem, "rules.jsonc:15:3: expected a key in double quotes");
     writeFileSync(file, '{ "programs": { "cat": { "operands": "read-files" } } }');
     const rules = loadRulesFile(file);
     assert.equal(rules.problem, null);
@@ -145,7 +147,9 @@ await test("rules files take comments and trailing commas, but not comment marke
     '// a comment\n{ "a": "x // y /* z */", /* another */ "b": [1, 2,], "c": { "d": null, }, }',
   ) as Record<string, unknown>;
   assert.equal(JSON.stringify(parsed), '{"a":"x // y /* z */","b":[1,2],"c":{"d":null}}');
-  assert.throws(() => parseJsonc('{\n  "a": 1\n  "b": 2\n}'), /expected ',' or '}' at line 3, column 3/);
+  assert.throws(() => parseJsonc('{\n  "a": 1\n  "b": 2\n}'), {
+    message: "expected ',' or '}' at line 3, column 3",
+  });
   assert.throws(() => parseJsonc('{ "a": 1 } x'), /unexpected 'x'/);
   assert.throws(() => parseJsonc('{ "a": "x\n" }'), /line break in a string/);
   assert.throws(() => parseJsonc('{ "a": 1 /* open'), /unterminated comment/);
@@ -405,7 +409,7 @@ await test("user rules files can include others, by absolute or ~/ paths", () =>
     assert.equal(rules.programs.has("sed"), false);
     assert.notEqual(planSafeCommand("npm ls", config(), { workspace: home, searchPath: TEST_PATH, rules }), null);
 
-    const broken: [Record<string, string>, RegExp][] = [
+    const broken: [Record<string, string>, RegExp | string][] = [
       [
         { "rules.jsonc": '{ "include": ["rules/npm.jsonc"] }' },
         /^~\/rules\.jsonc:\d+:\d+: include: expected an absolute path or one starting with ~\//,
@@ -417,7 +421,7 @@ await test("user rules files can include others, by absolute or ~/ paths", () =>
       ],
       [
         { "rules.jsonc": '{ "include": ["~/rules/a.jsonc"] }', "rules/a.jsonc": "{ oops }" },
-        /^~\/rules\/a\.jsonc:\d+:\d+: expected a key in double quotes at line 1/,
+        "~/rules/a.jsonc:1:3: expected a key in double quotes",
       ],
       [
         {
@@ -432,7 +436,11 @@ await test("user rules files can include others, by absolute or ~/ paths", () =>
         writeFileSync(join(home, name), text);
       }
       const result = loadCommandRules(join(home, "rules.jsonc"));
-      assert.match(result.problem ?? "", problem, JSON.stringify(files));
+      if (typeof problem === "string") {
+        assert.equal(result.problem, problem, JSON.stringify(files));
+      } else {
+        assert.match(result.problem ?? "", problem, JSON.stringify(files));
+      }
       assert.equal(result.programs.size, 0);
     }
     // A missing include is still listed, so the write fast path protects it.

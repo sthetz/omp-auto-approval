@@ -644,6 +644,30 @@ const SCENARIOS: Scenario[] = [
       return problems;
     },
   },
+  {
+    // Every tool call and its result is a session entry. The user's request
+    // must still reach the classifier after a long run of them (it once
+    // looked only at the last 40 entries).
+    name: "the classifier still sees the user's request after many tool calls",
+    reviewer: "ai",
+    verdict: "allow",
+    steps: [
+      ...Array.from({ length: 30 }, (): ToolCall => ({ name: "read", arguments: { path: "notes.txt" } })),
+      bash("touch made-by-agent.txt"),
+    ],
+    check(result) {
+      const problems: string[] = [];
+      const reviewed = decisions(result).filter((line) => line.route === "classifier");
+      expect(problems, reviewed.length === 1, `${reviewed.length} classifier decisions, wanted 1`);
+      const shown = result.model.classifier.at(-1) ?? "";
+      expect(
+        problems,
+        /Latest user request:\ngo\n/.test(shown),
+        `the classifier did not see the user's request: ${shown.slice(0, 300)}`,
+      );
+      return problems;
+    },
+  },
 ];
 
 const NO_AUDIT = "no audit log";

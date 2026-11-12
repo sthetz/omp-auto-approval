@@ -1,6 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
-import { stableStringify, toRecord, truncateInline } from "./common.js";
+import { sha256, stableStringify, toRecord, truncateInline } from "./common.js";
 import type { CommandRule } from "./command-rules.js";
 import type { ExtensionContextLike, ReviewSubject } from "./types.js";
 
@@ -84,6 +84,9 @@ const MAX_EARLIER_USER_CHARS = 600;
 const MAX_LATEST_USER_CHARS = 1600;
 const MAX_AGENT_MESSAGE_CHARS = 600;
 const MAX_INJECTED_MESSAGE_CHARS = 1000;
+// How far back to look for the agent's latest message. The user's messages
+// are taken from the whole branch: in an agentic run every tool call and
+// result is an entry, so a window this size loses them after ~20 calls.
 const RETAINED_ENTRIES = 40;
 const MAX_PARENT_SESSIONS = 4;
 
@@ -224,6 +227,56 @@ function agentText(entry: unknown): string | null {
 }
 
 /**
+ * The session's entries on its current branch. OMP's getBranch gives that
+ * directly; getEntries holds every branch, so walk the parent links back
+ * from the last entry, or an abandoned branch's messages would count.
+ */
+function sessionBranch(ctx: ExtensionContextLike): unknown[] {
+  const branch = ctx.sessionManager?.getBranch?.();
+  if (branch) {
+    return branch;
+  }
+  const entries = (ctx.sessionManager?.getEntries?.() ?? []).map(toRecord);
+  // Without parent links there is nothing to walk: take the entries as they are.
+  return entries.some((entry) => typeof entry.parentId === "string") ? currentBranch(entries) : entries;
+}
+
+function sessionHeader(ctx: ExtensionContextLike): unknown {
+  try {
+    return ctx.sessionManager?.getHeader?.();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * What identifies the user's messages the classifier would see. Messages
+ * only append along a branch, so the latest one stands for all of them: its
+ * session entry id, so that writing the same words again still counts as a
+ * new message (its position and text where it has no id), and for a
+ * subagent the parent sessions' messages. A classifier verdict is cached
+ * under the action and this key, so any new message from the user (only the
+ * user: not the agent, not OMP writing in their place) gets the action
+ * reviewed again.
+ */
+export function userContextKey(ctx: ExtensionContextLike): string {
+  const branch = sessionBranch(ctx);
+  let latest = "none";
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    const entry = branch[index];
+    const text = userText(entry);
+    if (text) {
+      const id = toRecord(entry).id;
+      latest = typeof id === "string" ? `id:${id}` : `at:${index}:${text}`;
+      break;
+    }
+  }
+  const header = sessionHeader(ctx);
+  const parent = typeof toRecord(header).parentSession === "string" ? parentSessionUserMessages(header).messages : [];
+  return sha256(stableStringify({ latest, parent: [parent.length, parent.at(-1) ?? null] }));
+}
+
+/**
  * The classifier's view of the session. Authorization can only come from the
  * user, so it sees the user's messages and, marked as untrusted, the agent's
  * latest explanation of what it is doing. Tool output is left out: fetched
@@ -235,16 +288,10 @@ export function buildProjectedContext(
   subject: ReviewSubject,
   options: { agentMessage?: string; rule?: CommandRule; ruleTextOnly?: boolean } = {},
 ): string {
-  const allEntries = ctx.sessionManager?.getBranch?.() ?? ctx.sessionManager?.getEntries?.() ?? [];
+  const allEntries = sessionBranch(ctx);
   const entries = allEntries.slice(-RETAINED_ENTRIES);
-  let header: unknown;
-  try {
-    header = ctx.sessionManager?.getHeader?.();
-  } catch {
-    header = undefined;
-  }
-  const parent = parentSessionUserMessages(header);
-  const ownUserMessages = entries.map(userText).filter((text): text is string => Boolean(text));
+  const parent = parentSessionUserMessages(sessionHeader(ctx));
+  const ownUserMessages = allEntries.map(userText).filter((text): text is string => Boolean(text));
   // A forked session repeats its parent's history; keep each message once.
   const userMessages = [...parent.messages, ...ownUserMessages].filter(
     (text, index, all) => all.lastIndexOf(text) === index,

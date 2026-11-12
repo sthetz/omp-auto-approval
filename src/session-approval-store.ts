@@ -1,6 +1,8 @@
 import type { PreviewFiles } from "./lsp-edits.js";
 import type { ClassifierDecision } from "./types.js";
 
+const MAX_CACHED_DECISIONS = 1000;
+
 export class SessionApprovalStore {
   private readonly approvedExactActions = new Set<string>();
   private readonly classifierDecisions = new Map<string, ClassifierDecision>();
@@ -34,12 +36,17 @@ export class SessionApprovalStore {
     return this.approvedExactActions.has(actionHash);
   }
 
-  getCachedDecision(actionHash: string): ClassifierDecision | undefined {
-    return this.classifierDecisions.get(actionHash);
+  getCachedDecision(key: string): ClassifierDecision | undefined {
+    return this.classifierDecisions.get(key);
   }
 
-  cacheDecision(actionHash: string, decision: ClassifierDecision): void {
-    this.classifierDecisions.set(actionHash, decision);
+  cacheDecision(key: string, decision: ClassifierDecision): void {
+    // Keys include the user's latest message, so older ones go stale; keep
+    // the map from growing without bound in a long session.
+    if (this.classifierDecisions.size >= MAX_CACHED_DECISIONS) {
+      this.classifierDecisions.clear();
+    }
+    this.classifierDecisions.set(key, decision);
   }
 
   get consecutiveDenialCount(): number {
@@ -133,6 +140,11 @@ export class SessionApprovalStore {
     const files = this.lspApplies.get(toolCallId);
     this.lspApplies.delete(toolCallId);
     return files;
+  }
+
+  /** Forget classifier verdicts: what they were based on changed (the rules files). */
+  clearClassifierCache(): void {
+    this.classifierDecisions.clear();
   }
 
   turnLspEditsOff(session: string, reason: string): void {

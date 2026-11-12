@@ -1,7 +1,7 @@
 import type { ClearanceConfig, ExtensionContextLike, Reviewer } from "./src/types.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, saveConfig } from "./src/extension-config.js";
 import { defaultRulesPath, userRulesPath, type CommandRules } from "./src/command-rules.js";
-import { decide, protectedFiles, sessionKey, snapshotDecisionState, type Decision } from "./src/decision.js";
+import { decideWithCache, protectedFiles, sessionKey, snapshotDecisionState, type Decision } from "./src/decision.js";
 import {
   canonicalContext,
   canonicalToolCall,
@@ -189,8 +189,12 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
     const previousReviewerProblem = reviewerState.problem;
     const previousRulesProblem = rules.problem;
     reviewerState = loadReviewerState(config, loadResult.reviewerConfigured);
+    const previousRulesVersion = rulesWatch.version;
     rulesWatch = watchCommandRules();
     rules = rulesWatch.rules;
+    if (rulesWatch.version !== previousRulesVersion) {
+      approvals.clearClassifierCache();
+    }
     let rulesNotified = false;
     if (ctx) {
       setStatus(ctx, reviewerState, rules);
@@ -236,9 +240,11 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
     const source = toRecord(toRecord(findToolDefinition(toolName, tools)).sourceInfo).source;
     // A call id like OMP's, so a previewed lsp edit is explained as it would be decided.
     const call = { toolName, input: parsed.input, toolCallId: "explain" };
-    const decision = decide(
+    const decision = decideWithCache(
       call,
       snapshotDecisionState(call, ctx, config, approvals, { reviewer: reviewerState.reviewer, tools, rules }),
+      ctx,
+      approvals,
     );
     const plan = decision.plan;
     const escalation = decision.staticVerdict?.escalation;
@@ -433,6 +439,11 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
       }
       if (!nextRules.rules.problem && rules.problem) {
         notify(ctx, "omp-clearance: command rules reloaded; bash calls are no longer blocked.", "info");
+      }
+      if (nextRules.rules !== rules) {
+        // The rule that sends an action to review is part of what the
+        // classifier is shown; earlier verdicts may rest on old rules.
+        approvals.clearClassifierCache();
       }
       rulesWatch = nextRules;
       rules = nextRules.rules;

@@ -10,7 +10,7 @@ import { decide, type DecisionState } from "../../src/decision.js";
 import { evaluateToolCall } from "../../src/omp-host.js";
 import { planSafeCommand } from "../../src/safe-command.js";
 import { defaultRules, loadCommandRules, type CommandRules } from "../../src/command-rules.js";
-import { type ClearanceConfig, type ExtensionContextLike } from "../../src/types.js";
+import { type CallgateConfig, type ExtensionContextLike } from "../../src/types.js";
 // Fast-pathed commands are pinned to a program found on OMP's startup PATH.
 // Stub programs make the tests independent of what this machine has
 // installed; the real PATH stays behind them.
@@ -50,7 +50,7 @@ export const STUB_PROGRAMS = [
   "wc",
   "which",
 ];
-export const STUB_BIN = mkdtempSync(join(tmpdir(), "omp-clearance-bin-"));
+export const STUB_BIN = mkdtempSync(join(tmpdir(), "omp-callgate-bin-"));
 for (const name of STUB_PROGRAMS) {
   writeFileSync(join(STUB_BIN, name), "#!/bin/sh\n");
   chmodSync(join(STUB_BIN, name), 0o755);
@@ -60,9 +60,9 @@ process.on("exit", () => rmSync(STUB_BIN, { recursive: true, force: true }));
 // No user rules file unless a test names one, and the config and audit log
 // in a temporary directory unless a test names others: never the files of the
 // checkout or of a real install.
-process.env.CLEARANCE_RULES_PATH = join(STUB_BIN, "no-rules.jsonc");
-process.env.CLEARANCE_CONFIG_PATH = join(STUB_BIN, "config.jsonc");
-process.env.CLEARANCE_LOGS_DIR = join(STUB_BIN, "logs");
+process.env.CALLGATE_RULES_PATH = join(STUB_BIN, "no-rules.jsonc");
+process.env.CALLGATE_CONFIG_PATH = join(STUB_BIN, "config.jsonc");
+process.env.CALLGATE_LOGS_DIR = join(STUB_BIN, "logs");
 
 export function isSafeReadOnlyCommand(command: string, cfg: TestConfig, cwd: string): boolean {
   return planSafeCommand(command, cfg, { workspace: cwd, searchPath: TEST_PATH, rules: cfg.rules }) !== null;
@@ -93,8 +93,8 @@ export function reasonOf(response: unknown): string {
 
 // A config, and the command rules to use with it: the built-in ones, plus
 // allow rules for `allowRules` prefixes and block rules for `blockRules` patterns.
-export type TestConfig = ClearanceConfig & { rules: CommandRules };
-export const RULES_DIR = mkdtempSync(join(tmpdir(), "omp-clearance-test-rules-"));
+export type TestConfig = CallgateConfig & { rules: CommandRules };
+export const RULES_DIR = mkdtempSync(join(tmpdir(), "omp-callgate-test-rules-"));
 process.on("exit", () => rmSync(RULES_DIR, { recursive: true, force: true }));
 let rulesFiles = 0;
 
@@ -120,7 +120,7 @@ export function testRules(allowRules: string[] = [], blockRules: string[] = []):
 }
 
 export function config(
-  overrides: Partial<ClearanceConfig> & { allowRules?: string[]; blockRules?: string[] } = {},
+  overrides: Partial<CallgateConfig> & { allowRules?: string[]; blockRules?: string[] } = {},
 ): TestConfig {
   const { allowRules, blockRules, ...rest } = overrides;
   return { ...DEFAULT_CONFIG, reviewer: "ai", audit: false, ...rest, rules: testRules(allowRules, blockRules) };

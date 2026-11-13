@@ -13,7 +13,7 @@
  * Commands come from two sources:
  * - synthetic: a public list built from the program tables (synthetic.ts);
  * - corpus: your own agents' commands, collected by `npm run oracle:corpus`
- *   into ~/.cache/omp-clearance (see CONTRIBUTING.md). They are private, so
+ *   into ~/.cache/omp-callgate (see CONTRIBUTING.md). They are private, so
  *   only counts are printed for them unless you pass --show-corpus.
  *
  * The base revision is checked out into a temporary git worktree, so it must

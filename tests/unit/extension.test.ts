@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import ompClearanceExtension, { SYSTEM_PROMPT_NOTE } from "../../index.js";
+import ompCallgateExtension, { SYSTEM_PROMPT_NOTE } from "../../index.js";
 import { DEFAULT_CONFIG, loadConfig } from "../../src/extension-config.js";
 import { canonicalContext, canonicalToolCall, canonicalTools, evaluateToolCall } from "../../src/omp-host.js";
 import { SessionApprovalStore } from "../../src/session-approval-store.js";
@@ -95,7 +95,7 @@ await test("the OMP boundary validates events, contexts, tools, session data and
   assert.match("reason" in missingName ? missingName.reason : "", /no tool name/);
 
   const handlers = new Map<string, (event: unknown, context: unknown) => unknown>();
-  ompClearanceExtension({
+  ompCallgateExtension({
     on: (event, handler) => {
       handlers.set(event, handler);
     },
@@ -124,11 +124,11 @@ await test("the OMP boundary validates events, contexts, tools, session data and
   assert.deepEqual(failedContext, {
     block: true,
     reason:
-      "omp-clearance failed to decide this tool call: host context getter failed. Do not retry; report this error to the user.",
+      "omp-callgate failed to decide this tool call: host context getter failed. Do not retry; report this error to the user.",
   });
 
   const throwingHandlers = new Map<string, (event: unknown, context: unknown) => unknown>();
-  ompClearanceExtension({
+  ompCallgateExtension({
     on: (event, handler) => {
       throwingHandlers.set(event, handler);
     },
@@ -143,18 +143,18 @@ await test("the OMP boundary validates events, contexts, tools, session data and
   assert.deepEqual(failed, {
     block: true,
     reason:
-      "omp-clearance failed to decide this tool call: host tools unavailable. Do not retry; report this error to the user.",
+      "omp-callgate failed to decide this tool call: host tools unavailable. Do not retry; report this error to the user.",
   });
 });
 
 await test("reviewer commands reach another live extension instance and never rewrite config", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-shared-reviewer-"));
-  const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
-  process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-shared-reviewer-"));
+  const previousConfigPath = process.env.CALLGATE_CONFIG_PATH;
+  process.env.CALLGATE_CONFIG_PATH = join(dir, "config.jsonc");
   const install = () => {
     const events = new Map<string, (event: unknown, context: unknown) => unknown>();
     let command: ((args: unknown, context: unknown) => Promise<void> | void) | undefined;
-    ompClearanceExtension({
+    ompCallgateExtension({
       on: (event, handler) => {
         events.set(event, handler);
       },
@@ -170,7 +170,7 @@ await test("reviewer commands reach another live extension instance and never re
   const call = () =>
     second.events.get("tool_call")?.({ toolName: "bash", input: { command: "make deploy" } }, commandCtx);
   try {
-    const configBefore = readFileSync(process.env.CLEARANCE_CONFIG_PATH, "utf8");
+    const configBefore = readFileSync(process.env.CALLGATE_CONFIG_PATH, "utf8");
     assert.deepEqual(await call(), {});
     await first.command?.("ai", commandCtx);
     const reviewed: unknown = await call();
@@ -184,31 +184,31 @@ await test("reviewer commands reach another live extension instance and never re
     assert.equal(typeof invalid === "object" && invalid !== null && "block" in invalid && invalid.block, true);
     await first.command?.("off", commandCtx);
     assert.deepEqual(await call(), {});
-    assert.equal(readFileSync(process.env.CLEARANCE_CONFIG_PATH, "utf8"), configBefore);
+    assert.equal(readFileSync(process.env.CALLGATE_CONFIG_PATH, "utf8"), configBefore);
   } finally {
     if (previousConfigPath === undefined) {
-      delete process.env.CLEARANCE_CONFIG_PATH;
+      delete process.env.CALLGATE_CONFIG_PATH;
     } else {
-      process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
+      process.env.CALLGATE_CONFIG_PATH = previousConfigPath;
     }
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
 await test("extension registers one slash command and rejects unknown subcommands", async () => {
-  const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
-  const configPath = join(tmpdir(), `omp-clearance-${Date.now()}.jsonc`);
-  process.env.CLEARANCE_CONFIG_PATH = configPath;
+  const previousConfigPath = process.env.CALLGATE_CONFIG_PATH;
+  const configPath = join(tmpdir(), `omp-callgate-${Date.now()}.jsonc`);
+  process.env.CALLGATE_CONFIG_PATH = configPath;
   const commands: string[] = [];
   let handler: ((args: string, ctx: ExtensionContextLike) => Promise<void> | void) | undefined;
-  ompClearanceExtension({
+  ompCallgateExtension({
     on: () => {},
     registerCommand: (name, definition) => {
       commands.push(name);
       handler = definition.handler;
     },
   });
-  assert.deepEqual(commands, ["clearance"]);
+  assert.deepEqual(commands, ["callgate"]);
   const messages: string[] = [];
   await handler?.(
     "unknown",
@@ -221,23 +221,23 @@ await test("extension registers one slash command and rejects unknown subcommand
     }),
   );
   assert.deepEqual(messages, [
-    'Unknown /clearance subcommand "unknown". Use status, ai, manual, off, model, rules, or explain.',
+    'Unknown /callgate subcommand "unknown". Use status, ai, manual, off, model, rules, or explain.',
   ]);
   rmSync(configPath, { force: true });
   if (previousConfigPath === undefined) {
-    delete process.env.CLEARANCE_CONFIG_PATH;
+    delete process.env.CALLGATE_CONFIG_PATH;
   } else {
-    process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
+    process.env.CALLGATE_CONFIG_PATH = previousConfigPath;
   }
 });
 
-await test("clearance command provides argument completions", async () => {
-  const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
-  const configPath = join(tmpdir(), `omp-clearance-${Date.now()}.jsonc`);
-  process.env.CLEARANCE_CONFIG_PATH = configPath;
+await test("callgate command provides argument completions", async () => {
+  const previousConfigPath = process.env.CALLGATE_CONFIG_PATH;
+  const configPath = join(tmpdir(), `omp-callgate-${Date.now()}.jsonc`);
+  process.env.CALLGATE_CONFIG_PATH = configPath;
   let getArgumentCompletions: ((argumentPrefix: string) => unknown[] | null | Promise<unknown[] | null>) | undefined;
   let description = "";
-  ompClearanceExtension({
+  ompCallgateExtension({
     on: () => {},
     registerCommand: (_name, definition) => {
       description = definition.description;
@@ -252,18 +252,18 @@ await test("clearance command provides argument completions", async () => {
   );
   rmSync(configPath, { force: true });
   if (previousConfigPath === undefined) {
-    delete process.env.CLEARANCE_CONFIG_PATH;
+    delete process.env.CALLGATE_CONFIG_PATH;
   } else {
-    process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
+    process.env.CALLGATE_CONFIG_PATH = previousConfigPath;
   }
 });
 
-await test("/clearance rules answers through the command, also when the rules are broken", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-rules-command-"));
-  const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
-  const previousRulesPath = process.env.CLEARANCE_RULES_PATH;
-  process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
-  process.env.CLEARANCE_RULES_PATH = join(dir, "rules.jsonc");
+await test("/callgate rules answers through the command, also when the rules are broken", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-rules-command-"));
+  const previousConfigPath = process.env.CALLGATE_CONFIG_PATH;
+  const previousRulesPath = process.env.CALLGATE_RULES_PATH;
+  process.env.CALLGATE_CONFIG_PATH = join(dir, "config.jsonc");
+  process.env.CALLGATE_RULES_PATH = join(dir, "rules.jsonc");
   writeFileSync(join(dir, "config.jsonc"), JSON.stringify({ reviewer: "ai" }));
   // A user entry for a program that is installed, so that explain can fast-path it.
   writeFileSync(
@@ -271,7 +271,7 @@ await test("/clearance rules answers through the command, also when the rules ar
     KUBE_RULES.replace('"programs": {', '"programs": { "whoami": { "opensNoFiles": true, "operands": "none" },'),
   );
   let handler: ((args: string, ctx: ExtensionContextLike) => Promise<void> | void) | undefined;
-  ompClearanceExtension({
+  ompCallgateExtension({
     on: () => {},
     getAllTools: () => [],
     registerCommand: (_name, definition) => {
@@ -290,7 +290,7 @@ await test("/clearance rules answers through the command, also when the rules ar
   });
   const say = async (args: string) => {
     messages.length = 0;
-    await required(handler, "/clearance handler")(args, commandCtx);
+    await required(handler, "/callgate handler")(args, commandCtx);
     return messages.join("\n");
   };
   try {
@@ -314,15 +314,15 @@ await test("/clearance rules answers through the command, also when the rules ar
     for (const args of ["rules", "rules git"]) {
       assert.match(
         await say(args),
-        /omp-clearance: the command rules could not be loaded, so every bash call is blocked until the file is fixed: .*rules\.jsonc:\d+:\d+: expected a key.*Fixing the file is enough; rules reload automatically\.$/,
+        /omp-callgate: the command rules could not be loaded, so every bash call is blocked until the file is fixed: .*rules\.jsonc:\d+:\d+: expected a key.*Fixing the file is enough; rules reload automatically\.$/,
         args,
       );
       assert.equal(messages.length, 1);
     }
   } finally {
     for (const [name, previous] of [
-      ["CLEARANCE_CONFIG_PATH", previousConfigPath],
-      ["CLEARANCE_RULES_PATH", previousRulesPath],
+      ["CALLGATE_CONFIG_PATH", previousConfigPath],
+      ["CALLGATE_RULES_PATH", previousRulesPath],
     ] as const) {
       if (previous === undefined) {
         delete process.env[name];
@@ -334,13 +334,13 @@ await test("/clearance rules answers through the command, also when the rules ar
   }
 });
 
-await test("clearance explain reports the route a tool call would take", async () => {
-  const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
-  const configFile = join(tmpdir(), `omp-clearance-explain-${Date.now()}.jsonc`);
-  process.env.CLEARANCE_CONFIG_PATH = configFile;
+await test("callgate explain reports the route a tool call would take", async () => {
+  const previousConfigPath = process.env.CALLGATE_CONFIG_PATH;
+  const configFile = join(tmpdir(), `omp-callgate-explain-${Date.now()}.jsonc`);
+  process.env.CALLGATE_CONFIG_PATH = configFile;
   writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, reviewer: "ai" }));
   let handler: ((args: string, ctx: ExtensionContextLike) => Promise<void> | void) | undefined;
-  ompClearanceExtension({
+  ompCallgateExtension({
     on: () => {},
     getAllTools: () => [
       { name: "read", sourceInfo: { source: "builtin" } },
@@ -394,7 +394,7 @@ await test("clearance explain reports the route a tool call would take", async (
     writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, reviewer: "manual" }));
     assert.match(await routeFor("read ~/.ssh/id_ed25519"), /route: blocked: manual review needs an interactive UI/);
     writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, reviewer: "ai" }));
-    const rulesPath = required(process.env.CLEARANCE_RULES_PATH, "CLEARANCE_RULES_PATH");
+    const rulesPath = required(process.env.CALLGATE_RULES_PATH, "CALLGATE_RULES_PATH");
     writeFileSync(rulesPath, '{ "rules": [{ "id": "no-apply", "match": "terraform apply", "outcome": "block" }] }');
     try {
       assert.match(
@@ -408,26 +408,26 @@ await test("clearance explain reports the route a tool call would take", async (
     } finally {
       rmSync(rulesPath, { force: true });
     }
-    assert.match(await routeFor(""), /Usage: \/clearance explain/);
+    assert.match(await routeFor(""), /Usage: \/callgate explain/);
   } finally {
     rmSync(configFile, { force: true });
     if (previousConfigPath === undefined) {
-      delete process.env.CLEARANCE_CONFIG_PATH;
+      delete process.env.CALLGATE_CONFIG_PATH;
     } else {
-      process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
+      process.env.CALLGATE_CONFIG_PATH = previousConfigPath;
     }
   }
 });
 
 await test("system prompt denial guidance is appended in every reviewer mode", async () => {
-  const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
-  const configFile = join(tmpdir(), `omp-clearance-prompt-${Date.now()}.jsonc`);
-  process.env.CLEARANCE_CONFIG_PATH = configFile;
+  const previousConfigPath = process.env.CALLGATE_CONFIG_PATH;
+  const configFile = join(tmpdir(), `omp-callgate-prompt-${Date.now()}.jsonc`);
+  process.env.CALLGATE_CONFIG_PATH = configFile;
   try {
     for (const reviewer of ["ai", "manual", "off"] as const) {
       writeFileSync(configFile, JSON.stringify({ ...DEFAULT_CONFIG, reviewer }));
       const handlers = new Map<string, (event: unknown, context?: unknown) => unknown>();
-      ompClearanceExtension({
+      ompCallgateExtension({
         on: (event, handler) => {
           handlers.set(event, handler);
         },
@@ -443,26 +443,26 @@ await test("system prompt denial guidance is appended in every reviewer mode", a
   } finally {
     rmSync(configFile, { force: true });
     if (previousConfigPath === undefined) {
-      delete process.env.CLEARANCE_CONFIG_PATH;
+      delete process.env.CALLGATE_CONFIG_PATH;
     } else {
-      process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
+      process.env.CALLGATE_CONFIG_PATH = previousConfigPath;
     }
   }
 });
 
 await test("config notices and read warnings are reported once at session start, not on every tool call", async () => {
-  const configFile = join(tmpdir(), `omp-clearance-keys-${Date.now()}.jsonc`);
+  const configFile = join(tmpdir(), `omp-callgate-keys-${Date.now()}.jsonc`);
   writeFileSync(
     configFile,
     JSON.stringify({ $schema: "./schemas/config.schema.json", safeCommandAllowList: ["make"], modes: "auto" }),
   );
-  const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
-  process.env.CLEARANCE_CONFIG_PATH = configFile;
+  const previousConfigPath = process.env.CALLGATE_CONFIG_PATH;
+  process.env.CALLGATE_CONFIG_PATH = configFile;
   try {
     const loaded = loadConfig(configFile);
     assert.equal(loaded.warning, undefined);
     assert.match(loaded.notice ?? "", /unknown key\(s\) that are ignored: safeCommandAllowList, modes\./);
-    const freshConfigFile = join(tmpdir(), `omp-clearance-fresh-${Date.now()}.jsonc`);
+    const freshConfigFile = join(tmpdir(), `omp-callgate-fresh-${Date.now()}.jsonc`);
     try {
       assert.equal(loadConfig(freshConfigFile).notice, undefined);
     } finally {
@@ -470,7 +470,7 @@ await test("config notices and read warnings are reported once at session start,
     }
 
     const handlers = new Map<string, (event: unknown, context?: unknown) => unknown>();
-    ompClearanceExtension({
+    ompCallgateExtension({
       on: (event, handler) => {
         handlers.set(event, handler);
       },
@@ -491,7 +491,7 @@ await test("config notices and read warnings are reported once at session start,
 
     writeFileSync(configFile, "{");
     const warningHandlers = new Map<string, (event: unknown, context: ExtensionContextLike) => unknown>();
-    ompClearanceExtension({
+    ompCallgateExtension({
       on: (event, handler) => {
         warningHandlers.set(event, handler);
       },
@@ -499,28 +499,28 @@ await test("config notices and read warnings are reported once at session start,
     await warningHandlers.get("session_start")?.({}, sessionCtx);
     await warningHandlers.get("tool_call")?.({ toolName: "read", input: { path: "a.ts" } }, sessionCtx);
     await warningHandlers.get("tool_call")?.({ toolName: "read", input: { path: "b.ts" } }, sessionCtx);
-    assert.equal(notices.filter((message) => message.includes("Failed to read omp-clearance config")).length, 1);
+    assert.equal(notices.filter((message) => message.includes("Failed to read omp-callgate config")).length, 1);
 
     writeFileSync(configFile, JSON.stringify({ reviewer: "ai" }));
     await warningHandlers.get("tool_call")?.({ toolName: "read", input: { path: "a.ts" } }, sessionCtx);
     assert.deepEqual(await warningHandlers.get("before_agent_start")?.({ systemPrompt: ["base"] }, sessionCtx), {
       systemPrompt: ["base", SYSTEM_PROMPT_NOTE],
     });
-    assert.equal(notices.filter((message) => message.includes("Failed to read omp-clearance config")).length, 1);
+    assert.equal(notices.filter((message) => message.includes("Failed to read omp-callgate config")).length, 1);
   } finally {
     rmSync(configFile, { force: true });
     if (previousConfigPath === undefined) {
-      delete process.env.CLEARANCE_CONFIG_PATH;
+      delete process.env.CALLGATE_CONFIG_PATH;
     } else {
-      process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
+      process.env.CALLGATE_CONFIG_PATH = previousConfigPath;
     }
   }
 });
 
 await test("audit logging does not throw", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-test-"));
-  const previousLogsDir = process.env.CLEARANCE_LOGS_DIR;
-  process.env.CLEARANCE_LOGS_DIR = dir;
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-test-"));
+  const previousLogsDir = process.env.CALLGATE_LOGS_DIR;
+  process.env.CALLGATE_LOGS_DIR = dir;
   await evaluateToolCall(
     { toolName: "bash", input: { command: "git status" } },
     ctx(),
@@ -528,5 +528,5 @@ await test("audit logging does not throw", async () => {
     new SessionApprovalStore(),
   );
   rmSync(dir, { recursive: true, force: true });
-  process.env.CLEARANCE_LOGS_DIR = previousLogsDir;
+  process.env.CALLGATE_LOGS_DIR = previousLogsDir;
 });

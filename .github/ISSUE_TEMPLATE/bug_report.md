@@ -24,12 +24,12 @@ What should happen?
 
 ## Actual behavior
 
-What happened instead? `/clearance explain <tool> <args>` output helps for routing problems.
+What happened instead? `/callgate explain <tool> <args>` output helps for routing problems.
 
 ## Environment
 
 - OMP version (`omp --version`):
-- omp-clearance version or commit:
+- omp-callgate version or commit:
 - Reviewer (`ai`, `manual` or `off`):
 - OS:
 

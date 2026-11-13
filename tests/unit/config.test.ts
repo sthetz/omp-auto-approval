@@ -39,7 +39,7 @@ await test("normalizeConfig defaults to off and reads reviewer as the starting v
   assert.equal(normalizeConfig({ reviewer: "ai" }).reviewer, "ai");
   assert.equal(normalizeConfig({ reviewer: "manual" }).reviewer, "manual");
   assert.equal(normalizeConfig({ reviewer: "bad", enabled: true, mode: "auto" }).reviewer, "off");
-  const legacyDir = mkdtempSync(join(tmpdir(), "omp-clearance-legacy-config-"));
+  const legacyDir = mkdtempSync(join(tmpdir(), "omp-callgate-legacy-config-"));
   const legacyPath = join(legacyDir, "config.jsonc");
   try {
     writeFileSync(legacyPath, JSON.stringify({ enabled: true, mode: "auto" }));
@@ -59,7 +59,7 @@ await test("normalizeConfig defaults to off and reads reviewer as the starting v
 });
 
 await test("reviewer state uses config only when missing, reloads on mtime, and fails closed as manual", () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-reviewer-state-"));
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-reviewer-state-"));
   const path = join(dir, "reviewer-state.json");
   const cfg = config({ reviewer: "manual" });
   try {
@@ -97,35 +97,35 @@ await test("reviewer state uses config only when missing, reloads on mtime, and 
   }
 });
 
-await test("config paths come from CLEARANCE env vars, else the extension directory", () => {
-  const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
-  const previousLogsDir = process.env.CLEARANCE_LOGS_DIR;
+await test("config paths come from CALLGATE env vars, else the extension directory", () => {
+  const previousConfigPath = process.env.CALLGATE_CONFIG_PATH;
+  const previousLogsDir = process.env.CALLGATE_LOGS_DIR;
   try {
-    delete process.env.CLEARANCE_CONFIG_PATH;
-    delete process.env.CLEARANCE_LOGS_DIR;
+    delete process.env.CALLGATE_CONFIG_PATH;
+    delete process.env.CALLGATE_LOGS_DIR;
     assert.equal(configPath(), join(extensionRoot(), "config.jsonc"));
     assert.equal(logsDir(), join(extensionRoot(), "logs"));
 
-    process.env.CLEARANCE_CONFIG_PATH = "/tmp/clearance-config.jsonc";
-    process.env.CLEARANCE_LOGS_DIR = "/tmp/clearance-logs";
-    assert.equal(configPath(), "/tmp/clearance-config.jsonc");
-    assert.equal(logsDir(), "/tmp/clearance-logs");
+    process.env.CALLGATE_CONFIG_PATH = "/tmp/callgate-config.jsonc";
+    process.env.CALLGATE_LOGS_DIR = "/tmp/callgate-logs";
+    assert.equal(configPath(), "/tmp/callgate-config.jsonc");
+    assert.equal(logsDir(), "/tmp/callgate-logs");
   } finally {
     if (previousConfigPath === undefined) {
-      delete process.env.CLEARANCE_CONFIG_PATH;
+      delete process.env.CALLGATE_CONFIG_PATH;
     } else {
-      process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
+      process.env.CALLGATE_CONFIG_PATH = previousConfigPath;
     }
     if (previousLogsDir === undefined) {
-      delete process.env.CLEARANCE_LOGS_DIR;
+      delete process.env.CALLGATE_LOGS_DIR;
     } else {
-      process.env.CLEARANCE_LOGS_DIR = previousLogsDir;
+      process.env.CALLGATE_LOGS_DIR = previousLogsDir;
     }
   }
 });
 
 await test("config saves only non-default values", () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-config-"));
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-config-"));
   const file = join(dir, "config.jsonc");
   try {
     const created = loadConfig(file);
@@ -160,7 +160,7 @@ await test("safeCommandAllowlist and blockCommands are no longer read, and say s
       "blockCommands is no longer read and its 2 entries are ignored: write them as block rules in rules.jsonc",
     ],
   ] as const) {
-    const dir = mkdtempSync(join(tmpdir(), "omp-clearance-moved-"));
+    const dir = mkdtempSync(join(tmpdir(), "omp-callgate-moved-"));
     try {
       writeFileSync(join(dir, "config.jsonc"), JSON.stringify(raw));
       const loaded = loadConfig(join(dir, "config.jsonc"));
@@ -171,7 +171,7 @@ await test("safeCommandAllowlist and blockCommands are no longer read, and say s
       rmSync(dir, { recursive: true, force: true });
     }
   }
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-moved-"));
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-moved-"));
   try {
     writeFileSync(join(dir, "config.jsonc"), JSON.stringify({ safeCommandAllowlist: [], blockCommands: [] }));
     assert.equal(loadConfig(join(dir, "config.jsonc")).notice, undefined);

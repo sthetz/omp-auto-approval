@@ -9,7 +9,7 @@ import {
 } from "./command-rules.js";
 
 /**
- * Text for `/clearance rules`: what the command rules in use say, and
+ * Text for `/callgate rules`: what the command rules in use say, and
  * where each part comes from.
  */
 
@@ -118,7 +118,7 @@ export function rulesOverview(rules: CommandRules): string {
     rules.rules.length ? "rules (block, then ask, then review wins over any allow):" : "rules: none",
     ...rules.rules.flatMap(ruleLines).map((line) => `  ${line}`),
     "",
-    "/clearance rules <program | rule id> shows one entry.",
+    "/callgate rules <program | rule id> shows one entry.",
   ].join("\n");
 }
 

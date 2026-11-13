@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { classifyAction } from "../../src/classifier.js";
-import type { ClearanceConfig, ExtensionContextLike } from "../../src/types.js";
+import type { CallgateConfig, ExtensionContextLike } from "../../src/types.js";
 import { test } from "node:test";
 
-const config: ClearanceConfig = {
+const config: CallgateConfig = {
   reviewer: "ai",
   classifierModel: "openrouter/some-model",
   approvalTimeoutSeconds: 30,

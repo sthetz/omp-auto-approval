@@ -1,7 +1,7 @@
 {
   // Only values that differ from the defaults need to be listed.
   // Starting reviewer only while reviewer-state.json does not exist.
-  // /clearance ai|manual|off writes that shared state file, not this config.
+  // /callgate ai|manual|off writes that shared state file, not this config.
   "reviewer": "ai",
   "classifierModel": null,
   "approvalTimeoutSeconds": 30,

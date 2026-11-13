@@ -38,7 +38,7 @@ node --import tsx --test tests/unit/fast-path.test.ts
 node --import tsx --test --test-name-pattern="sed scripts" tests/unit/*.test.ts
 ```
 
-`config/default-rules.jsonc` is validated strictly when it loads: an unknown key, kind or check name, or an option listed twice, is an error. Then every bash command is blocked in every reviewer mode, including `off`, until the file is fixed; `/clearance status` says why. Default, user and included files are checked for changes on every tool call and reload automatically. `npm test` loads the defaults, checks `schemas/rules.schema.json` against the code, and covers broken-file and include reloads.
+`config/default-rules.jsonc` is validated strictly when it loads: an unknown key, kind or check name, or an option listed twice, is an error. Then every bash command is blocked in every reviewer mode, including `off`, until the file is fixed; `/callgate status` says why. Default, user and included files are checked for changes on every tool call and reload automatically. `npm test` loads the defaults, checks `schemas/rules.schema.json` against the code, and covers broken-file and include reloads.
 
 ### Internal classifier evaluation
 
@@ -71,7 +71,7 @@ sets, not a frozen holdout or a model leaderboard.
 
 The report treats false allows, false denies and individual failures as
 measurements, not exit-status thresholds. The harness uses the default
-classifier prompt and timeout rather than local clearance guidance.
+classifier prompt and timeout rather than local callgate guidance.
 
 ### Decision diff
 
@@ -152,13 +152,13 @@ npm run e2e:omp -- --keep         # keep the temporary directories to inspect
 OMP=/path/to/omp npm run e2e:omp  # a specific OMP build
 ```
 
-It needs no API key and makes no request beyond the local fake model. Point `OMP` at the real binary if your `omp` is a wrapper that needs a keyring or a login: the scenarios pass OMP only `PATH` and their own temporary paths, and stop at the first one where OMP never runs the extension. Prompts can't be answered in print mode, so `manual` asks are covered by the unit tests, and the model selector needs a manual look: run `/clearance model` in a real session.
+It needs no API key and makes no request beyond the local fake model. Point `OMP` at the real binary if your `omp` is a wrapper that needs a keyring or a login: the scenarios pass OMP only `PATH` and their own temporary paths, and stop at the first one where OMP never runs the extension. Prompts can't be answered in print mode, so `manual` asks are covered by the unit tests, and the model selector needs a manual look: run `/callgate model` in a real session.
 
 To add a scenario, add an entry to `SCENARIOS` in `tests/omp-e2e/run.ts`: the reviewer, the classifier's verdict, the agent's tool calls, an optional rules file, and the checks. Make sure a check can fail: break the behaviour it covers once and watch it go red.
 
 ### Your own command corpus
 
-Real agent commands make the best test input. `npm run oracle:corpus` collects the bash commands from your local Claude Code transcripts (`~/.claude/projects`), OMP sessions (`~/.omp/agent/sessions`) and Kimi Code sessions (`~/.kimi-code/sessions`). It writes them to `~/.cache/omp-clearance/shell-corpus.jsonl`, readable only by you. `--claude`, `--omp` and `--kimi` take other directories, and `--out` another file.
+Real agent commands make the best test input. `npm run oracle:corpus` collects the bash commands from your local Claude Code transcripts (`~/.claude/projects`), OMP sessions (`~/.omp/agent/sessions`) and Kimi Code sessions (`~/.kimi-code/sessions`). It writes them to `~/.cache/omp-callgate/shell-corpus.jsonl`, readable only by you. `--claude`, `--omp` and `--kimi` take other directories, and `--out` another file.
 
 `oracle:shell` and `decisions:diff` read every `shell-corpus*.jsonl` in that directory. To add commands from another machine, run `npm run oracle:corpus -- --out shell-corpus-<host>.jsonl` there and copy the file next to yours.
 

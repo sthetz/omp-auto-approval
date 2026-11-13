@@ -2,18 +2,18 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import ompClearanceExtension from "../../index.js";
+import ompCallgateExtension from "../../index.js";
 import { loadConfig } from "../../src/extension-config.js";
 import { type ExtensionContextLike } from "../../src/types.js";
 import { test } from "node:test";
 import { ctx } from "./helpers.js";
 
-await test("clearance model command opens model selector and persists selection", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-config-"));
-  const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
-  process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
+await test("callgate model command opens model selector and persists selection", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-config-"));
+  const previousConfigPath = process.env.CALLGATE_CONFIG_PATH;
+  process.env.CALLGATE_CONFIG_PATH = join(dir, "config.jsonc");
   const commandHandlers = new Map<string, (args: string, context: ExtensionContextLike) => Promise<void> | void>();
-  ompClearanceExtension({
+  ompCallgateExtension({
     on: () => {},
     registerCommand: (name, definition) => {
       commandHandlers.set(name, definition.handler);
@@ -22,7 +22,7 @@ await test("clearance model command opens model selector and persists selection"
 
   let title = "";
   const selectedOptions: string[][] = [];
-  await commandHandlers.get("clearance")?.(
+  await commandHandlers.get("callgate")?.(
     "model",
     ctx({
       ui: {
@@ -44,21 +44,21 @@ await test("clearance model command opens model selector and persists selection"
 
   assert.match(title, /Select approval classifier model/);
   assert.deepEqual(selectedOptions[0], ["current", "other-provider/other-model", "review-provider/review-model"]);
-  assert.equal(loadConfig(process.env.CLEARANCE_CONFIG_PATH).config.classifierModel, "review-provider/review-model");
+  assert.equal(loadConfig(process.env.CALLGATE_CONFIG_PATH).config.classifierModel, "review-provider/review-model");
   rmSync(dir, { recursive: true, force: true });
   if (previousConfigPath === undefined) {
-    delete process.env.CLEARANCE_CONFIG_PATH;
+    delete process.env.CALLGATE_CONFIG_PATH;
   } else {
-    process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
+    process.env.CALLGATE_CONFIG_PATH = previousConfigPath;
   }
 });
 
-await test("clearance model command uses the OMP custom selector in TUI mode", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-config-"));
-  const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
-  process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
+await test("callgate model command uses the OMP custom selector in TUI mode", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-config-"));
+  const previousConfigPath = process.env.CALLGATE_CONFIG_PATH;
+  process.env.CALLGATE_CONFIG_PATH = join(dir, "config.jsonc");
   const commandHandlers = new Map<string, (args: string, context: ExtensionContextLike) => Promise<void> | void>();
-  ompClearanceExtension({
+  ompCallgateExtension({
     on: () => {},
     registerCommand: (name, definition) => {
       commandHandlers.set(name, definition.handler);
@@ -68,7 +68,7 @@ await test("clearance model command uses the OMP custom selector in TUI mode", a
   let rendered: string[] = [];
   let usedCustom = false;
   let usedSelect = false;
-  await commandHandlers.get("clearance")?.(
+  await commandHandlers.get("callgate")?.(
     "model",
     ctx({
       mode: "tui",
@@ -108,28 +108,28 @@ await test("clearance model command uses the OMP custom selector in TUI mode", a
     true,
   );
   assert.equal(
-    rendered.some((line) => line.includes("current [clearance]")),
+    rendered.some((line) => line.includes("current [callgate]")),
     true,
   );
   assert.equal(
     rendered.some((line) => line.includes("review-model [review-provider]")),
     true,
   );
-  assert.equal(loadConfig(process.env.CLEARANCE_CONFIG_PATH).config.classifierModel, "review-provider/review-model");
+  assert.equal(loadConfig(process.env.CALLGATE_CONFIG_PATH).config.classifierModel, "review-provider/review-model");
   rmSync(dir, { recursive: true, force: true });
   if (previousConfigPath === undefined) {
-    delete process.env.CLEARANCE_CONFIG_PATH;
+    delete process.env.CALLGATE_CONFIG_PATH;
   } else {
-    process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
+    process.env.CALLGATE_CONFIG_PATH = previousConfigPath;
   }
 });
 
 await test("model selector truncates every rendered line to the terminal width", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-config-"));
-  const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
-  process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-config-"));
+  const previousConfigPath = process.env.CALLGATE_CONFIG_PATH;
+  process.env.CALLGATE_CONFIG_PATH = join(dir, "config.jsonc");
   const commandHandlers = new Map<string, (args: string, context: ExtensionContextLike) => Promise<void> | void>();
-  ompClearanceExtension({
+  ompCallgateExtension({
     on: () => {},
     registerCommand: (name, definition) => {
       commandHandlers.set(name, definition.handler);
@@ -137,7 +137,7 @@ await test("model selector truncates every rendered line to the terminal width",
   });
 
   let rendered: string[] = [];
-  await commandHandlers.get("clearance")?.(
+  await commandHandlers.get("callgate")?.(
     "model",
     ctx({
       mode: "tui",
@@ -209,18 +209,18 @@ await test("model selector truncates every rendered line to the terminal width",
 
   rmSync(dir, { recursive: true, force: true });
   if (previousConfigPath === undefined) {
-    delete process.env.CLEARANCE_CONFIG_PATH;
+    delete process.env.CALLGATE_CONFIG_PATH;
   } else {
-    process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
+    process.env.CALLGATE_CONFIG_PATH = previousConfigPath;
   }
 });
 
-await test("clearance model command does not accept model IDs as arguments", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-config-"));
-  const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
-  process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
+await test("callgate model command does not accept model IDs as arguments", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-config-"));
+  const previousConfigPath = process.env.CALLGATE_CONFIG_PATH;
+  process.env.CALLGATE_CONFIG_PATH = join(dir, "config.jsonc");
   const commandHandlers = new Map<string, (args: string, context: ExtensionContextLike) => Promise<void> | void>();
-  ompClearanceExtension({
+  ompCallgateExtension({
     on: () => {},
     registerCommand: (name, definition) => {
       commandHandlers.set(name, definition.handler);
@@ -228,24 +228,24 @@ await test("clearance model command does not accept model IDs as arguments", asy
   });
 
   const notifications: string[] = [];
-  const command = commandHandlers.get("clearance");
+  const command = commandHandlers.get("callgate");
   const commandContext = ctx({ ui: { notify: (message) => notifications.push(message) } });
   await command?.("model review-model", commandContext);
   await command?.("model review-provider/review-model", commandContext);
 
-  assert.equal(loadConfig(process.env.CLEARANCE_CONFIG_PATH).config.classifierModel, null);
+  assert.equal(loadConfig(process.env.CALLGATE_CONFIG_PATH).config.classifierModel, null);
   assert.deepEqual(
-    notifications.filter((message) => message.includes("Use /clearance model")),
+    notifications.filter((message) => message.includes("Use /callgate model")),
     [
-      "Use /clearance model to select an approval classifier model.",
-      "Use /clearance model to select an approval classifier model.",
+      "Use /callgate model to select an approval classifier model.",
+      "Use /callgate model to select an approval classifier model.",
     ],
   );
 
   rmSync(dir, { recursive: true, force: true });
   if (previousConfigPath === undefined) {
-    delete process.env.CLEARANCE_CONFIG_PATH;
+    delete process.env.CALLGATE_CONFIG_PATH;
   } else {
-    process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
+    process.env.CALLGATE_CONFIG_PATH = previousConfigPath;
   }
 });

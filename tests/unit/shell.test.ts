@@ -193,7 +193,7 @@ await test("shell oracle follows && and || and matches pipelines in any order", 
 });
 
 await test("bash calls with fields that change how they run are not fast-pathed", () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-fields-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-fields-"));
   try {
     const route = (input: Record<string, unknown>) =>
       staticRoute("bash", input, { cwd: workspace, config: config(), tools: [], hasUI: false });
@@ -216,7 +216,7 @@ await test("bash calls with fields that change how they run are not fast-pathed"
 });
 
 await test("commands that can leave a hook in the shell are recognised", () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-hooks-"));
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-hooks-"));
   mkdirSync(join(dir, ".venv/bin"), { recursive: true });
   // Like a virtualenv activate script: functions, PS1 and PATH, no hooks.
   writeFileSync(

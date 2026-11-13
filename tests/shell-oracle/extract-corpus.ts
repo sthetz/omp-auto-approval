@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 
 export const DEFAULT_CORPUS = join(
   process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
-  "omp-clearance",
+  "omp-callgate",
   "shell-corpus.jsonl",
 );
 

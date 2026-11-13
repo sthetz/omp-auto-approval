@@ -103,7 +103,7 @@ await test("projected context includes the latest nested user message", () => {
             type: "message",
             message: {
               role: "user",
-              content: [{ type: "text", text: "删除文件：/tmp/omp-clearance-test/delete-target.json" }],
+              content: [{ type: "text", text: "删除文件：/tmp/omp-callgate-test/delete-target.json" }],
             },
           },
         ],
@@ -111,9 +111,9 @@ await test("projected context includes the latest nested user message", () => {
     }),
     {
       toolName: "bash",
-      input: { command: "rm /tmp/omp-clearance-test/delete-target.json" },
+      input: { command: "rm /tmp/omp-callgate-test/delete-target.json" },
       cwd: "/workspace/project",
-      actionSummary: "bash: rm /tmp/omp-clearance-test/delete-target.json",
+      actionSummary: "bash: rm /tmp/omp-callgate-test/delete-target.json",
       actionHash: "test",
     },
   );
@@ -170,7 +170,7 @@ await test("projected context uses only the trailing user text from a skill prom
 await test("classifier receives latest user request for current approval", async () => {
   let classifierContext = "";
   const result = await evaluateToolCall(
-    { toolName: "bash", input: { command: "rm /tmp/omp-clearance-test/delete-target.json" } },
+    { toolName: "bash", input: { command: "rm /tmp/omp-callgate-test/delete-target.json" } },
     ctx({
       cwd: "/workspace/project",
       sessionManager: {
@@ -179,7 +179,7 @@ await test("classifier receives latest user request for current approval", async
             type: "message",
             message: {
               role: "user",
-              content: [{ type: "text", text: "删除文件：/tmp/omp-clearance-test/delete-target.json" }],
+              content: [{ type: "text", text: "删除文件：/tmp/omp-callgate-test/delete-target.json" }],
             },
           },
         ],
@@ -763,7 +763,7 @@ await test("messages OMP attributes to an agent never count as the user's", () =
 });
 
 await test("a subagent's classifier takes the user's messages from the parent session files", () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-parent-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-parent-"));
   const line = (value: unknown) => JSON.stringify(value);
   const message = (id: string, parentId: string | null, role: string, content: string, attribution: string) =>
     line({ type: "message", id, parentId, message: { role, content, attribution } });

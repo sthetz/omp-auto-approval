@@ -12,13 +12,13 @@
 //   Block        deleting namespaces, or everything of a kind
 //
 // To use it, copy it next to your rules.jsonc (for example to
-// ~/.omp/agent/omp-clearance/kubectl.jsonc) and include it from there:
+// ~/.omp/agent/omp-callgate/kubectl.jsonc) and include it from there:
 //
-//   { "include": ["~/.omp/agent/omp-clearance/kubectl.jsonc"] }
+//   { "include": ["~/.omp/agent/omp-callgate/kubectl.jsonc"] }
 //
 // A program can be defined in one file only, so remove any kubectl entry
 // from rules.jsonc first. To change something here, edit your copy:
-// `/clearance explain kubectl …` shows what a command would do, and
+// `/callgate explain kubectl …` shows what a command would do, and
 // `npm run decisions:diff -- --rules <your rules.jsonc>` in a checkout what
 // a change does to the commands you run.
 //

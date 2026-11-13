@@ -71,7 +71,7 @@ export async function requestHumanApproval(
   // Set by onTimeout while select() waits; typed boolean, since the compiler
   // can't see a callback's assignment and would treat it as always false.
   let timedOut = false as boolean;
-  const selected = await ctx.ui.select(`${options.title ?? "omp-clearance"}\n${details}`, choices, {
+  const selected = await ctx.ui.select(`${options.title ?? "omp-callgate"}\n${details}`, choices, {
     timeout: options.timeoutSeconds * 1000,
     onTimeout: () => {
       timedOut = true;

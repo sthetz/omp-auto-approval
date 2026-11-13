@@ -1,7 +1,7 @@
 // An example user rules file. Copy it to rules.jsonc next to config.jsonc
-// (or set CLEARANCE_RULES_PATH) and edit it. Default, main and included
+// (or set CALLGATE_RULES_PATH) and edit it. Default, main and included
 // files are checked on every tool call and reload when they change;
-// /clearance status shows which files are in use, or what is wrong.
+// /callgate status shows which files are in use, or what is wrong.
 //
 // Entries only say what may skip review. Everything they don't list is
 // reviewed as before, and the checks in code still apply to every command:
@@ -18,7 +18,7 @@
   // More rules files, by absolute path or ~/. config/examples/ has
   // ready-made ones, such as a kubectl policy: copy it next to this file and
   // include it.
-  // "include": ["~/.omp/agent/omp-clearance/kubectl.jsonc"],
+  // "include": ["~/.omp/agent/omp-callgate/kubectl.jsonc"],
 
   "programs": {
     // A program the built-in rules don't know. Its own options come before

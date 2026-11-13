@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import ompClearanceExtension from "../../index.js";
+import ompCallgateExtension from "../../index.js";
 import { logPath } from "../../src/extension-config.js";
 import { evaluateToolCall, type ToolCallDecision } from "../../src/omp-host.js";
 import { SessionApprovalStore } from "../../src/session-approval-store.js";
@@ -52,13 +52,13 @@ await test("off runs review without a classifier but still enforces block and as
 });
 
 await test("switching reviewer off preserves the consecutive denial count", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-off-counter-"));
-  const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
-  process.env.CLEARANCE_CONFIG_PATH = join(dir, "config.jsonc");
-  writeFileSync(process.env.CLEARANCE_CONFIG_PATH, JSON.stringify({ reviewer: "ai", maxConsecutiveDenials: 2 }));
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-off-counter-"));
+  const previousConfigPath = process.env.CALLGATE_CONFIG_PATH;
+  process.env.CALLGATE_CONFIG_PATH = join(dir, "config.jsonc");
+  writeFileSync(process.env.CALLGATE_CONFIG_PATH, JSON.stringify({ reviewer: "ai", maxConsecutiveDenials: 2 }));
   const events = new Map<string, (event: unknown, context: unknown) => unknown>();
   let command: ((args: unknown, context: unknown) => Promise<void> | void) | undefined;
-  ompClearanceExtension({
+  ompCallgateExtension({
     on: (event, handler) => {
       events.set(event, handler);
     },
@@ -86,9 +86,9 @@ await test("switching reviewer off preserves the consecutive denial count", asyn
     );
   } finally {
     if (previousConfigPath === undefined) {
-      delete process.env.CLEARANCE_CONFIG_PATH;
+      delete process.env.CALLGATE_CONFIG_PATH;
     } else {
-      process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
+      process.env.CALLGATE_CONFIG_PATH = previousConfigPath;
     }
     rmSync(dir, { recursive: true, force: true });
   }
@@ -143,9 +143,9 @@ await test("ai denies to the agent first, then asks at the threshold with the cl
 });
 
 await test("exact session approval audits do not repeat an earlier classifier denial", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-exact-audit-"));
-  const previousLogsDir = process.env.CLEARANCE_LOGS_DIR;
-  process.env.CLEARANCE_LOGS_DIR = dir;
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-exact-audit-"));
+  const previousLogsDir = process.env.CALLGATE_LOGS_DIR;
+  process.env.CALLGATE_LOGS_DIR = dir;
   const store = new SessionApprovalStore();
   const event = { toolName: "bash", input: { command: "make deploy" } };
   try {
@@ -167,9 +167,9 @@ await test("exact session approval audits do not repeat an earlier classifier de
     assert.equal(entries[1].classifierDecision, undefined);
   } finally {
     if (previousLogsDir === undefined) {
-      delete process.env.CLEARANCE_LOGS_DIR;
+      delete process.env.CALLGATE_LOGS_DIR;
     } else {
-      process.env.CLEARANCE_LOGS_DIR = previousLogsDir;
+      process.env.CALLGATE_LOGS_DIR = previousLogsDir;
     }
     rmSync(dir, { recursive: true, force: true });
   }
@@ -251,7 +251,7 @@ await test("the classifier and its cache see the command exactly as bash will ru
 });
 
 await test("an approved command that may hook the shell turns the bash fast path off for the session", async () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-latch-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-latch-"));
   const store = new SessionApprovalStore();
   const notices: string[] = [];
   let classifierCalls = 0;
@@ -286,7 +286,7 @@ await test("an approved command that may hook the shell turns the bash fast path
     assert.deepEqual(await run("git status"), {});
     assert.equal(classifierCalls, before + 1);
 
-    // /clearance off clears approvals but not the shell's latch; another session has its own.
+    // /callgate off clears approvals but not the shell's latch; another session has its own.
     store.clear();
     assert.equal(store.shellLatch("s1"), "`trap`");
     session = "s2";
@@ -451,14 +451,14 @@ await test("readonly, safe, off, classifier, cache, human, and exact allows all 
 });
 
 await test("denial-threshold audits keep the base reason for block and unanswered ask", async () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-threshold-audit-"));
-  const previousLogsDir = process.env.CLEARANCE_LOGS_DIR;
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-threshold-audit-"));
+  const previousLogsDir = process.env.CALLGATE_LOGS_DIR;
   try {
     for (const testCase of [
       { route: "blocked_command", commands: ["make a", "make b"], blockRules: ["make"] },
       { route: "ask_rule", commands: ["git reset --hard HEAD~1", "git reset --hard HEAD~2"], blockRules: [] },
     ]) {
-      process.env.CLEARANCE_LOGS_DIR = join(root, testCase.route);
+      process.env.CALLGATE_LOGS_DIR = join(root, testCase.route);
       const cfg = config({ reviewer: "ai", audit: true, maxConsecutiveDenials: 2, blockRules: testCase.blockRules });
       const store = new SessionApprovalStore();
       let second: ToolCallDecision = {};
@@ -479,9 +479,9 @@ await test("denial-threshold audits keep the base reason for block and unanswere
     }
   } finally {
     if (previousLogsDir === undefined) {
-      delete process.env.CLEARANCE_LOGS_DIR;
+      delete process.env.CALLGATE_LOGS_DIR;
     } else {
-      process.env.CLEARANCE_LOGS_DIR = previousLogsDir;
+      process.env.CALLGATE_LOGS_DIR = previousLogsDir;
     }
     rmSync(root, { recursive: true, force: true });
   }

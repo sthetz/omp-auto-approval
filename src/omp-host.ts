@@ -1,6 +1,6 @@
 import type {
   AuthResolution,
-  ClearanceConfig,
+  CallgateConfig,
   ExtensionContextLike,
   KeybindingsLike,
   Reviewer,
@@ -280,7 +280,7 @@ export type ToolResultReplacement = { content: unknown[]; isError?: true } | und
 export async function reviewToolResult(
   event: unknown,
   ctx: ExtensionContextLike,
-  config: ClearanceConfig,
+  config: CallgateConfig,
   options: { store: SessionApprovalStore; protectedFiles: string[] },
 ): Promise<ToolResultReplacement> {
   const { toolName, input, toolCallId } = canonicalToolCall(event);
@@ -311,7 +311,7 @@ export async function reviewToolResult(
       const { actionSummary, actionHash } = subject();
       await writeAudit(config, { event: "lsp_edit_mismatch", toolName, actionSummary, actionHash, line });
       ctx.ui?.notify?.(
-        `omp-clearance: an lsp ${action} that skipped review changed more than its preview showed, or its result could not be checked (${line}). lsp edits are reviewed for the rest of this session; check what it changed.`,
+        `omp-callgate: an lsp ${action} that skipped review changed more than its preview showed, or its result could not be checked (${line}). lsp edits are reviewed for the rest of this session; check what it changed.`,
         "warning",
       );
     }
@@ -349,7 +349,7 @@ export async function reviewToolResult(
 export async function evaluateToolCall(
   event: unknown,
   ctx: ExtensionContextLike,
-  config: ClearanceConfig,
+  config: CallgateConfig,
   store: SessionApprovalStore,
   options: {
     reviewer?: Reviewer;

@@ -13,11 +13,11 @@ import { test } from "node:test";
 import { config, ctx, staticRoute, CLASSIFIER_DENY_REASON, classifierDenyOptions } from "./helpers.js";
 
 await test("the extension's config and rules files are never written by the write fast path", () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-protect-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-protect-"));
   writeFileSync(join(workspace, "rules.jsonc"), "{}");
   symlinkSync(join(workspace, "rules.jsonc"), join(workspace, "link.jsonc"));
-  const previousRules = process.env.CLEARANCE_RULES_PATH;
-  const previousConfig = process.env.CLEARANCE_CONFIG_PATH;
+  const previousRules = process.env.CALLGATE_RULES_PATH;
+  const previousConfig = process.env.CALLGATE_CONFIG_PATH;
   try {
     const write = (path: string) => ({ path, content: "{}" });
     const protectedFiles = [join(workspace, "rules.jsonc"), join(workspace, "kube.jsonc")];
@@ -26,8 +26,8 @@ await test("the extension's config and rules files are never written by the writ
       assert.equal(isWorkspaceWriteFastPath(write(path), workspace, protectedFiles), false, path);
     }
     // The static evaluator protects config.jsonc and rules.jsonc even before they exist.
-    process.env.CLEARANCE_RULES_PATH = join(workspace, "new-rules.jsonc");
-    process.env.CLEARANCE_CONFIG_PATH = join(workspace, "config.jsonc");
+    process.env.CALLGATE_RULES_PATH = join(workspace, "new-rules.jsonc");
+    process.env.CALLGATE_CONFIG_PATH = join(workspace, "config.jsonc");
     const route = (path: string) =>
       staticRoute("write", write(path), { cwd: workspace, config: config(), tools: [], hasUI: false });
     assert.equal(route("notes.txt"), "workspace_write");
@@ -39,18 +39,18 @@ await test("the extension's config and rules files are never written by the writ
       null,
     );
   } finally {
-    process.env.CLEARANCE_RULES_PATH = previousRules;
+    process.env.CALLGATE_RULES_PATH = previousRules;
     if (previousConfig === undefined) {
-      delete process.env.CLEARANCE_CONFIG_PATH;
+      delete process.env.CALLGATE_CONFIG_PATH;
     } else {
-      process.env.CLEARANCE_CONFIG_PATH = previousConfig;
+      process.env.CALLGATE_CONFIG_PATH = previousConfig;
     }
     rmSync(workspace, { recursive: true, force: true });
   }
 });
 
 await test("writes that create or change a program are reviewed", async () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-program-write-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-program-write-"));
   writeFileSync(join(workspace, "tool.sh"), "#!/bin/sh\n");
   chmodSync(join(workspace, "tool.sh"), 0o755);
   writeFileSync(join(workspace, "notes.txt"), "notes\n");
@@ -85,9 +85,9 @@ await test("writes that create or change a program are reviewed", async () => {
 });
 
 await test("todo completion and wait bypass classifier review and audit local_state", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-orchestration-"));
-  const previousLogsDir = process.env.CLEARANCE_LOGS_DIR;
-  process.env.CLEARANCE_LOGS_DIR = dir;
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-orchestration-"));
+  const previousLogsDir = process.env.CALLGATE_LOGS_DIR;
+  process.env.CALLGATE_LOGS_DIR = dir;
   let classifierCalls = 0;
   try {
     for (const event of [
@@ -130,9 +130,9 @@ await test("todo completion and wait bypass classifier review and audit local_st
     );
   } finally {
     if (previousLogsDir === undefined) {
-      delete process.env.CLEARANCE_LOGS_DIR;
+      delete process.env.CALLGATE_LOGS_DIR;
     } else {
-      process.env.CLEARANCE_LOGS_DIR = previousLogsDir;
+      process.env.CALLGATE_LOGS_DIR = previousLogsDir;
     }
     rmSync(dir, { recursive: true, force: true });
   }
@@ -339,7 +339,7 @@ await test("name-based fast paths apply only to the host's builtin tools", async
 });
 
 await test("read fast path allows non-sensitive workspace targets and session-local URLs", async () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-read-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-read-"));
   const workspace = join(root, "workspace");
   mkdirSync(join(workspace, "src"), { recursive: true });
   try {
@@ -381,7 +381,7 @@ await test("read fast path allows non-sensitive workspace targets and session-lo
 });
 
 await test("read fast path reviews outside, sensitive, remote, and rewritten targets", async () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-read-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-read-"));
   const workspace = join(root, "workspace");
   const outside = join(root, "outside");
   mkdirSync(join(workspace, "src"), { recursive: true });
@@ -461,7 +461,7 @@ await test("read fast path reviews outside, sensitive, remote, and rewritten tar
 });
 
 await test("workspace write fast path rejects symlink escape", async () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-symlink-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-symlink-"));
   const workspace = join(root, "workspace");
   const outside = join(root, "outside");
   mkdirSync(workspace);
@@ -490,7 +490,7 @@ await test("workspace write fast path rejects symlink escape", async () => {
 });
 
 await test("workspace write fast path canonicalizes relative and traversal paths", async () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-paths-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-paths-"));
   const workspace = join(root, "workspace");
   const outside = join(root, "outside");
   mkdirSync(join(workspace, "src"), { recursive: true });
@@ -522,7 +522,7 @@ await test("workspace write fast path canonicalizes relative and traversal paths
 });
 
 await test("workspace write fast path rejects protected entries, rewritten path forms, and outside renames", async () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-protected-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-protected-"));
   const workspace = join(root, "workspace");
   mkdirSync(join(workspace, "src"), { recursive: true });
   mkdirSync(join(workspace, ".git"));
@@ -624,7 +624,7 @@ await test("workspace write fast path rejects protected entries, rewritten path 
 });
 
 await test("lsp queries and edit previews skip review; applied edits, builds and raw requests do not", async () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-lsp-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-lsp-"));
   const workspace = join(root, "workspace");
   mkdirSync(join(workspace, "src"), { recursive: true });
   mkdirSync(join(root, "outside"));
@@ -702,7 +702,7 @@ await test("lsp queries and edit previews skip review; applied edits, builds and
 });
 
 await test("lsp results that show source lines from unreadable files are withheld", async () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-lsp-result-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-lsp-result-"));
   const workspace = join(root, "workspace");
   const library = join(root, "library");
   mkdirSync(join(workspace, "src"), { recursive: true });
@@ -906,7 +906,7 @@ await test("lsp edit previews are read strictly, and applies are matched against
 });
 
 await test("an lsp edit that repeats a clean preview skips review once", async () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-lsp-edit-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-lsp-edit-"));
   mkdirSync(join(workspace, "src"));
   writeFileSync(join(workspace, "src", "a.ts"), "export const oldName = 1;\n");
   writeFileSync(join(workspace, "src", "tool.js"), "#!/usr/bin/env node\n");
@@ -1091,7 +1091,7 @@ await test("letting write xd://lsp through does not reset the denial count", asy
 });
 
 await test("readRoots extend the read fast path without exposing secrets", async () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-roots-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-roots-"));
   const workspace = join(root, "workspace");
   const library = join(root, "library");
   const sibling = join(root, "sibling");
@@ -1140,7 +1140,7 @@ await test("readRoots extend the read fast path without exposing secrets", async
 });
 
 await test("write fast path applies only to the host's own write and edit tools", async () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-write-source-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-write-source-"));
   try {
     for (const [source, expectReview] of [
       ["builtin", false],

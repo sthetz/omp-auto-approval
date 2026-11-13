@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import ompClearanceExtension from "../../index.js";
+import ompCallgateExtension from "../../index.js";
 import { compileCommandPattern } from "../../src/command-patterns.js";
 import { logPath } from "../../src/extension-config.js";
 import { evaluateToolCall } from "../../src/omp-host.js";
@@ -30,7 +30,7 @@ import {
 import { describeRule, rulesOverview } from "../../src/rules-report.js";
 import { parseJsonc } from "../../src/jsonc.js";
 import { SessionApprovalStore } from "../../src/session-approval-store.js";
-import { type ClearanceConfig, type ExtensionContextLike } from "../../src/types.js";
+import { type CallgateConfig, type ExtensionContextLike } from "../../src/types.js";
 import { test } from "node:test";
 import { TEST_PATH, required, reasonOf, config, ctx, classifierDenyOptions, KUBE_RULES } from "./helpers.js";
 
@@ -78,7 +78,7 @@ await test("the rules schema names the same kinds, checks and parsers as the cod
 });
 
 await test("a rules file with any problem is not used, and every bash call is blocked", () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-rules-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-rules-"));
   writeFileSync(join(workspace, "notes.txt"), "x\n");
   const file = join(workspace, "rules.jsonc");
   try {
@@ -160,7 +160,7 @@ await test("rules files take comments and trailing commas, but not comment marke
 });
 
 await test("a user rules file replaces, extends, and disables built-in entries", () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-user-rules-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-user-rules-"));
   writeFileSync(join(workspace, "notes.txt"), "x\n");
   const file = join(workspace, "rules.jsonc");
   try {
@@ -245,7 +245,7 @@ await test("a user rules file replaces, extends, and disables built-in entries",
 });
 
 await test("config/rules.example.jsonc loads and does what its comments say", () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-example-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-example-"));
   writeFileSync(join(workspace, "notes.txt"), "x\n");
   try {
     const rules = loadCommandRules(new URL("../../config/rules.example.jsonc", import.meta.url).pathname);
@@ -308,7 +308,7 @@ await test("every file in config/examples/ loads", () => {
 });
 
 await test("config/examples/kubectl.jsonc reads freely, reviews changes, asks before disruption", () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-kubectl-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-kubectl-"));
   try {
     const rules = loadCommandRules(new URL("../../config/examples/kubectl.jsonc", import.meta.url).pathname);
     assert.equal(rules.problem, null);
@@ -384,7 +384,7 @@ await test("config/examples/kubectl.jsonc reads freely, reviews changes, asks be
 });
 
 await test("user rules files can include others, by absolute or ~/ paths", () => {
-  const home = mkdtempSync(join(tmpdir(), "omp-clearance-include-home-"));
+  const home = mkdtempSync(join(tmpdir(), "omp-callgate-include-home-"));
   const previousHome = process.env.HOME;
   process.env.HOME = home;
   try {
@@ -464,7 +464,7 @@ await test("user rules files can include others, by absolute or ~/ paths", () =>
 });
 
 await test("a user rules file with any problem turns every bash fast path off", async () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-user-broken-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-user-broken-"));
   writeFileSync(join(workspace, "notes.txt"), "x\n");
   const file = join(workspace, "rules.jsonc");
   try {
@@ -559,13 +559,13 @@ await test("a user rules file with any problem turns every bash fast path off", 
 });
 
 await test("broken rules block bash in every reviewer, report loudly, and reload when fixed", async () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-broken-block-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-broken-block-"));
   writeFileSync(join(workspace, "notes.txt"), "x\n");
   writeFileSync(join(workspace, "rules.jsonc"), "{ broken");
-  const previousRules = process.env.CLEARANCE_RULES_PATH;
-  const previousConfig = process.env.CLEARANCE_CONFIG_PATH;
-  process.env.CLEARANCE_RULES_PATH = join(workspace, "rules.jsonc");
-  process.env.CLEARANCE_CONFIG_PATH = join(workspace, "config.jsonc");
+  const previousRules = process.env.CALLGATE_RULES_PATH;
+  const previousConfig = process.env.CALLGATE_CONFIG_PATH;
+  process.env.CALLGATE_RULES_PATH = join(workspace, "rules.jsonc");
+  process.env.CALLGATE_CONFIG_PATH = join(workspace, "config.jsonc");
   writeFileSync(join(workspace, "config.jsonc"), JSON.stringify({ reviewer: "ai" }));
   try {
     const rules = loadCommandRules(join(workspace, "rules.jsonc"));
@@ -636,7 +636,7 @@ await test("broken rules block bash in every reviewer, report loudly, and reload
 
     // Session start shows an error and keeps the problem in the status line.
     const handlers = new Map<string, (event: unknown, context?: unknown) => unknown>();
-    ompClearanceExtension({
+    ompCallgateExtension({
       on: (event, handler) => {
         handlers.set(event, handler);
       },
@@ -661,7 +661,7 @@ await test("broken rules block bash in every reviewer, report loudly, and reload
       notices.some(
         ([message, type]) =>
           type === "error" &&
-          /^omp-clearance: the command rules could not be loaded, so every bash call is blocked/.test(message),
+          /^omp-callgate: the command rules could not be loaded, so every bash call is blocked/.test(message),
       ),
       JSON.stringify(notices),
     );
@@ -680,14 +680,14 @@ await test("broken rules block bash in every reviewer, report loudly, and reload
     assert.equal(
       notices.filter(
         ([message, type]) =>
-          type === "info" && message === "omp-clearance: command rules reloaded; bash calls are no longer blocked.",
+          type === "info" && message === "omp-callgate: command rules reloaded; bash calls are no longer blocked.",
       ).length,
       1,
     );
   } finally {
     for (const [name, previous] of [
-      ["CLEARANCE_RULES_PATH", previousRules],
-      ["CLEARANCE_CONFIG_PATH", previousConfig],
+      ["CALLGATE_RULES_PATH", previousRules],
+      ["CALLGATE_CONFIG_PATH", previousConfig],
     ] as const) {
       if (previous === undefined) {
         delete process.env[name];
@@ -700,17 +700,17 @@ await test("broken rules block bash in every reviewer, report loudly, and reload
 });
 
 await test("rules includes reload when their contents change", async () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-include-reload-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-include-reload-"));
   const main = join(workspace, "rules.jsonc");
   const included = join(workspace, "included.jsonc");
   const validInclude = '{ "programs": { "whoami": { "opensNoFiles": true, "operands": "none" } } }';
   writeFileSync(main, JSON.stringify({ include: [included] }));
   writeFileSync(included, validInclude);
-  const previousRules = process.env.CLEARANCE_RULES_PATH;
-  const previousConfig = process.env.CLEARANCE_CONFIG_PATH;
-  process.env.CLEARANCE_RULES_PATH = main;
-  process.env.CLEARANCE_CONFIG_PATH = join(workspace, "config.jsonc");
-  writeFileSync(process.env.CLEARANCE_CONFIG_PATH, JSON.stringify({ reviewer: "off" }));
+  const previousRules = process.env.CALLGATE_RULES_PATH;
+  const previousConfig = process.env.CALLGATE_CONFIG_PATH;
+  process.env.CALLGATE_RULES_PATH = main;
+  process.env.CALLGATE_CONFIG_PATH = join(workspace, "config.jsonc");
+  writeFileSync(process.env.CALLGATE_CONFIG_PATH, JSON.stringify({ reviewer: "off" }));
   const handlers = new Map<string, (event: unknown, context?: unknown) => unknown>();
   const notices: string[] = [];
   const sessionCtx = ctx({
@@ -723,7 +723,7 @@ await test("rules includes reload when their contents change", async () => {
     },
   });
   try {
-    ompClearanceExtension({
+    ompCallgateExtension({
       on: (event, handler) => {
         handlers.set(event, handler);
       },
@@ -770,8 +770,8 @@ await test("rules includes reload when their contents change", async () => {
     }
   } finally {
     for (const [name, previous] of [
-      ["CLEARANCE_RULES_PATH", previousRules],
-      ["CLEARANCE_CONFIG_PATH", previousConfig],
+      ["CALLGATE_RULES_PATH", previousRules],
+      ["CALLGATE_CONFIG_PATH", previousConfig],
     ] as const) {
       if (previous === undefined) {
         delete process.env[name];
@@ -784,7 +784,7 @@ await test("rules includes reload when their contents change", async () => {
 });
 
 await test("command rules match the command's text and the most restrictive one wins", () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-kube-"));
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-kube-"));
   try {
     writeFileSync(join(dir, "rules.jsonc"), KUBE_RULES);
     const rules = loadCommandRules(join(dir, "rules.jsonc"));
@@ -928,7 +928,7 @@ await test("the built-in rules block, ask about, or review commands rarely right
 });
 
 await test("a built-in rule can be disabled by id, and its id is then free", () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-disable-rule-"));
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-disable-rule-"));
   try {
     writeFileSync(
       join(dir, "rules.jsonc"),
@@ -1011,7 +1011,7 @@ await test("command rule patterns: alternatives, globs, grouped flags, regexes",
 });
 
 await test("command rules are validated: ids, outcomes, patterns", () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-rule-errors-"));
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-rule-errors-"));
   try {
     const broken: [string, RegExp][] = [
       ['{ "rules": [{ "match": "x y", "outcome": "review" }] }', /rules\[0\]\.id: expected a name/],
@@ -1070,7 +1070,7 @@ await test("command rules are validated: ids, outcomes, patterns", () => {
 });
 
 await test("block, ask and review rules take precedence over every fast path", async () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-rule-routes-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-rule-routes-"));
   writeFileSync(join(workspace, "notes.txt"), "x\n");
   const file = join(workspace, "rules.jsonc");
   try {
@@ -1100,7 +1100,7 @@ await test("block, ask and review rules take precedence over every fast path", a
     };
     const run = async (
       command: string,
-      overrides: Partial<ClearanceConfig> = {},
+      overrides: Partial<CallgateConfig> = {},
       extra: Partial<ExtensionContextLike> = {},
       store = new SessionApprovalStore(),
       with_ = rules,
@@ -1221,9 +1221,9 @@ await test("block, ask and review rules take precedence over every fast path", a
 });
 
 await test("audit entries name the rules that decided", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-rule-audit-"));
-  const previousLogsDir = process.env.CLEARANCE_LOGS_DIR;
-  process.env.CLEARANCE_LOGS_DIR = join(dir, "logs");
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-rule-audit-"));
+  const previousLogsDir = process.env.CALLGATE_LOGS_DIR;
+  process.env.CALLGATE_LOGS_DIR = join(dir, "logs");
   try {
     writeFileSync(
       join(dir, "rules.jsonc"),
@@ -1277,16 +1277,16 @@ await test("audit entries name the rules that decided", async () => {
     );
   } finally {
     if (previousLogsDir === undefined) {
-      delete process.env.CLEARANCE_LOGS_DIR;
+      delete process.env.CALLGATE_LOGS_DIR;
     } else {
-      process.env.CLEARANCE_LOGS_DIR = previousLogsDir;
+      process.env.CALLGATE_LOGS_DIR = previousLogsDir;
     }
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-await test("/clearance rules describes the rules in use", () => {
-  const dir = mkdtempSync(join(tmpdir(), "omp-clearance-rules-report-"));
+await test("/callgate rules describes the rules in use", () => {
+  const dir = mkdtempSync(join(tmpdir(), "omp-callgate-rules-report-"));
   try {
     writeFileSync(
       join(dir, "rules.jsonc"),

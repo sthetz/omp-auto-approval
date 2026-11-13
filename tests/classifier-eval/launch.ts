@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { parseArgs, USAGE } from "./cli.js";
 
@@ -16,15 +17,23 @@ try {
 }
 
 const host = fileURLToPath(new URL("./host.ts", import.meta.url));
-const args = ["--no-session", "--no-extensions", "--no-skills", "--no-rules", "--no-context-files", "-e", host];
+// Keep normal extension discovery: providers such as llm-gw are registered by
+// user extensions. The explicit eval host still exits before an agent turn.
+const args = ["--no-session", "--no-skills", "--no-rules", "--no-context-files", "-e", host];
 const bootstrapModel = process.env.OMP_CLASSIFIER_EVAL_MODEL || requestedModel;
 if (bootstrapModel) {
   args.push("--model", bootstrapModel);
 }
-args.push("-p", "classifier evaluation");
+args.push("--mode", "rpc", "--no-ui");
 const child = spawn(process.env.OMP || "omp", args, {
-  stdio: "inherit",
+  // Keep RPC stdin open without sending a prompt or any other command.
+  stdio: ["pipe", "pipe", "inherit"],
   env: { ...process.env, OMP_CLASSIFIER_EVAL_ARGS: JSON.stringify(process.argv.slice(2)) },
+});
+const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+lines.on("line", (line) => {
+  // OMP's JSONL protocol shares stdout with the eval host's report.
+  if (!line.startsWith('{"type":')) process.stdout.write(`${line}\n`);
 });
 child.on("error", (error) => {
   console.error(`Could not start OMP: ${error.message}`);

@@ -11,6 +11,7 @@
  */
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 
 export interface ToolCall {
   name: string;
@@ -22,6 +23,8 @@ export interface FakeModelOptions {
   steps: ToolCall[];
   /** The classifier's answer to every review. */
   verdict: "allow" | "deny";
+  /** Optional classifier latency for lifecycle regression tests. */
+  classifierDelayMs?: number;
 }
 
 export interface FakeModelLog {
@@ -77,7 +80,7 @@ export async function startFakeModel(options: FakeModelOptions): Promise<FakeMod
     }
     const parts: Buffer[] = [];
     request.on("data", (part: Buffer) => parts.push(part));
-    request.on("end", () => {
+    const handleEnd = async (): Promise<void> => {
       const body = JSON.parse(Buffer.concat(parts).toString("utf8")) as {
         messages?: { role: string; content: unknown }[];
       };
@@ -96,6 +99,7 @@ export async function startFakeModel(options: FakeModelOptions): Promise<FakeMod
             .join("\n"),
         );
         text = JSON.stringify({ outcome: options.verdict, rationale: `fake-${options.verdict}` });
+        if (options.classifierDelayMs) await delay(options.classifierDelayMs);
       } else {
         const results = messages.filter((message) => message.role === "tool").map((message) => textOf(message.content));
         log.toolResults.push(results);
@@ -121,6 +125,9 @@ export async function startFakeModel(options: FakeModelOptions): Promise<FakeMod
       response.write(chunk(delta, null));
       response.write(chunk({}, tool ? "tool_calls" : "stop"));
       response.end("data: [DONE]\n\n");
+    };
+    request.on("end", () => {
+      void handleEnd();
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

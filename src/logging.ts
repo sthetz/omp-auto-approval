@@ -3,14 +3,14 @@ import { dirname } from "node:path";
 import { logPath } from "./extension-config.js";
 import type {
   AuditEntry,
-  ClearanceConfig,
+  CallgateConfig,
   LspEditMismatchEntry,
   ResultWithheldEntry,
   ShellLatchEntry,
 } from "./types.js";
 
 export async function writeAudit(
-  config: ClearanceConfig,
+  config: CallgateConfig,
   entry: AuditEntry | LspEditMismatchEntry | ResultWithheldEntry | ShellLatchEntry,
 ): Promise<void> {
   if (!config.audit) {
@@ -23,7 +23,7 @@ export async function writeAudit(
       path,
       `${JSON.stringify({
         timestamp: new Date().toISOString(),
-        extension: "omp-clearance",
+        extension: "omp-callgate",
         ...entry,
       })}\n`,
       "utf-8",

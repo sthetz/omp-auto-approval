@@ -1,6 +1,6 @@
-import type { ClearanceConfig } from "./types.js";
+import type { CallgateConfig } from "./types.js";
 
-export function buildSystemPrompt(config: ClearanceConfig): string {
+export function buildSystemPrompt(config: CallgateConfig): string {
   const allow = config.allow.length
     ? `\nAdditional allow guidance:\n${config.allow.map((item) => `- ${item}`).join("\n")}`
     : "";

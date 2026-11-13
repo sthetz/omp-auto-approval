@@ -1,5 +1,5 @@
 import type {
-  ClearanceConfig,
+  CallgateConfig,
   ExtensionContextLike,
   ClassifierDecision,
   ReviewSubject,
@@ -71,7 +71,7 @@ export interface HumanVerdict {
 
 /** All session inputs to a decision. Evaluator verdicts are added by apply(). */
 export interface DecisionState {
-  config: ClearanceConfig;
+  config: CallgateConfig;
   reviewer: Reviewer;
   cwd: string;
   tools: unknown[];
@@ -447,7 +447,7 @@ export function decide(call: CanonicalToolCall, state: DecisionState): Decision 
  * denial, or new guidance needs a new review. Undefined when the session
  * cannot be read, which means no caching.
  */
-function classifierKey(actionHash: string, ctx: ExtensionContextLike, config: ClearanceConfig): string | undefined {
+function classifierKey(actionHash: string, ctx: ExtensionContextLike, config: CallgateConfig): string | undefined {
   try {
     const { classifierModel, allow, deny, environment } = config;
     const settings = sha256(stableStringify({ classifierModel, allow, deny, environment }));
@@ -490,7 +490,7 @@ export function decideWithCache(
 export function snapshotDecisionState(
   call: CanonicalToolCall,
   ctx: ExtensionContextLike,
-  config: ClearanceConfig,
+  config: CallgateConfig,
   store: SessionApprovalStore,
   options: DecisionOptions = {},
 ): DecisionState {
@@ -645,15 +645,15 @@ async function applyFinal(
       reason: !stopped
         ? automatic.baseReason
         : ctx.abort
-          ? `${automatic.baseReason} omp-clearance rejected ${denials} actions in a row and stopped the turn. Wait for the user's next message.`
-          : `${automatic.baseReason} omp-clearance rejected ${denials} actions in a row; stop and ask the user for guidance.`,
+          ? `${automatic.baseReason} omp-callgate rejected ${denials} actions in a row and stopped the turn. Wait for the user's next message.`
+          : `${automatic.baseReason} omp-callgate rejected ${denials} actions in a row; stop and ask the user for guidance.`,
     };
     if (stopped) {
       store.recordNonDenial();
       if (ctx.abort) {
         // The agent never sees this reason once the turn ends; tell the user why.
         ctx.ui?.notify?.(
-          `omp-clearance stopped the turn after ${denials} rejected actions in a row. Last: ${automatic.baseReason}`,
+          `omp-callgate stopped the turn after ${denials} rejected actions in a row. Last: ${automatic.baseReason}`,
           "warning",
         );
         ctx.abort();
@@ -687,7 +687,7 @@ async function applyFinal(
       reason: latch.reason,
     });
     ctx.ui?.notify?.(
-      `omp-clearance: an approved bash command used ${latch.reason}, which can make the shell run code before later commands. ${state.reviewer === "off" ? "Safe-command fast paths are off for the rest of this session." : "Bash commands are reviewed for the rest of this session."}`,
+      `omp-callgate: an approved bash command used ${latch.reason}, which can make the shell run code before later commands. ${state.reviewer === "off" ? "Safe-command fast paths are off for the rest of this session." : "Bash commands are reviewed for the rest of this session."}`,
       "warning",
     );
   }
@@ -797,7 +797,7 @@ export function sessionKey(ctx: ExtensionContextLike): string {
 export async function runDecision(
   call: CanonicalToolCall,
   ctx: ExtensionContextLike,
-  config: ClearanceConfig,
+  config: CallgateConfig,
   store: SessionApprovalStore,
   options: DecisionOptions = {},
 ): Promise<Decision> {

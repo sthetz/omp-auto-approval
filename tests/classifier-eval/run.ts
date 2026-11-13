@@ -5,7 +5,7 @@ import {
   type ClassifierClient,
 } from "../../src/classifier.js";
 import { itemAt } from "../../src/common.js";
-import type { ClassifierDecision, ClearanceConfig } from "../../src/types.js";
+import type { ClassifierDecision, CallgateConfig } from "../../src/types.js";
 import type { TsBenchClassifierInput, TsBenchExpectedOutcome } from "./ts-bench.js";
 
 export interface ClassifierEvalResult {
@@ -94,7 +94,7 @@ export function summarizeClassifierEval(results: ClassifierEvalResult[]): Classi
 
 export async function runClassifierEval(
   cases: TsBenchClassifierInput[],
-  config: ClearanceConfig,
+  config: CallgateConfig,
   options: { model: unknown; clientForCase: (input: TsBenchClassifierInput) => ClassifierClient; clock: () => number },
 ): Promise<{ results: ClassifierEvalResult[]; summary: ClassifierEvalSummary }> {
   const results: ClassifierEvalResult[] = [];

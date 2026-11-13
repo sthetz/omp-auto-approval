@@ -1,4 +1,4 @@
-import type { ClearanceConfig, ExtensionContextLike, Reviewer } from "./src/types.js";
+import type { CallgateConfig, ExtensionContextLike, Reviewer } from "./src/types.js";
 import { configPath, DEFAULT_CONFIG, loadConfig, logPath, saveConfig } from "./src/extension-config.js";
 import { defaultRulesPath, userRulesPath, type CommandRules } from "./src/command-rules.js";
 import { decideWithCache, protectedFiles, sessionKey, snapshotDecisionState, type Decision } from "./src/decision.js";
@@ -36,12 +36,12 @@ type ExtensionAPI = {
   ) => void;
 };
 
-const STATUS_KEY = "omp-clearance";
+const STATUS_KEY = "omp-callgate";
 
 // Appended to the system prompt in every reviewer mode, so a blocked call
 // is reported instead of retried in another form.
 export const SYSTEM_PROMPT_NOTE = [
-  "Tool calls in this session are reviewed by omp-clearance before they run.",
+  "Tool calls in this session are reviewed by omp-callgate before they run.",
   "If a call is blocked, do not retry it in another form or route around the block",
   "(another tool, an encoded or rewritten command, a script that does the same thing).",
   "Tell the user what was blocked and why, and wait for their guidance.",
@@ -99,12 +99,12 @@ function parseExplainInput(toolName: string, rest: string): { input: unknown } |
 }
 
 function statusText(state: ReviewerState, rules: CommandRules): string {
-  const text = `clearance:${state.reviewer}${state.problem ? " (invalid reviewer state)" : ""}${rules.problem ? " (rules error)" : ""}`;
+  const text = `callgate:${state.reviewer}${state.problem ? " (invalid reviewer state)" : ""}${rules.problem ? " (rules error)" : ""}`;
   return rules.problem ? `\u001B[31m${text}\u001B[0m` : text;
 }
 
 function rulesProblemText(rules: CommandRules): string {
-  return `omp-clearance: the command rules could not be loaded, so every bash call is blocked until the file is fixed: ${rules.problem}. Fixing the file is enough; rules reload automatically.`;
+  return `omp-callgate: the command rules could not be loaded, so every bash call is blocked until the file is fixed: ${rules.problem}. Fixing the file is enough; rules reload automatically.`;
 }
 
 function rulesStatusText(rules: CommandRules): string[] {
@@ -138,7 +138,7 @@ function parseCommandRest(args: string): string {
   return firstSpace < 0 ? "" : trimmed.slice(firstSpace).trim();
 }
 
-function classifierModelText(config: ClearanceConfig): string {
+function classifierModelText(config: CallgateConfig): string {
   return config.classifierModel ?? "current";
 }
 
@@ -157,7 +157,7 @@ const COMMAND_ARGUMENTS = [
   },
 ];
 
-function getClearanceArgumentCompletions(
+function getCallgateArgumentCompletions(
   argumentPrefix: string,
 ): Array<{ value: string; label: string; description: string }> | null {
   const normalized = argumentPrefix.trimStart().toLowerCase();
@@ -167,12 +167,12 @@ function getClearanceArgumentCompletions(
   return filtered.length ? filtered : null;
 }
 
-export default function ompClearanceExtension(omp: ExtensionAPI): void {
+export default function ompCallgateExtension(omp: ExtensionAPI): void {
   let loadResult = loadConfig();
   let config = loadResult.config;
   let reviewerState = loadReviewerState(config, loadResult.reviewerConfigured);
   // The command rules for this session: watched on every tool call and
-  // reloaded on session start and /clearance commands.
+  // reloaded on session start and /callgate commands.
   let rulesWatch: CommandRulesWatch = watchCommandRules();
   let rules = rulesWatch.rules;
   const approvals = new SessionApprovalStore();
@@ -212,7 +212,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
         rulesNotified = true;
       }
       if (!rules.problem && previousRulesProblem) {
-        notify(ctx, "omp-clearance: command rules reloaded; bash calls are no longer blocked.", "info");
+        notify(ctx, "omp-callgate: command rules reloaded; bash calls are no longer blocked.", "info");
       }
     }
     return rulesNotified;
@@ -223,7 +223,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
     if (!firstWord) {
       notify(
         ctx,
-        "Usage: /clearance explain <tool> [path | JSON arguments | bash command], or a bash command",
+        "Usage: /callgate explain <tool> [path | JSON arguments | bash command], or a bash command",
         "warning",
       );
       return;
@@ -278,10 +278,10 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
     );
   }
 
-  function persist(next: ClearanceConfig, ctx: ExtensionContextLike): void {
+  function persist(next: CallgateConfig, ctx: ExtensionContextLike): void {
     const saved = saveConfig(next);
     if (!saved.success) {
-      notify(ctx, `Failed to save omp-clearance config: ${saved.error ?? "unknown error"}`, "error");
+      notify(ctx, `Failed to save omp-callgate config: ${saved.error ?? "unknown error"}`, "error");
       return;
     }
     config = next;
@@ -291,12 +291,12 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
   function persistReviewer(reviewer: Reviewer, ctx: ExtensionContextLike): void {
     const saved = saveReviewerState(reviewer);
     if (!saved.success) {
-      notify(ctx, `Failed to save omp-clearance reviewer state: ${saved.error ?? "unknown error"}`, "error");
+      notify(ctx, `Failed to save omp-callgate reviewer state: ${saved.error ?? "unknown error"}`, "error");
       return;
     }
     reviewerState = loadReviewerState(config, loadResult.reviewerConfigured);
     setStatus(ctx, reviewerState, rules);
-    notify(ctx, `omp-clearance reviewer: ${reviewer}.`);
+    notify(ctx, `omp-callgate reviewer: ${reviewer}.`);
   }
 
   async function runCommand(command: string, rest: string, ctx: ExtensionContextLike): Promise<void> {
@@ -327,7 +327,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
           notify(ctx, "approval classifier model: current");
           break;
         }
-        notify(ctx, "Use /clearance model to select an approval classifier model.", "warning");
+        notify(ctx, "Use /callgate model to select an approval classifier model.", "warning");
         break;
       }
       case "explain":
@@ -341,7 +341,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
         } else if (rest) {
           notify(
             ctx,
-            describeRule(rules, rest) ?? `No program or rule named "${rest}". /clearance rules lists them.`,
+            describeRule(rules, rest) ?? `No program or rule named "${rest}". /callgate rules lists them.`,
             "info",
           );
         } else {
@@ -371,16 +371,16 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
       default:
         notify(
           ctx,
-          `Unknown /clearance subcommand "${command}". Use status, ai, manual, off, model, rules, or explain.`,
+          `Unknown /callgate subcommand "${command}". Use status, ai, manual, off, model, rules, or explain.`,
           "warning",
         );
         break;
     }
   }
 
-  omp.registerCommand?.("clearance", {
+  omp.registerCommand?.("callgate", {
     description: "args: status | ai | manual | off | model | rules | explain",
-    getArgumentCompletions: (prefix) => getClearanceArgumentCompletions(typeof prefix === "string" ? prefix : ""),
+    getArgumentCompletions: (prefix) => getCallgateArgumentCompletions(typeof prefix === "string" ? prefix : ""),
     handler: async (args, context) => {
       const ctx = canonicalContext(context);
       if (!ctx) {
@@ -438,7 +438,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
         notify(ctx, rulesProblemText(nextRules.rules), "error");
       }
       if (!nextRules.rules.problem && rules.problem) {
-        notify(ctx, "omp-clearance: command rules reloaded; bash calls are no longer blocked.", "info");
+        notify(ctx, "omp-callgate: command rules reloaded; bash calls are no longer blocked.", "info");
       }
       if (nextRules.rules !== rules) {
         // The rule that sends an action to review is part of what the
@@ -463,7 +463,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
       const reason = error instanceof Error ? error.message : String(error);
       return {
         block: true,
-        reason: `omp-clearance failed to decide this tool call: ${reason}. Do not retry; report this error to the user.`,
+        reason: `omp-callgate failed to decide this tool call: ${reason}. Do not retry; report this error to the user.`,
       };
     }
   });
@@ -493,7 +493,7 @@ export default function ompClearanceExtension(omp: ExtensionAPI): void {
       const reason = error instanceof Error ? error.message : String(error);
       return {
         content: [
-          { type: "text" as const, text: `omp-clearance withheld this lsp result: checking it failed (${reason}).` },
+          { type: "text" as const, text: `omp-callgate withheld this lsp result: checking it failed (${reason}).` },
         ],
         isError: true as const,
       };

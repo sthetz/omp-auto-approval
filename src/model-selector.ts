@@ -1,4 +1,4 @@
-import type { ClearanceConfig, ExtensionContextLike, KeybindingsLike, ThemeLike, TuiLike } from "./types.js";
+import type { CallgateConfig, ExtensionContextLike, KeybindingsLike, ThemeLike, TuiLike } from "./types.js";
 
 const ANSI_SGR_PATTERN = /(\x1b\[[0-9;]*m)/g;
 
@@ -132,7 +132,7 @@ function normalizeModel(model: unknown): ModelItem | null {
   };
 }
 
-function selectedModelRef(config: ClearanceConfig, currentModel: unknown): string | null {
+function selectedModelRef(config: CallgateConfig, currentModel: unknown): string | null {
   return config.classifierModel ?? modelLabel(currentModel);
 }
 
@@ -152,7 +152,7 @@ function keyMatches(keybindings: KeybindingsLike, data: string, key: string, fal
   return keybindings.matches?.(data, key) ?? fallback.includes(data);
 }
 
-async function loadModelItems(ctx: ExtensionContextLike, config: ClearanceConfig): Promise<ModelItem[]> {
+async function loadModelItems(ctx: ExtensionContextLike, config: CallgateConfig): Promise<ModelItem[]> {
   await Promise.resolve(ctx.modelRegistry?.refresh?.());
   const available = await Promise.resolve(ctx.modelRegistry?.getAvailable?.() ?? []);
   const currentRef = selectedModelRef(config, ctx.model);
@@ -171,7 +171,7 @@ function createSelectorComponent(
   tui: TuiLike,
   items: ModelItem[],
   ctx: ExtensionContextLike,
-  config: ClearanceConfig,
+  config: CallgateConfig,
   theme: ThemeLike,
   keybindings: KeybindingsLike,
   textUtils: TuiTextUtils,
@@ -179,7 +179,7 @@ function createSelectorComponent(
 ) {
   const currentRef = selectedModelRef(config, ctx.model);
   const allItems: ModelItem[] = [
-    { value: null, provider: "clearance", id: "current", name: "Use active OMP session model" },
+    { value: null, provider: "callgate", id: "current", name: "Use active OMP session model" },
     ...items,
   ];
   let query = "";
@@ -302,7 +302,7 @@ function createSelectorComponent(
 
 async function selectClassifierModelWithTextUtils(
   ctx: ExtensionContextLike,
-  config: ClearanceConfig,
+  config: CallgateConfig,
   textUtils: TuiTextUtils,
 ): Promise<string | null | undefined> {
   const items = await loadModelItems(ctx, config);
@@ -317,7 +317,7 @@ async function selectClassifierModelWithTextUtils(
 
 export async function selectClassifierModel(
   ctx: ExtensionContextLike,
-  config: ClearanceConfig,
+  config: CallgateConfig,
 ): Promise<string | null | undefined> {
   if (ctx.mode !== undefined && ctx.mode !== "tui") {
     return selectClassifierModelFallback(ctx, config);
@@ -333,7 +333,7 @@ export async function selectClassifierModel(
 
 async function selectClassifierModelFallback(
   ctx: ExtensionContextLike,
-  config: ClearanceConfig,
+  config: CallgateConfig,
 ): Promise<string | null | undefined> {
   if (!ctx.ui?.select) {
     ctx.ui?.notify?.(`approval classifier model: ${config.classifierModel ?? "current"}`);

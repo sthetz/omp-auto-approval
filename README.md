@@ -1,4 +1,4 @@
-# omp-clearance
+# omp-callgate
 
 An [OMP](https://github.com/can1357/oh-my-pi) extension that decides, for every tool call the agent makes, whether it runs without asking, goes to an AI classifier, needs your approval, or is blocked.
 
@@ -15,26 +15,20 @@ An [OMP](https://github.com/can1357/oh-my-pi) extension that decides, for every 
 ## Installation
 
 ```bash
-omp plugin install https://github.com/sthetz/omp-clearance
-# or a pinned release:
-omp plugin install github:sthetz/omp-clearance#v0.5.5
+omp plugin install https://github.com/sthetz/omp-callgate
 ```
 
 Restart OMP, then choose the reviewer recommended for interactive use (the default is `off`):
 
 ```text
-/clearance ai
+/callgate ai
 ```
 
-To remove it: `omp plugin uninstall omp-clearance`.
+To remove it: `omp plugin uninstall omp-callgate`.
 
 OMP's own `tools.approvalMode` setting runs after this extension has allowed a call. Its default, `yolo`, adds no prompts; with `always-ask`, `always-ask-cached` or `write`, OMP still asks you about calls this extension already allowed.
 
-Don't run omp-clearance alongside pi-auto-approval or omp-auto-approval: each reviews every tool call on its own.
-
-**Upgrading from omp-auto-approval.** Before 0.4.0 this project was called omp-auto-approval. Uninstall it (`omp plugin uninstall omp-auto-approval`), rename the environment variables `PI_AUTO_APPROVAL_CONFIG_PATH`, `PI_AUTO_APPROVAL_RULES_PATH` and `PI_AUTO_APPROVAL_LOGS_DIR` to `CLEARANCE_CONFIG_PATH`, `CLEARANCE_RULES_PATH` and `CLEARANCE_LOGS_DIR`, and move `config.jsonc` and `rules.jsonc` along if they lived in the old extension directory. The command is now `/clearance`, and the audit log is written to `omp-clearance.jsonl`. The old `safeCommandAllowlist` and `blockCommands` settings are no longer read: write them as [allow and block rules](docs/command-rules.md#allow-review-ask-and-block-rules). Delete `"classifierTimeoutSeconds": 90` if your config has it: versions before 0.3.0 wrote it there, and it is no longer read as 25, so OMP's 30 s limit would stop the classifier first.
-
-**Upgrading modes to reviewers.** `enabled` and `mode` are no longer read, and the default reviewer is `off`, so an existing `fallback` user would lose the classifier with only a notice. Map `fallback` to `ai` (a classifier denial now goes back to the agent first; you are asked on classifier failure or at the denial limit), `auto` to `ai`, and `off` to `off`, which now still enforces block and ask rules. Run `/clearance ai` once to preserve classifier behavior, or set `"reviewer"` in `config.jsonc` and delete the old keys; the config value applies only while `reviewer-state.json` does not exist.
+Don't run omp-callgate alongside pi-auto-approval or omp-auto-approval: each reviews every tool call on its own.
 
 ## Reviewers
 
@@ -48,7 +42,7 @@ The reviewer is the only thing that changes between modes. Fast paths, allow and
 
 Ask rules and manual-only tools still ask you under `off` and `ai`. Any approval prompt that cannot be shown because no UI is available becomes a denial. Block rules and broken-rules blocks always deny without asking.
 
-The reviewer is shared by every OMP session and subagent. `/clearance ai`, `manual` or `off` writes `reviewer-state.json` next to `config.jsonc`, never the config itself, and running sessions notice the change on their next tool call. The config's `reviewer` key is only the starting value while that state file does not exist. Old `enabled` and `mode` keys produce a notice and are not migrated.
+The reviewer is shared by every OMP session and subagent. `/callgate ai`, `manual` or `off` writes `reviewer-state.json` next to `config.jsonc`, never the config itself, and running sessions notice the change on their next tool call. The config's `reviewer` key is only the starting value while that state file does not exist. Old `enabled` and `mode` keys produce a notice and are not migrated.
 
 When you are asked, the prompt shows the action, the classifier's reason or the rule's, and offers:
 
@@ -63,19 +57,19 @@ A short note in the system prompt asks the agent to report a blocked call to you
 
 ## Commands
 
-`/clearance` is the only slash command; type `/clearance ` with a trailing space to see its arguments.
+`/callgate` is the only slash command; type `/callgate ` with a trailing space to see its arguments.
 
 | Command | Effect |
 | --- | --- |
-| `/clearance off`, `manual`, `ai` | Switch the shared reviewer, writing `reviewer-state.json` rather than `config.jsonc`. |
-| `/clearance status` | Reviewer, classifier model, config and reviewer-state paths, rules and audit log paths, and any problems with them. |
-| `/clearance model` | Choose the classifier model. `/clearance model current` uses the session's model. |
-| `/clearance rules [program \| rule id]` | List the command rules in use and the file each comes from, or show one. |
-| `/clearance explain <tool> [args]` | Show what would happen to a tool call, without running it. `args` is a path, a JSON object, or a bash command: `/clearance explain read ~/.ssh/id_ed25519`, `/clearance explain ls -la`. |
+| `/callgate off`, `manual`, `ai` | Switch the shared reviewer, writing `reviewer-state.json` rather than `config.jsonc`. |
+| `/callgate status` | Reviewer, classifier model, config and reviewer-state paths, rules and audit log paths, and any problems with them. |
+| `/callgate model` | Choose the classifier model. `/callgate model current` uses the session's model. |
+| `/callgate rules [program \| rule id]` | List the command rules in use and the file each comes from, or show one. |
+| `/callgate explain <tool> [args]` | Show what would happen to a tool call, without running it. `args` is a path, a JSON object, or a bash command: `/callgate explain read ~/.ssh/id_ed25519`, `/callgate explain ls -la`. |
 
 ## How a tool call is decided
 
-The first row that applies decides. `/clearance explain` runs the same decision function and prints its selected route; the audit log records that route. When you are asked, the log records your answer with route `human`.
+The first row that applies decides. `/callgate explain` runs the same decision function and prints its selected route; the audit log records that route. When you are asked, the log records your answer with route `human`.
 
 | | When | What happens | `route` |
 | --- | --- | --- | --- |
@@ -97,7 +91,7 @@ What each fast path accepts, in full: [docs/fast-paths.md](docs/fast-paths.md).
 
 ## Command rules
 
-Bash commands are checked against rules before anything else. The built-in ones are in [`config/default-rules.jsonc`](config/default-rules.jsonc): tables of read-only programs and their options, and the rules below. Your own go in `rules.jsonc` next to `config.jsonc`, or at `CLEARANCE_RULES_PATH`:
+Bash commands are checked against rules before anything else. The built-in ones are in [`config/default-rules.jsonc`](config/default-rules.jsonc): tables of read-only programs and their options, and the rules below. Your own go in `rules.jsonc` next to `config.jsonc`, or at `CALLGATE_RULES_PATH`:
 
 ```jsonc
 {
@@ -152,7 +146,7 @@ These cover commands that are rarely right for an agent to run on its own, in an
 
 ## The classifier
 
-By default the classifier uses the session's model; `/clearance model` picks another, saved as `classifierModel`. Requests go through OMP's own model client, with the provider auth OMP has for that model, and carry no headers of their own.
+By default the classifier uses the session's model; `/callgate model` picks another, saved as `classifierModel`. Requests go through OMP's own model client, with the provider auth OMP has for that model, and carry no headers of their own.
 
 The classifier sees:
 
@@ -168,11 +162,11 @@ The classifier is instructed to treat task-relevant public source and documentat
 
 An answer that allows a `high`-risk action without `high` user authorization, or a `critical` one without it at all, counts as a denial. `allow`, `deny` and `environment` in `config.jsonc` add your own guidance to its prompt; they are advice to the classifier, not rules.
 
-**Timeout.** OMP blocks a tool call outright when an extension takes longer than `extensionHandlers.toolCallTimeoutMs` (30 s by default) to decide. Under `ai`, `classifierTimeoutSeconds` (default 25) stops the classifier first, so its failure can still ask you when a UI is available. For a slower classifier model, raise both, keeping `classifierTimeoutSeconds` below OMP's limit; `/clearance status` warns when it is 30 or more. According to OMP's description of the setting, time spent in its own dialogs, such as the approval prompt, doesn't count.
+**Timeout.** OMP blocks a tool call outright when an extension takes longer than `extensionHandlers.toolCallTimeoutMs` (30 s by default) to decide. Under `ai`, `classifierTimeoutSeconds` (default 25) stops the classifier first, so its failure can still ask you when a UI is available. For a slower classifier model, raise both, keeping `classifierTimeoutSeconds` below OMP's limit; `/callgate status` warns when it is 30 or more. According to OMP's description of the setting, time spent in its own dialogs, such as the approval prompt, doesn't count.
 
 ## Configuration
 
-`config.jsonc` lives in the extension's directory, or at `CLEARANCE_CONFIG_PATH`. Only values that differ from the defaults are saved, so later changes to defaults take effect. `/clearance status` reports unknown keys. The shared `reviewer-state.json` beside it holds the current reviewer and is re-read on change; `reviewer` in config applies only while no state file exists. See the [schema](schemas/config.schema.json) and an [annotated example](config/config.example.jsonc).
+`config.jsonc` lives in the extension's directory, or at `CALLGATE_CONFIG_PATH`. Only values that differ from the defaults are saved, so later changes to defaults take effect. `/callgate status` reports unknown keys. The shared `reviewer-state.json` beside it holds the current reviewer and is re-read on change; `reviewer` in config applies only while no state file exists. See the [schema](schemas/config.schema.json) and an [annotated example](config/config.example.jsonc).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -195,11 +189,11 @@ An answer that allows a `high`-risk action without `high` user authorization, or
 
 Entries are absolute or start with `~/`. Credential-like files below a read root are still reviewed. Read roots also cover the files a fast-pathed bash command reads, but never add a program to the fast path.
 
-Changes to `config.jsonc` apply from the next session, or after any `/clearance` command, such as `/clearance status`.
+Changes to `config.jsonc` apply from the next session, or after any `/callgate` command, such as `/callgate status`.
 
 ## Audit log
 
-Every decision is appended as a line of JSON to `logs/omp-clearance.jsonl` in the extension's directory, or in `CLEARANCE_LOGS_DIR`. Each line has:
+Every decision is appended as a line of JSON to `logs/omp-callgate.jsonl` in the extension's directory, or in `CALLGATE_LOGS_DIR`. Each line has:
 
 - `route` and `outcome`;
 - the tool, a summary of the action and its hash;
@@ -215,4 +209,4 @@ A `shell_latch` event records when the bash fast path turned off for a session, 
 
 ## Origins and license
 
-omp-clearance began as a fork of [pi-auto-approval](https://github.com/Europa2061/pi-auto-approval), by way of HayabusaC's OMP adaptation, published on npm as [`omp-auto-approval@0.1.0`](https://www.npmjs.com/package/omp-auto-approval/v/0.1.0) (its source repository is no longer public). It was restored from that package, rewritten for the most part, and renamed in 0.4.0. It is not affiliated with either project; the `omp-auto-approval` package on npm is HayabusaC's original. Licensed under [Apache-2.0](LICENSE), like both; the git history records each author's commits.
+omp-callgate began as a fork of [pi-auto-approval](https://github.com/Europa2061/pi-auto-approval), by way of HayabusaC's OMP adaptation, published on npm as [`omp-auto-approval@0.1.0`](https://www.npmjs.com/package/omp-auto-approval/v/0.1.0) (its source repository is no longer public). It was restored from that package, rewritten for the most part, and renamed to omp-clearance in 0.4.0 before becoming omp-callgate. It is not affiliated with either project; the `omp-auto-approval` package on npm is HayabusaC's original. Licensed under [Apache-2.0](LICENSE), like both; the git history records each author's commits.

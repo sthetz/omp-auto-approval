@@ -3,7 +3,7 @@ import { readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "n
 import { dirname, join } from "node:path";
 import { configPath } from "./extension-config.js";
 import { toRecord } from "./common.js";
-import type { ClearanceConfig, Reviewer } from "./types.js";
+import type { CallgateConfig, Reviewer } from "./types.js";
 
 export type ReviewerSource = "state file" | "config.jsonc" | "default" | "invalid state file";
 
@@ -41,7 +41,7 @@ function invalidState(path: string, mtimeMs: number | null, version: string | nu
  * the state file's mtime changes. Missing state uses config's starting value.
  */
 export function loadReviewerState(
-  config: ClearanceConfig,
+  config: CallgateConfig,
   reviewerConfigured: boolean,
   previous?: ReviewerState,
   path = reviewerStatePath(),

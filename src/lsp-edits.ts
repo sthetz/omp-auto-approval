@@ -212,4 +212,4 @@ export function appliedEditMismatch(
 }
 
 export const PREVIEW_NOTE =
-  "omp-clearance: every file this edit would change can be written without review, so repeating this exact call with apply: true (same file, line, symbol and new_name) skips review once.";
+  "omp-callgate: every file this edit would change can be written without review, so repeating this exact call with apply: true (same file, line, symbol and new_name) skips review once.";

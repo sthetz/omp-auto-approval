@@ -693,14 +693,14 @@ function findOmp(): string | null {
 }
 
 async function runScenario(omp: string, scenario: Scenario, keep: boolean): Promise<string[]> {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-e2e-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-e2e-"));
   const home = join(root, "home");
   const workspace = join(root, "work");
-  const state = join(root, "clearance");
+  const state = join(root, "callgate");
   mkdirSync(join(home, ".omp", "agent", "extensions"), { recursive: true });
   mkdirSync(workspace);
   mkdirSync(state);
-  symlinkSync(EXTENSION, join(home, ".omp", "agent", "extensions", "omp-clearance"));
+  symlinkSync(EXTENSION, join(home, ".omp", "agent", "extensions", "omp-callgate"));
   spawnSync("git", ["init", "-q"], { cwd: workspace });
   writeFileSync(join(workspace, "notes.txt"), "notes\n");
   writeFileSync(join(workspace, "README.md"), `${INJECTION}\n`);
@@ -743,9 +743,9 @@ async function runScenario(omp: string, scenario: Scenario, keep: boolean): Prom
           XDG_STATE_HOME: join(home, ".local", "state"),
           XDG_CACHE_HOME: join(home, ".cache"),
           TERM: "dumb",
-          CLEARANCE_CONFIG_PATH: join(state, "config.jsonc"),
-          CLEARANCE_RULES_PATH: rulesPath,
-          CLEARANCE_LOGS_DIR: join(state, "logs"),
+          CALLGATE_CONFIG_PATH: join(state, "config.jsonc"),
+          CALLGATE_RULES_PATH: rulesPath,
+          CALLGATE_LOGS_DIR: join(state, "logs"),
         },
       });
       const timer = setTimeout(() => child.kill("SIGKILL"), 60_000);
@@ -760,7 +760,7 @@ async function runScenario(omp: string, scenario: Scenario, keep: boolean): Prom
         done(status);
       });
     });
-    const logFile = join(state, "logs", "omp-clearance.jsonl");
+    const logFile = join(state, "logs", "omp-callgate.jsonl");
     const audit = existsSync(logFile)
       ? readFileSync(logFile, "utf8")
           .split("\n")

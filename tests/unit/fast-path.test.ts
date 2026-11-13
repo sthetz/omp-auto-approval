@@ -82,7 +82,7 @@ await test("allow rules stay explicit", () => {
 });
 
 await test("commands allow rules match never fast-path exec, write, or out-of-workspace arguments", () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-allow-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-allow-"));
   const workspace = join(root, "workspace");
   mkdirSync(join(workspace, "src"), { recursive: true });
   writeFileSync(join(workspace, ".env"), "TOKEN=x\n");
@@ -151,7 +151,7 @@ await test("commands allow rules match never fast-path exec, write, or out-of-wo
 });
 
 await test("fast-pathed commands are pinned to the program on OMP's startup PATH", () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-pin-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-pin-"));
   const workspace = join(root, "workspace");
   const spaced = join(root, "tool dir");
   mkdirSync(join(workspace, "bin"), { recursive: true });
@@ -183,7 +183,7 @@ await test("fast-pathed commands are pinned to the program on OMP's startup PATH
 });
 
 await test("the fast path reads chains and pipelines, safe redirections, and a leading cd", () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-chain-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-chain-"));
   const workspace = join(root, "workspace");
   mkdirSync(join(workspace, "sub"), { recursive: true });
   writeFileSync(join(workspace, "notes.txt"), "notes\n");
@@ -304,7 +304,7 @@ await test("the fast path reads chains and pipelines, safe redirections, and a l
 });
 
 await test("common read-only programs skip review by their option tables", () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-programs-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-programs-"));
   const workspace = join(root, "workspace");
   for (const file of [
     "notes.txt",
@@ -455,7 +455,7 @@ await test("common read-only programs skip review by their option tables", () =>
 });
 
 await test("a leading ~ is pinned to OMP's home directory, since the shell's HOME can change", () => {
-  const home = mkdtempSync(join(tmpdir(), "omp-clearance-home-"));
+  const home = mkdtempSync(join(tmpdir(), "omp-callgate-home-"));
   const previousHome = process.env.HOME;
   process.env.HOME = home;
   writeFileSync(join(home, "notes.txt"), "x\n");
@@ -527,7 +527,7 @@ await test("sed scripts are fast-pathed only when they cannot read, write, or ru
 });
 
 await test("a word naming a file after any = is checked as that file", () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-equals-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-equals-"));
   writeFileSync(join(workspace, "notes.txt"), "x\n");
   try {
     const cfg = config({ allowRules: ["npm view"] });
@@ -552,7 +552,7 @@ await test("a word naming a file after any = is checked as that file", () => {
 });
 
 await test("a git option naming a file outside the workspace is reviewed", () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-git-files-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-git-files-"));
   writeFileSync(join(workspace, "order.txt"), "*.ts\n");
   try {
     for (const command of [
@@ -571,7 +571,7 @@ await test("a git option naming a file outside the workspace is reviewed", () =>
 });
 
 await test("long options named like Object.prototype members are unknown options", () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-proto-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-proto-"));
   writeFileSync(join(workspace, "notes.txt"), "x\n");
   try {
     for (const command of [
@@ -594,7 +594,7 @@ await test("long options named like Object.prototype members are unknown options
 });
 
 await test("an entry with subcommands reads its own options as whole words before the subcommand", () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-subcommands-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-subcommands-"));
   mkdirSync(join(workspace, "sub"));
   writeFileSync(join(workspace, "notes.txt"), "x\n");
   try {
@@ -658,7 +658,7 @@ await test("an entry with subcommands reads its own options as whole words befor
 });
 
 await test("a fast-pathed bash call runs pinned, and only from inside the workspace", async () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-pin-call-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-pin-call-"));
   mkdirSync(join(workspace, "sub"));
   try {
     const event = { toolName: "bash", input: { command: "git status --short" } as Record<string, unknown> };
@@ -722,7 +722,7 @@ await test("a fast-pathed bash call runs pinned, and only from inside the worksp
 });
 
 await test("commands allow rules match see through abbreviations, glued values, and name=value arguments", () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-argv-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-argv-"));
   const workspace = join(root, "workspace");
   mkdirSync(workspace);
   writeFileSync(join(workspace, "notes.txt"), "notes\n");
@@ -811,7 +811,7 @@ await test("allow rules for script programs and bare interpreters are errors", (
 });
 
 await test("safe git commands reject operands outside the workspace or naming secrets", async () => {
-  const root = mkdtempSync(join(tmpdir(), "omp-clearance-git-"));
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-git-"));
   const workspace = join(root, "workspace");
   mkdirSync(join(workspace, "src"), { recursive: true });
   symlinkSync(root, join(workspace, "linked-parent"));
@@ -849,7 +849,7 @@ await test("safe git commands reject operands outside the workspace or naming se
 });
 
 await test("allow rules let commands through by their prefix", () => {
-  const workspace = mkdtempSync(join(tmpdir(), "omp-clearance-allow-rules-"));
+  const workspace = mkdtempSync(join(tmpdir(), "omp-callgate-allow-rules-"));
   writeFileSync(join(workspace, "notes.txt"), "x\n");
   writeFileSync(join(workspace, ".env"), "SECRET=1\n");
   try {

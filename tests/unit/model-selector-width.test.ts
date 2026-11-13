@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { modelSelectorInternals } from "../../src/model-selector.js";
-import type { ClearanceConfig, ExtensionContextLike } from "../../src/types.js";
+import type { CallgateConfig, ExtensionContextLike } from "../../src/types.js";
 import { test } from "node:test";
 
 const ANSI_SGR_PATTERN = /\x1b\[[0-9;]*m/g;
@@ -82,7 +82,7 @@ await test("the model selector fits every line with the host's width helpers, an
 
   const config = {
     classifierModel: null,
-  } as ClearanceConfig;
+  } as CallgateConfig;
   const ctx: ExtensionContextLike = {
     cwd: "/tmp/workspace",
     hasUI: true,

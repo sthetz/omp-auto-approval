@@ -4,14 +4,14 @@ Command rules decide what happens to bash commands before the session reviewer h
 
 ## Your rules file
 
-A `rules.jsonc` next to `config.jsonc` (or at `CLEARANCE_RULES_PATH`) adds to the built-in rules, in the same format as [`config/default-rules.jsonc`](../config/default-rules.jsonc). [`config/rules.example.jsonc`](../config/rules.example.jsonc) is a commented example of the format, and [`config/examples/`](../config/examples) holds ready-made policies to include, such as a [kubectl policy](../config/examples/kubectl.jsonc).
+A `rules.jsonc` next to `config.jsonc` (or at `CALLGATE_RULES_PATH`) adds to the built-in rules, in the same format as [`config/default-rules.jsonc`](../config/default-rules.jsonc). [`config/rules.example.jsonc`](../config/rules.example.jsonc) is a commented example of the format, and [`config/examples/`](../config/examples) holds ready-made policies to include, such as a [kubectl policy](../config/examples/kubectl.jsonc).
 
 - A program entry of your own **replaces** the built-in one. With `"extends": "default"` it is **merged** into it instead: option and subcommand keys one by one, where `null` deletes a built-in key (written exactly as the built-in file writes it, such as `"-n --lines"`); `except` lists are joined; other keys replace the built-in ones.
 - `"disable": ["program:sed", "program:git blame"]` removes built-in entries.
 - A key with several names, such as `"get describe"`, lists subcommands that share one entry. Subcommands of subcommands are not entries of their own, so `"worktree list"` means `worktree` and `list`; to allow only `git worktree list`, give `worktree` the operand check `{ "literals": { "min": 1, "max": 1, "pattern": "^list$" } }`, as the example does.
 - `"include": ["~/…/kubectl.jsonc"]` reads more files, by absolute path or `~/`. Each program may be defined in one file only.
 - Options and subcommands an entry does not list are reviewed, as with the built-in rules, and every check in code still applies: programs run from OMP's startup PATH, files are read only inside the read roots, and so on.
-- If any of these files has an error (an unknown key, kind or check, an option listed twice, a broken include), no rules are used: since the file might have held block or ask rules, every bash command is blocked in every reviewer mode until it is fixed. Other tools are unaffected. OMP shows an error notification and a red status entry, `/clearance status` shows the files in use or the error, and fixing the file is enough: it reloads automatically and OMP confirms recovery. Syntax errors name their exact line and column; file-level validation errors use `file:1:1` plus the JSON path.
+- If any of these files has an error (an unknown key, kind or check, an option listed twice, a broken include), no rules are used: since the file might have held block or ask rules, every bash command is blocked in every reviewer mode until it is fixed. Other tools are unaffected. OMP shows an error notification and a red status entry, `/callgate status` shows the files in use or the error, and fixing the file is enough: it reloads automatically and OMP confirms recovery. Syntax errors name their exact line and column; file-level validation errors use `file:1:1` plus the JSON path.
 - Default, main and included files are checked on every tool call and reloaded when they change, including when a previously missing include is created. The write fast path never writes them, nor `config.jsonc`, even when they are inside the working directory.
 
 There are no per-project rules files: a cloned repository could ship one.
@@ -37,7 +37,7 @@ Program entries say what may skip review by reading options and operands. A `rul
 
 Among the rules a command matches, the most restrictive decides: block, then ask, then review. Any of them overrides program entries, allow rules and `reviewExemptTools`, so a broad allow can never hide an exception. Ask and block denials count toward `maxConsecutiveDenials`. `why` is shown in the denial, in the approval prompt, and to the classifier as your reason. `id`s are unique; `disable` removes a built-in rule by its id (see [Built-in rules](../README.md#built-in-rules)).
 
-`/clearance rules` lists the programs and rules in use and the file each comes from; `/clearance rules <program | rule id>` shows one. `explain` names the rule that decided, and the audit log records it as `ruleId` and `ruleSource` (and, for a fast-pathed command, the entries that let it through as `ruleIds`).
+`/callgate rules` lists the programs and rules in use and the file each comes from; `/callgate rules <program | rule id>` shows one. `explain` names the rule that decided, and the audit log records it as `ruleId` and `ruleSource` (and, for a fast-pathed command, the entries that let it through as `ruleIds`).
 
 ## Patterns
 

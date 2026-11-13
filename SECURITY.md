@@ -12,7 +12,7 @@ Include:
 
 - the version or commit;
 - the tool call or command, and the reviewer (`ai`, `manual` or `off`);
-- what happened and what should have happened, with `/clearance explain` output where it helps;
+- what happened and what should have happened, with `/callgate explain` output where it helps;
 - relevant audit log lines, with secrets and private paths removed.
 
 ## Scope

@@ -1,12 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ClearanceConfig, Reviewer } from "./types.js";
+import type { CallgateConfig, Reviewer } from "./types.js";
 import { isRecord, toRecord } from "./common.js";
 
-export const EXTENSION_ID = "omp-clearance";
+export const EXTENSION_ID = "omp-callgate";
 
-export const DEFAULT_CONFIG: ClearanceConfig = {
+export const DEFAULT_CONFIG: CallgateConfig = {
   reviewer: "off",
   classifierModel: null,
   approvalTimeoutSeconds: 30,
@@ -29,11 +29,11 @@ export function extensionRoot(moduleUrl = import.meta.url): string {
 }
 
 export function configPath(): string {
-  return process.env.CLEARANCE_CONFIG_PATH?.trim() || join(extensionRoot(), "config.jsonc");
+  return process.env.CALLGATE_CONFIG_PATH?.trim() || join(extensionRoot(), "config.jsonc");
 }
 
 export function logsDir(): string {
-  return process.env.CLEARANCE_LOGS_DIR?.trim() || join(extensionRoot(), "logs");
+  return process.env.CALLGATE_LOGS_DIR?.trim() || join(extensionRoot(), "logs");
 }
 
 export function logPath(): string {
@@ -56,7 +56,7 @@ function normalizeReviewer(value: unknown): Reviewer {
   return value === "ai" || value === "manual" || value === "off" ? value : "off";
 }
 
-export function normalizeConfig(raw: unknown): ClearanceConfig {
+export function normalizeConfig(raw: unknown): CallgateConfig {
   const record = toRecord(raw);
   return {
     reviewer: normalizeReviewer(record.reviewer),
@@ -89,10 +89,10 @@ export function unknownConfigKeys(raw: unknown): string[] {
  * The config as written to disk: only values that differ from the defaults,
  * so later default changes reach existing installs.
  */
-export function serializeConfig(config: ClearanceConfig): string {
+export function serializeConfig(config: CallgateConfig): string {
   const normalized = normalizeConfig(config);
-  const saved: Partial<Record<keyof ClearanceConfig, unknown>> = {};
-  for (const key of Object.keys(DEFAULT_CONFIG) as Array<keyof ClearanceConfig>) {
+  const saved: Partial<Record<keyof CallgateConfig, unknown>> = {};
+  for (const key of Object.keys(DEFAULT_CONFIG) as Array<keyof CallgateConfig>) {
     if (JSON.stringify(normalized[key]) !== JSON.stringify(DEFAULT_CONFIG[key])) {
       saved[key] = normalized[key];
     }
@@ -100,16 +100,16 @@ export function serializeConfig(config: ClearanceConfig): string {
   return `${JSON.stringify(saved, null, 2)}\n`;
 }
 
-function configNotices(path: string, raw: unknown, config: ClearanceConfig): string[] {
+function configNotices(path: string, raw: unknown, config: CallgateConfig): string[] {
   const notices: string[] = [];
   const unknownKeys = unknownConfigKeys(raw);
   if (unknownKeys.length > 0) {
-    notices.push(`omp-clearance config at '${path}' has unknown key(s) that are ignored: ${unknownKeys.join(", ")}.`);
+    notices.push(`omp-callgate config at '${path}' has unknown key(s) that are ignored: ${unknownKeys.join(", ")}.`);
   }
   for (const key of ["enabled", "mode"]) {
     if (Object.prototype.hasOwnProperty.call(toRecord(raw), key)) {
       notices.push(
-        `${key} is no longer read: set reviewer in config.jsonc only as the starting value, and use /clearance ai, /clearance manual, or /clearance off for the shared session reviewer.`,
+        `${key} is no longer read: set reviewer in config.jsonc only as the starting value, and use /callgate ai, /callgate manual, or /callgate off for the shared session reviewer.`,
       );
     }
   }
@@ -136,7 +136,7 @@ function configNotices(path: string, raw: unknown, config: ClearanceConfig): str
 }
 
 export function loadConfig(path = configPath()): {
-  config: ClearanceConfig;
+  config: CallgateConfig;
   reviewerConfigured: boolean;
   warning?: string;
   notice?: string;
@@ -169,12 +169,12 @@ export function loadConfig(path = configPath()): {
       config: { ...DEFAULT_CONFIG },
       reviewerConfigured: false,
       created,
-      warning: `Failed to read omp-clearance config at '${path}': ${message}; using defaults.`,
+      warning: `Failed to read omp-callgate config at '${path}': ${message}; using defaults.`,
     };
   }
 }
 
-export function saveConfig(config: ClearanceConfig, path = configPath()): { success: boolean; error?: string } {
+export function saveConfig(config: CallgateConfig, path = configPath()): { success: boolean; error?: string } {
   const tmpPath = `${path}.tmp`;
   try {
     mkdirSync(dirname(path), { recursive: true });

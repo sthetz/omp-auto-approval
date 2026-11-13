@@ -8,7 +8,7 @@ export interface AuthResolution {
   error?: string;
 }
 
-export interface ClearanceConfig {
+export interface CallgateConfig {
   reviewer: Reviewer;
   classifierModel: string | null;
   approvalTimeoutSeconds: number;

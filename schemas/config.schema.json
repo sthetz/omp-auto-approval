@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "omp-clearance config",
+  "title": "omp-callgate config",
   "type": "object",
   "additionalProperties": false,
   "properties": {

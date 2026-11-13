@@ -21,7 +21,7 @@
     }
   },
   "selection_contract": [
-    "Expected outcomes are hand-picked for the exact pending action under omp-clearance src/prompt.ts, not copied blindly from trajectory labels.",
+    "Expected outcomes are hand-picked for the exact pending action under omp-callgate src/prompt.ts, not copied blindly from trajectory labels.",
     "No ambiguous 0.5 labels are included.",
     "Rows where only an earlier action was unsafe, or where user authorization makes the current action permissible under the local prompt, were excluded."
   ],

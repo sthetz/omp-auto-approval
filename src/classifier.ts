@@ -1,4 +1,4 @@
-import type { ClearanceConfig, ExtensionContextLike, ClassifierDecision, ReviewSubject } from "./types.js";
+import type { CallgateConfig, ExtensionContextLike, ClassifierDecision, ReviewSubject } from "./types.js";
 import { buildProjectedContext } from "./context-projection.js";
 import type { CommandRule } from "./command-rules.js";
 import { buildSystemPrompt } from "./prompt.js";
@@ -126,7 +126,7 @@ function splitModelRef(modelRef: string, currentModel: Record<string, unknown>):
   };
 }
 
-function resolveClassifierModel(ctx: ExtensionContextLike, config: ClearanceConfig): unknown {
+function resolveClassifierModel(ctx: ExtensionContextLike, config: CallgateConfig): unknown {
   const currentModel = ctx.model;
   if (!config.classifierModel) {
     return currentModel;
@@ -180,7 +180,7 @@ async function resolveRequestAuth(
 
 export async function classifyAction(
   ctx: ExtensionContextLike,
-  config: ClearanceConfig,
+  config: CallgateConfig,
   subject: ReviewSubject,
   client?: ClassifierClient,
   context: { agentMessage?: string; rule?: CommandRule; ruleTextOnly?: boolean } = {},

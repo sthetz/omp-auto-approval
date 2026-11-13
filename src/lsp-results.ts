@@ -60,7 +60,7 @@ export function unreadableLspLocation(content: unknown, roots: ReadRoots): strin
 /** What the agent gets instead of a withheld result. */
 export function withheldLspResultText(path: string): string {
   return [
-    `omp-clearance withheld this lsp result: it shows source lines from ${path},`,
+    `omp-callgate withheld this lsp result: it shows source lines from ${path},`,
     "which a read without review may not reach (outside the workspace and readRoots, or a sensitive path).",
     "If you need that file, read it with the read tool, which is reviewed.",
   ].join(" ");

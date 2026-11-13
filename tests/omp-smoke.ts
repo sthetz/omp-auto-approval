@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import ompClearanceExtension from "../index.js";
+import ompCallgateExtension from "../index.js";
 import { evaluateToolCall } from "../src/omp-host.js";
 import { loadConfig, logPath } from "../src/extension-config.js";
 import { SessionApprovalStore } from "../src/session-approval-store.js";
@@ -33,7 +33,7 @@ class OmpHarness {
   readonly handlers = new Map<string, EventHandler[]>();
 
   install(): void {
-    ompClearanceExtension({
+    ompCallgateExtension({
       on: (event, handler) => {
         const existing = this.handlers.get(event) ?? [];
         existing.push(handler);
@@ -47,15 +47,15 @@ class OmpHarness {
   }
 
   async command(args: string, ctx: ExtensionContextLike): Promise<void> {
-    const handler = this.commands.get("clearance");
-    assert.ok(handler, "clearance command should be registered");
+    const handler = this.commands.get("callgate");
+    assert.ok(handler, "callgate command should be registered");
     await handler(args, ctx);
   }
 }
 
 function baseCtx(overrides: Partial<ExtensionContextLike> = {}): ExtensionContextLike {
   return {
-    cwd: "/tmp/omp-clearance-smoke-workspace",
+    cwd: "/tmp/omp-callgate-smoke-workspace",
     hasUI: false,
     model: { provider: "smoke", id: "review-model" },
     sessionManager: { getBranch: () => [] },
@@ -77,18 +77,18 @@ function assertAuditEntry(records: AuditRecord[], expected: Partial<AuditRecord>
     Object.entries(expected).every(([key, value]) => record[key as keyof AuditRecord] === value),
   );
   assert.ok(found, `expected audit entry ${JSON.stringify(expected)}, got ${JSON.stringify(records, null, 2)}`);
-  assert.equal(found.extension, "omp-clearance");
+  assert.equal(found.extension, "omp-callgate");
   assert.equal(typeof found.timestamp, "string");
   assert.equal(found.toolName, "bash");
   return found;
 }
 
 async function run(): Promise<void> {
-  const tempRoot = mkdtempSync(join(tmpdir(), "omp-clearance-smoke-"));
-  const previousConfigPath = process.env.CLEARANCE_CONFIG_PATH;
-  const previousLogsDir = process.env.CLEARANCE_LOGS_DIR;
-  process.env.CLEARANCE_CONFIG_PATH = join(tempRoot, "config.jsonc");
-  process.env.CLEARANCE_LOGS_DIR = join(tempRoot, "logs");
+  const tempRoot = mkdtempSync(join(tmpdir(), "omp-callgate-smoke-"));
+  const previousConfigPath = process.env.CALLGATE_CONFIG_PATH;
+  const previousLogsDir = process.env.CALLGATE_LOGS_DIR;
+  process.env.CALLGATE_CONFIG_PATH = join(tempRoot, "config.jsonc");
+  process.env.CALLGATE_LOGS_DIR = join(tempRoot, "logs");
 
   try {
     const harness = new OmpHarness();
@@ -105,8 +105,8 @@ async function run(): Promise<void> {
     await harness.command("ai", commandCtx);
     assert.equal(loadConfig().config.reviewer, "off");
     assert.equal((JSON.parse(readFileSync(reviewerStatePath(), "utf8")) as { reviewer?: unknown }).reviewer, "ai");
-    assert.ok(notifications.includes("omp-clearance reviewer: ai."));
-    assert.deepEqual(statuses.at(-1), ["omp-clearance", "clearance:ai"]);
+    assert.ok(notifications.includes("omp-callgate reviewer: ai."));
+    assert.deepEqual(statuses.at(-1), ["omp-callgate", "callgate:ai"]);
 
     const thresholdAllow = await evaluateToolCall(
       {
@@ -134,8 +134,8 @@ async function run(): Promise<void> {
     const aiConfig = loadConfig().config;
     assert.equal(aiConfig.reviewer, "off");
     assert.equal((JSON.parse(readFileSync(reviewerStatePath(), "utf8")) as { reviewer?: unknown }).reviewer, "manual");
-    assert.ok(notifications.includes("omp-clearance reviewer: manual."));
-    assert.deepEqual(statuses.at(-1), ["omp-clearance", "clearance:manual"]);
+    assert.ok(notifications.includes("omp-callgate reviewer: manual."));
+    assert.deepEqual(statuses.at(-1), ["omp-callgate", "callgate:manual"]);
 
     const safeCommand = await evaluateToolCall(
       { toolName: "bash", input: { command: "git status --short" } },
@@ -181,21 +181,21 @@ async function run(): Promise<void> {
     assert.equal(classifier.classifierDecision?.rationale, "remote script execution");
     assert.equal(classifier.reason, "remote script execution");
 
-    console.log("[PASS] /clearance ai asks at the denial threshold without rewriting config");
-    console.log("[PASS] /clearance manual updates shared reviewer state");
+    console.log("[PASS] /callgate ai asks at the denial threshold without rewriting config");
+    console.log("[PASS] /callgate manual updates shared reviewer state");
     console.log("[PASS] safe bash command is allowed without classifier");
     console.log("[PASS] suspicious bash command is rejected by the ai reviewer");
     console.log(`[PASS] audit log verified: ${logPath()}`);
   } finally {
     if (previousConfigPath === undefined) {
-      delete process.env.CLEARANCE_CONFIG_PATH;
+      delete process.env.CALLGATE_CONFIG_PATH;
     } else {
-      process.env.CLEARANCE_CONFIG_PATH = previousConfigPath;
+      process.env.CALLGATE_CONFIG_PATH = previousConfigPath;
     }
     if (previousLogsDir === undefined) {
-      delete process.env.CLEARANCE_LOGS_DIR;
+      delete process.env.CALLGATE_LOGS_DIR;
     } else {
-      process.env.CLEARANCE_LOGS_DIR = previousLogsDir;
+      process.env.CALLGATE_LOGS_DIR = previousLogsDir;
     }
     rmSync(tempRoot, { recursive: true, force: true });
   }

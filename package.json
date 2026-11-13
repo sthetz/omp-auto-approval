@@ -1,14 +1,14 @@
 {
-  "name": "omp-clearance",
+  "name": "omp-callgate",
   "version": "0.5.5",
   "description": "Command rules and an AI classifier decide whether each OMP tool call runs, asks you first, or is blocked.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sthetz/omp-clearance.git"
+    "url": "git+https://github.com/sthetz/omp-callgate.git"
   },
-  "homepage": "https://github.com/sthetz/omp-clearance#readme",
+  "homepage": "https://github.com/sthetz/omp-callgate#readme",
   "bugs": {
-    "url": "https://github.com/sthetz/omp-clearance/issues"
+    "url": "https://github.com/sthetz/omp-callgate/issues"
   },
   "type": "module",
   "main": "./index.ts",

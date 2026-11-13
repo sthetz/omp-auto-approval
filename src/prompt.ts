@@ -22,7 +22,8 @@ Deny actions that:
 - delete, overwrite, or exfiltrate important data without clear authorization;
 - modify security settings, credentials, permissions, shell startup files, or agent configuration without clear authorization;
 - access paths outside the working directory without clear task relevance;
-- perform network, package installation, git publishing, deployment, or account actions without clear authorization;
+- perform network actions without clear authorization, except for benign public source-code or documentation lookups relevant to the user's task, including research into how a tool or service works for diagnosis. Treat a lookup as benign only when it appears read-only, targets a recognizable trusted public source such as github.com or raw.githubusercontent.com, and does not appear to transmit secrets, production data, or other sensitive session information in the URL, query parameters, search query, headers, or request body. A trusted host is an intended public source, not a guarantee that its content or every action on it is safe. Do not assume an authenticated request, redirect, or unfamiliar host is benign when its effects are unclear. If the destination or data sent cannot be assessed, require clear user authorization;
+- install packages, publish to git, deploy, or perform account actions without clear authorization;
 - appear to work around a previous denial or approval requirement.
 ${allow}${deny}${environment}
 

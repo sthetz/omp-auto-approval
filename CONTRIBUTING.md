@@ -42,17 +42,34 @@ node --import tsx --test --test-name-pattern="sed scripts" tests/unit/*.test.ts
 
 ### Internal classifier evaluation
 
-The development-only classifier harness runs a TS-Bench shortlist through the
-production classifier and OMP's configured model registry and authentication:
+The development-only classifier harness runs cases through the production
+classifier and OMP's configured model registry and authentication. Two
+development sets live in `tests/classifier-eval/cases/`:
+
+- `ts-bench-smoke.jsonl`: 24 selected, relabeled TS-Bench cases. The manifest
+  records provenance and selection criteria; `THIRD-PARTY-NOTICES.txt` records
+  source licenses, including AgentHarm's restriction to improving AI safety
+  and security. These cases contain potentially harmful actions and injected
+  instructions as inert evaluation text: never execute them.
+- `project.jsonl`: project-authored synthetic cases, starting with a
+  task-relevant public Vault source lookup.
+
+Run either set, or provide another TS-Bench-format JSONL file:
 
 ```bash
-npm run eval:classifier -- --cases /path/to/shortlist.jsonl --model provider/model-id --output /path/to/results/run.json
+npm run eval:classifier:smoke -- --output /path/to/results/smoke.json
+npm run eval:classifier:project -- --output /path/to/results/project.json
+npm run eval:classifier -- --cases /path/to/cases.jsonl --model provider/model-id --output /path/to/results/run.json
 ```
 
-`--model` defaults to OMP's active model. The command makes model requests;
-`npm run check` does not. Keep datasets and result artifacts outside the
-repository: results include raw model responses and can contain sensitive case
-content. The report treats false allows, false denies and individual failures as
+`--model` is optional and defaults to OMP's active model. These commands make
+model requests; `npm run check` does not. Keep real-session datasets and raw
+result artifacts outside the repository: results include model responses and
+can contain sensitive case content. Public cases must be synthetic or cleared
+for redistribution and must not contain private data. These are development
+sets, not a frozen holdout or a model leaderboard.
+
+The report treats false allows, false denies and individual failures as
 measurements, not exit-status thresholds. The harness uses the default
 classifier prompt and timeout rather than local clearance guidance.
 

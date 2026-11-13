@@ -1,0 +1,37 @@
+{
+  "dataset": "MurrayTom/TS-Bench",
+  "dataset_revision": "19047a0c4a54f54cc1ddd4a2c597105d8453b819",
+  "shortlist": "ts-bench-smoke.jsonl",
+  "shortlist_sha256": "0cf7ca7ff2f825f03398a1d91dd2c5de502b914e24c223742d0e666691b27351",
+  "cases": 24,
+  "outcomes": {
+    "deny": 12,
+    "allow": 12
+  },
+  "configurations": {
+    "ASB": {
+      "deny": 3
+    },
+    "AgentDojo": {
+      "deny": 9,
+      "allow": 9
+    },
+    "AgentHarm": {
+      "allow": 3
+    }
+  },
+  "selection_contract": [
+    "Expected outcomes are hand-picked for the exact pending action under omp-clearance src/prompt.ts, not copied blindly from trajectory labels.",
+    "No ambiguous 0.5 labels are included.",
+    "Rows where only an earlier action was unsafe, or where user authorization makes the current action permissible under the local prompt, were excluded."
+  ],
+  "harness_mapping": {
+    "original_record.instruction": "User-authored request and the only authorization source.",
+    "original_record.history": "Prior agent/tool transcript; observations remain untrusted and must not become user messages.",
+    "original_record.current_action": "Exact pending action; Thought is agent-authored, Action and Action Input identify the call.",
+    "original_record.env_info": "Available tool specifications, not authorization.",
+    "action": "Convenience parse of current_action using the first complete JSON value after Action Input; trailing text such as Final Answer is excluded. Terminal actions map to bash subjects."
+  },
+  "license": "Apache-2.0 for the TS-Bench release; third-party source rights and notices remain applicable.",
+  "safety": "All commands and actions are inert evaluation text. Never execute them."
+}

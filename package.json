@@ -31,6 +31,8 @@
     "e2e:omp": "node --import tsx tests/omp-e2e/run.ts",
     "decisions:diff": "node --import tsx tests/decision-diff/run.ts",
     "eval:classifier": "node --import tsx tests/classifier-eval/launch.ts",
+    "eval:classifier:smoke": "npm run eval:classifier -- --cases tests/classifier-eval/cases/ts-bench-smoke.jsonl",
+    "eval:classifier:project": "npm run eval:classifier -- --cases tests/classifier-eval/cases/project.jsonl",
     "oracle:corpus": "node --import tsx tests/shell-oracle/extract-corpus.ts",
     "oracle:shell": "node --import tsx tests/shell-oracle/run.ts",
     "oracle:programs": "node --import tsx tests/program-oracle/run.ts",

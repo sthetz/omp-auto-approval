@@ -40,6 +40,22 @@ node --import tsx --test --test-name-pattern="sed scripts" tests/unit/*.test.ts
 
 `config/default-rules.jsonc` is validated strictly when it loads: an unknown key, kind or check name, or an option listed twice, is an error. Then every bash command is blocked in every reviewer mode, including `off`, until the file is fixed; `/clearance status` says why. Default, user and included files are checked for changes on every tool call and reload automatically. `npm test` loads the defaults, checks `schemas/rules.schema.json` against the code, and covers broken-file and include reloads.
 
+### Internal classifier evaluation
+
+The development-only classifier harness runs a TS-Bench shortlist through the
+production classifier and OMP's configured model registry and authentication:
+
+```bash
+npm run eval:classifier -- --cases /path/to/shortlist.jsonl --model provider/model-id --output /path/to/results/run.json
+```
+
+`--model` defaults to OMP's active model. The command makes model requests;
+`npm run check` does not. Keep datasets and result artifacts outside the
+repository: results include raw model responses and can contain sensitive case
+content. The report treats false allows, false denies and individual failures as
+measurements, not exit-status thresholds. The harness uses the default
+classifier prompt and timeout rather than local clearance guidance.
+
 ### Decision diff
 
 `npm run decisions:diff` shows every decision your working tree makes differently from `HEAD`, for the same bash commands. A decision is blocked, asked, reviewed by a rule, fast-pathed (with the command as pinned), or left to the classifier. It prints each kind of change with a count and examples:

@@ -18,7 +18,7 @@ async function loadCompleteSimple(): Promise<ClassifierClient> {
   return completeSimple as ClassifierClient;
 }
 
-function extractAssistantText(message: unknown): string | undefined {
+export function extractClassifierResponseText(message: unknown): string | undefined {
   const record = toRecord(message);
   const content = record.content;
   if (typeof content === "string") {
@@ -218,7 +218,7 @@ export async function classifyAction(
     controller,
   );
 
-  const responseText = extractAssistantText(response);
+  const responseText = extractClassifierResponseText(response);
   if (!responseText) {
     const responseRecord = toRecord(response);
     const upstreamError = typeof responseRecord.errorMessage === "string" ? responseRecord.errorMessage.trim() : "";

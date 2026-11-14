@@ -56,7 +56,7 @@ const ROUTE_EXPLANATIONS: Record<Decision["route"], string> = {
   invalid: "blocked: no tool name was provided",
   blocked_command: "blocked: matches a block command rule and never runs",
   ask_rule: "asks you directly, without the classifier: matches an ask command rule (denied without a UI)",
-  local_state: "allowed without review: local session state (todo, wait)",
+  local_state: "allowed without review: internal bookkeeping or ordinary agent spawning/messaging",
   ui_only: "allowed without review: interactive ask with no remote content",
   tool_allowlist: "allowed without review: tool is listed in reviewExemptTools",
   readonly:

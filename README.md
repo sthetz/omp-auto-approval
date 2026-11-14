@@ -80,7 +80,7 @@ The first row that applies decides. `/callgate explain` runs the same decision f
 | 1 | Any default, user or included rules file is broken | Every bash call is denied, in every reviewer mode; other tools continue | `blocked_command` |
 | 2 | A bash command matches a **block** rule | Denied, without asking anyone | `blocked_command` |
 | 3 | A bash command matches an **ask** rule | You are asked, without the classifier, unless you already chose "Allow Always This Exact Action" for it; denied without a UI | `ask_rule` |
-| 4 | OMP's own `todo` or `wait`, or an `ask` form with no links | Allowed | `local_state`, `ui_only` |
+| 4 | OMP's own `todo`, `wait` or `yield`, an ordinary `task` spawn, a `write` message to `agent://…`, or an `ask` form with no links | Allowed | `local_state`, `ui_only` |
 | 5 | The tool is listed in `reviewExemptTools` | Allowed | `tool_allowlist` |
 | 6 | A read inside the workspace or `readRoots`, a write inside the workspace, or a language server query, edit preview or previewed rename, that touches no sensitive path; a `write` to `xd://lsp`, whose `lsp` call is decided on its own | Allowed | `readonly`, `workspace_write`, `lsp_read`, `lsp_edit`, `lsp_dispatch` |
 | 7 | A tool that needs a human: computer use, browser clicks and typing, plugin installs, MCP or permission settings | You are asked in every reviewer mode; denied without a UI | `manual_only` |
@@ -147,7 +147,7 @@ The npm rules ask even with `--ignore-scripts`, `--offline`, `--dry-run`, a glob
 ## Other tools
 
 - `web_search` is always reviewed: its query goes to a third party and could carry data out of the session.
-- `eval` and `task` are always reviewed: `eval` runs code, and `task` hands work to subagents with every tool.
+- `eval` is reviewed because it runs code. Ordinary built-in `task` spawns skip review: children inherit callgate, and their tool calls are decided independently. Historical-session (`seance` / `sourceSession`) and isolated spawns remain reviewed because they also open a source session or manage worktree commits/merges outside child tool calls.
 - An `ask` form skips review only in an interactive session and when it contains no links, since OMP fetches images in it.
 - Tools are trusted by name only when OMP reports them as its own. An extension or MCP tool named `read` is reviewed, and self-declared read-only hints are ignored.
 - `reviewExemptTools` in `config.jsonc` lets more tools through without any review, including tools that would otherwise need a human. Names are case-insensitive; list only tools you are happy to run unchecked. Review, ask and block rules still apply to `bash` when it is listed.

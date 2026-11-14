@@ -84,7 +84,7 @@ await test("writes that create or change a program are reviewed", async () => {
   }
 });
 
-await test("todo completion and wait bypass classifier review and audit local_state", async () => {
+await test("internal bookkeeping and agent orchestration bypass classifier review and audit local_state", async () => {
   const dir = mkdtempSync(join(tmpdir(), "omp-callgate-orchestration-"));
   const previousLogsDir = process.env.CALLGATE_LOGS_DIR;
   process.env.CALLGATE_LOGS_DIR = dir;
@@ -93,6 +93,12 @@ await test("todo completion and wait bypass classifier review and audit local_st
     for (const event of [
       { toolName: "todo", input: { op: "done", task: "Ship the verified change" } },
       { toolName: "wait", input: {} },
+      { toolName: "yield", input: { data: { findings: "Review complete" } } },
+      { toolName: "write", input: { path: "agent://Child", content: "Inspect the remaining handler." } },
+      { toolName: "write", input: { path: "agent://all", content: "Stop research and publish your findings." } },
+      { toolName: "write", input: { path: "agent://Parent.Child?progress", content: "Found the cause." } },
+      { toolName: "task", input: { task: "Delegate arbitrary repository work" } },
+      { toolName: "task", input: { context: "Review", tasks: [{ agent: "scout", task: "Inspect the code" }] } },
     ]) {
       const result = await evaluateToolCall(
         event,
@@ -126,6 +132,12 @@ await test("todo completion and wait bypass classifier review and audit local_st
       [
         { toolName: "todo", route: "local_state", outcome: "allow" },
         { toolName: "wait", route: "local_state", outcome: "allow" },
+        { toolName: "yield", route: "local_state", outcome: "allow" },
+        { toolName: "write", route: "local_state", outcome: "allow" },
+        { toolName: "write", route: "local_state", outcome: "allow" },
+        { toolName: "write", route: "local_state", outcome: "allow" },
+        { toolName: "task", route: "local_state", outcome: "allow" },
+        { toolName: "task", route: "local_state", outcome: "allow" },
       ],
     );
   } finally {
@@ -135,6 +147,45 @@ await test("todo completion and wait bypass classifier review and audit local_st
       process.env.CALLGATE_LOGS_DIR = previousLogsDir;
     }
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await test("agent orchestration does not exempt distinct side effects", async () => {
+  for (const event of [
+    { toolName: "write", input: { path: "agentx://Child", content: "message" } },
+    { toolName: "write", input: { path: "agent:/Child", content: "message" } },
+    { toolName: "write", input: { path: "local://message.md", content: "message" } },
+    { toolName: "write", input: { path: "proc://Child", content: "execute a command" } },
+    { toolName: "write", input: { path: "cfg://task", content: "{}" } },
+    { toolName: "write", input: { path: "xd://bash", content: '{"command":"touch marker"}' } },
+    { toolName: "write", input: { path: "agent://all", content: "message", destination: "../outside.txt" } },
+    { toolName: "edit", input: { path: "agent://Child", edits: [{ op: "update" }] } },
+    { toolName: "task", input: { task: "Edit in a worktree", isolated: true } },
+    { toolName: "task", input: { agent: "seance", task: "Read prior work", sourceSession: "../old.jsonl" } },
+    { toolName: "task", input: { task: "Read prior work", sourceSession: "../old.jsonl" } },
+    {
+      toolName: "task",
+      input: { context: "Review", tasks: [{ task: "Inspect code" }, { task: "Edit in a worktree", isolated: true }] },
+    },
+    {
+      toolName: "task",
+      input: {
+        context: "Review",
+        tasks: [{ task: "Inspect code" }, { agent: "seance", sourceSession: "../old.jsonl" }],
+      },
+    },
+  ]) {
+    assert.deepEqual(
+      await evaluateToolCall(
+        event,
+        ctx(),
+        config({ reviewer: "ai" }),
+        new SessionApprovalStore(),
+        classifierDenyOptions(),
+      ),
+      { block: true, reason: CLASSIFIER_DENY_REASON },
+      JSON.stringify(event),
+    );
   }
 });
 
@@ -216,20 +267,15 @@ await test("external-image and noninteractive ask calls remain classifier-review
   }
 });
 
-await test("eval and task remain classifier-reviewed", async () => {
-  for (const event of [
+await test("eval remains classifier-reviewed", async () => {
+  const result = await evaluateToolCall(
     { toolName: "eval", input: { language: "py", code: "print('review me')" } },
-    { toolName: "task", input: { task: "Delegate arbitrary repository work" } },
-  ]) {
-    const result = await evaluateToolCall(
-      event,
-      ctx(),
-      config({ reviewer: "ai" }),
-      new SessionApprovalStore(),
-      classifierDenyOptions(),
-    );
-    assert.deepEqual(result, { block: true, reason: CLASSIFIER_DENY_REASON });
-  }
+    ctx(),
+    config({ reviewer: "ai" }),
+    new SessionApprovalStore(),
+    classifierDenyOptions(),
+  );
+  assert.deepEqual(result, { block: true, reason: CLASSIFIER_DENY_REASON });
 });
 
 await test("configured tool exemptions bypass classifier review", async () => {
@@ -292,9 +338,13 @@ await test("name-based fast paths apply only to the host's builtin tools", async
   const cases = [
     { toolName: "read", input: { path: "xd://read/sources" } },
     { toolName: "read", input: { path: "a.ts" } },
+    { toolName: "read", input: { path: "history://Child" } },
     { toolName: "grep", input: { pattern: "x" } },
     { toolName: "todo", input: { op: "done", task: "x" } },
     { toolName: "wait", input: {} },
+    { toolName: "yield", input: { data: "Done" } },
+    { toolName: "write", input: { path: "agent://all", content: "Publish your findings." } },
+    { toolName: "task", input: { task: "Delegate work" } },
     { toolName: "ask", input: { question: "Continue?" } },
     { toolName: "lsp", input: { action: "hover", file: "a.ts", line: 1, symbol: "x" } },
     { toolName: "write", input: { path: "xd://lsp", content: '{"action":"status"}' } },
@@ -354,6 +404,8 @@ await test("read fast path allows non-sensitive workspace targets and session-lo
       { toolName: "read", input: { path: "skill://commit/SKILL.md" } },
       { toolName: "read", input: { path: "rule://style" } },
       { toolName: "read", input: { path: "agent://0-Explore" } },
+      { toolName: "read", input: { path: "history://" } },
+      { toolName: "read", input: { path: "history://Parent.Child:1-10" } },
       { toolName: "grep", input: { pattern: "https://api.example.com", path: "." } },
       { toolName: "grep", input: { pattern: "TODO", path: '["src", "tests"]' } },
       { toolName: "grep", input: { pattern: "TODO", gitignore: true } },
@@ -1184,6 +1236,16 @@ await test("an lsp edit that repeats a clean preview skips review once", async (
     assert.deepEqual(await decide({ path: "src/a.ts", content: "x" }, false, "write"), {});
     await result({ path: "src/a.ts" }, `c${calls}`, "ok");
     assert.deepEqual(await decide(rename, true), denied);
+    // Messaging and spawning can start an agent that changes the code.
+    for (const event of [
+      { toolName: "write", input: { path: "agent://Child", content: "Continue editing." } },
+      { toolName: "task", input: { task: "Continue editing." } },
+    ]) {
+      await previewed();
+      assert.deepEqual(await decide(event.input, false, event.toolName), {});
+      await result(event.input, `c${calls}`, "Agent started.");
+      assert.deepEqual(await decide(rename, true), denied);
+    }
     // A batch: the preview is decided, then a write is decided before the
     // preview's result comes back. The preview may show the code before or
     // after the write, so it does not count.

@@ -19,7 +19,7 @@ export { resolveReadRoots, type ReadRoots } from "./common.js";
 import { isSensitivePath } from "./sensitive-paths.js";
 import type { ReviewSubject } from "./types.js";
 
-const LOCAL_STATE_TOOLS = new Set(["todo", "wait"]);
+const LOCAL_STATE_TOOLS: Readonly<Record<string, true>> = { todo: true, wait: true, yield: true };
 
 // Host tools that only read. They skip review only when every target they
 // name passes isWorkspaceReadFastPath. `web_search` is deliberately absent:
@@ -45,7 +45,16 @@ const READ_TARGET_KEYS = [...PATH_KEYS, "paths"];
 // OMP internal URL schemes backed by local, read-only session data. Others
 // reach remote hosts (ssh, mcp, pr, issue, mr), devices or processes (proc,
 // out, xd), or user secrets and settings (vault, cfg), and stay reviewed.
-const LOCAL_READ_SCHEMES = new Set(["skill", "rule", "agent", "artifact", "memory", "local", "omp"]);
+const LOCAL_READ_SCHEMES: Readonly<Record<string, true>> = {
+  skill: true,
+  rule: true,
+  agent: true,
+  history: true,
+  artifact: true,
+  memory: true,
+  local: true,
+  omp: true,
+};
 
 // Keys that can name a write destination anywhere in a write/edit payload,
 // e.g. OMP's patch-mode edit `{ path, edits: [{ rename }] }`.
@@ -100,8 +109,39 @@ const PROTECTED_WORKSPACE_ENTRIES = new Set([
   ".env",
 ]);
 
-export function isLocalStateTool(toolName: string): boolean {
-  return LOCAL_STATE_TOOLS.has(toolName.trim().toLowerCase());
+/** Ordinary children inherit extensions; historical forks and isolated merge/apply runs do not fit this boundary. */
+function isOrdinaryAgentSpawn(input: unknown): input is Record<string, unknown> {
+  return (
+    isRecord(input) &&
+    (input.isolated == null || input.isolated === false) &&
+    input.sourceSession == null &&
+    (typeof input.agent !== "string" || input.agent.trim().toLowerCase() !== "seance")
+  );
+}
+
+/** Internal bookkeeping or agent orchestration; the caller must verify the tool is built-in. */
+export function isLocalStateTool(toolName: string, input: unknown): boolean {
+  const name = toolName.trim().toLowerCase();
+  if (LOCAL_STATE_TOOLS[name] === true) {
+    return true;
+  }
+  if (name === "task") {
+    return (
+      isOrdinaryAgentSpawn(input) &&
+      (input.tasks == null || (Array.isArray(input.tasks) && input.tasks.every(isOrdinaryAgentSpawn)))
+    );
+  }
+  // OMP 18.20.0 reserves agent:// for handler-owned coordination writes.
+  // Every target in this namespace sends a message or errors; it never falls
+  // back to writing the output artifact. Do not inspect message text as code.
+  return (
+    name === "write" &&
+    isRecord(input) &&
+    typeof input.path === "string" &&
+    /^agent:\/\//i.test(input.path) &&
+    typeof input.content === "string" &&
+    Object.keys(input).every((key) => key === "path" || key === "content")
+  );
 }
 
 const NAMED_ENTITIES: Record<string, string> = {
@@ -277,7 +317,7 @@ export function isReadTarget(value: unknown, roots: ReadRoots, depth = 0): boole
   const scheme = trimmed.match(/^([a-z][a-z0-9+.-]*):\/\//i)?.[1]?.toLowerCase();
   if (scheme) {
     // These exact host documentation topics do not dispatch a device.
-    return LOCAL_READ_SCHEMES.has(scheme) || trimmed === "xd://read/sources" || trimmed === "xd://read/urls";
+    return LOCAL_READ_SCHEMES[scheme] === true || trimmed === "xd://read/sources" || trimmed === "xd://read/urls";
   }
   // OMP expands `~` and `~/…` to the home directory; `~user` stays reviewed.
   if (trimmed === "~" || trimmed.startsWith("~/")) {

@@ -21,6 +21,8 @@ export interface ToolCall {
 export interface FakeModelOptions {
   /** The agent's tool calls, in order: step n is answered after n tool results. */
   steps: ToolCall[];
+  /** Optional separate script for a child identified by its system prompt. */
+  subagent?: { systemMarker: string; steps: ToolCall[] };
   /** The classifier's answer to every review. */
   verdict: "allow" | "deny";
   /** Optional classifier latency for lifecycle regression tests. */
@@ -32,6 +34,7 @@ export interface FakeModelLog {
   classifier: string[];
   /** The tool results the agent had seen at each of its turns. */
   toolResults: string[][];
+  subagentToolResults: string[][];
 }
 
 export interface FakeModel {
@@ -70,7 +73,7 @@ function chunk(delta: Record<string, unknown>, finish: string | null): string {
 }
 
 export async function startFakeModel(options: FakeModelOptions): Promise<FakeModel> {
-  const log: FakeModelLog = { classifier: [], toolResults: [] };
+  const log: FakeModelLog = { classifier: [], toolResults: [], subagentToolResults: [] };
   let calls = 0;
   const server: Server = createServer((request, response) => {
     if (request.method === "GET") {
@@ -102,8 +105,13 @@ export async function startFakeModel(options: FakeModelOptions): Promise<FakeMod
         if (options.classifierDelayMs) await delay(options.classifierDelayMs);
       } else {
         const results = messages.filter((message) => message.role === "tool").map((message) => textOf(message.content));
-        log.toolResults.push(results);
-        tool = options.steps[results.length];
+        if (options.subagent && system.includes(options.subagent.systemMarker)) {
+          log.subagentToolResults.push(results);
+          tool = options.subagent.steps[results.length];
+        } else {
+          log.toolResults.push(results);
+          tool = options.steps[results.length];
+        }
         text = tool ? undefined : "done";
       }
       const delta: Record<string, unknown> = { role: "assistant" };

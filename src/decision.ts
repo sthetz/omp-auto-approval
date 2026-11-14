@@ -225,7 +225,7 @@ function evaluateStatic(call: CanonicalToolCall & { toolName: string }, state: D
   // A bash command a review rule matches is reviewed even when bash is in
   // reviewExemptTools.
   const reviewBash = command !== undefined && escalation?.outcome === "review";
-  if (builtin && isLocalStateTool(call.toolName)) {
+  if (builtin && isLocalStateTool(call.toolName, call.input)) {
     return verdict("allow", "local_state");
   }
   if (builtin && isInteractiveUiOnlyTool(call.toolName, call.input, hasUI)) {
@@ -637,7 +637,11 @@ async function applyFinal(
       jobsIdle(ctx)
     ) {
       store.startLspPreview(callId);
-    } else if (!UNCHANGING_ROUTES.has(decision.route)) {
+    } else if (
+      !UNCHANGING_ROUTES.has(decision.route) ||
+      // Peer messages and spawns can start agents that change files.
+      (decision.route === "local_state" && (decision.call.toolName === "write" || decision.call.toolName === "task"))
+    ) {
       store.noteChange(callId);
     }
   }

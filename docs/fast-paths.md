@@ -2,14 +2,26 @@
 
 A fast path allows a tool call at once, without the classifier or you. Each is deliberately narrow: anything it cannot read exactly, or that touches a sensitive path, goes to review instead. This page lists what each one accepts; the [README](../README.md#how-a-tool-call-is-decided) shows where they sit among the other checks, and `/callgate explain` shows which one a given call would take.
 
-There are four: [workspace reads](#workspace-reads), [workspace writes](#workspace-writes), [language server queries](#language-server-queries) and [safe bash commands](#safe-bash-commands).
+There are five: [internal coordination](#internal-coordination), [workspace reads](#workspace-reads), [workspace writes](#workspace-writes), [language server queries](#language-server-queries) and [safe bash commands](#safe-bash-commands).
+
+## Internal coordination
+
+OMP's built-in `todo`, `wait` and `yield` tools, and built-in `write` calls with only a string `path` starting with `agent://` (case-insensitive) and string `content`, skip review with route `local_state`. Direct messages, nested agent ids, `agent://all` broadcasts and `?progress` updates use the same rule. Message text is data for the receiving agent, not a shell command or a filesystem write.
+
+OMP's [agent URL handler](https://github.com/can1357/oh-my-pi/blob/v18.20.0/packages/coding-agent/src/internal-urls/agent-protocol.ts) reserves this namespace for coordination: it delivers a message or returns an error, never writes the agent's output artifact. Messaging can revive a parked agent; messages and spawns invalidate pending language-server edit previews.
+
+Ordinary built-in `task` spawns also skip review, in flat and batch form. OMP [passes the parent's extension paths/factories into each child and initializes them before execution](https://github.com/can1357/oh-my-pi/blob/v18.20.0/packages/coding-agent/src/task/executor.ts), so delegation is not authorization: the child's subsequent tool calls are still reviewed. Callgate does not classify the assignment's wording.
+
+This exemption excludes any spawn selecting `seance`, supplying `sourceSession`, or requesting isolation (`isolated: true`), including a batch containing such an item. Seance [disables inherited extensions](https://github.com/can1357/oh-my-pi/blob/v18.20.0/packages/coding-agent/src/task/seance-policy.ts) and directly opens a selected historical session; isolated tasks can capture, commit and merge changes through OMP's [isolation runner](https://github.com/can1357/oh-my-pi/blob/v18.20.0/packages/coding-agent/src/task/isolation-runner.ts), outside child tool calls.
+
+Process input or controls (`proc://`), settings (`cfg://`) and arbitrary tool-device dispatch (`xd://`) remain reviewed. Extension, SDK and MCP tools cannot gain the coordination exemption by reusing a built-in name. Reads of `agent://` outputs and `history://` transcripts use the session-local read fast path below.
 
 ## Workspace reads
 
 The host's own read-only tools (`read`, `grep`, `find`, `glob`, `ast_grep`, `ls`, …) when every path they name is inside the working directory or a `readRoots` directory (after resolving symlinks) and is not credential-like. These always go to the session reviewer:
 
 - paths outside the working directory and `readRoots`;
-- URLs (`http(s)://`, `www.`) and remote or sensitive internal URLs (`ssh://`, `mcp://`, `pr://`, `issue://`, `mr://`, `vault://`, `cfg://`, `proc://`, …). Session-local URLs (`skill://`, `rule://`, `agent://`, `artifact://`, `memory://`, `local://`, `omp://`) skip review, as do the exact documentation URLs described below;
+- URLs (`http(s)://`, `www.`) and remote or sensitive internal URLs (`ssh://`, `mcp://`, `pr://`, `issue://`, `mr://`, `vault://`, `cfg://`, `proc://`, …). Session-local URLs (`skill://`, `rule://`, `agent://`, `history://`, `artifact://`, `memory://`, `local://`, `omp://`) skip review, as do the exact documentation URLs described below;
 - credential-like files and directories anywhere in the tree: `.env` and `.env.*` (except `.example`, `.sample`, `.template`, `.dist`, `.defaults`), `.envrc`, `.npmrc`, `.pypirc`, `.netrc`, `.pgpass`, `.git-credentials`, `.htpasswd`, `kubeconfig`, `id_rsa`/`id_ed25519`-style keys, `credentials.*`, `secret(s).*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.kdbx`, `*.tfstate`, `*.tfvars`, and anything under `.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, `.password-store`, `secrets`, `.secrets` or `credentials`;
 - path forms that OMP rewrites before use (a leading `@`, `:` or `"`, `~user`, `file://`, `?query`, `#fragment`);
 - searches with `gitignore: false`. OMP's `grep` searches hidden files but honours `.gitignore`, which normally keeps `.env` out of a workspace-wide search. A secret file that is *not* gitignored can still appear in grep results.

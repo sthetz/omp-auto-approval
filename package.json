@@ -1,6 +1,6 @@
 {
   "name": "omp-callgate",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Command rules and an AI classifier decide whether each OMP tool call runs, asks you first, or is blocked.",
   "repository": {
     "type": "git",

@@ -1,11 +1,17 @@
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import { commandSegments, compileCommandPattern, type CommandPattern } from "./command-patterns.js";
+import {
+  commandSegments,
+  compileCommandPattern,
+  type CommandPattern,
+  type CommandSegments,
+} from "./command-patterns.js";
 import { allowPrefixProblem } from "./allow-prefix.js";
 import { configPath, extensionRoot } from "./extension-config.js";
 import { parseJsonc } from "./jsonc.js";
 import { dictionary, group, itemAt } from "./common.js";
+import { recognizeShell, type ShellWord } from "./shell-syntax.js";
 
 /**
  * Command rules: which programs, options and operands the bash fast path
@@ -47,6 +53,8 @@ export const OPERAND_CHECKS = {
   none: [],
   // Any operands; for programs that open no files and take literal words.
   any: [],
+  // Exact npm version flags or bounded local prefix/root/pkg get queries.
+  "npm-information": [],
   // printf's format, which must not start with `-`, then its arguments.
   "printf-format": [],
   // grep's pattern (unless -e or -f gave it), then files and directories it searches.
@@ -946,6 +954,32 @@ export interface Escalation {
   textOnly: boolean;
 }
 
+/** Literal package fields are data, including fields named "version" or "install". */
+export function isNpmPackageGet(args: readonly ShellWord[]): boolean {
+  return (
+    args[0]?.text === "pkg" &&
+    args[1]?.text === "get" &&
+    args.every((word) => !word.expands) &&
+    args.slice(2).every((word) => word.text !== "" && !word.text.startsWith("-"))
+  );
+}
+
+/** Only the built-in npm asks ignore fields of a proven, direct pkg get. */
+function npmAskSegments(command: string, segments: CommandSegments): CommandSegments {
+  const script = recognizeShell(command);
+  if (!script) {
+    return segments;
+  }
+  let text = command;
+  for (const simple of script.pipelines.flat().reverse()) {
+    const [program, ...args] = simple.words;
+    if (program?.text === "npm" && !program.expands && isNpmPackageGet(args) && args.length > 2) {
+      text = text.slice(0, itemAt(args, 2).start) + text.slice(itemAt(args, args.length - 1).end);
+    }
+  }
+  return text === command ? segments : commandSegments(text);
+}
+
 /**
  * The most restrictive rule a bash command matches, or null. Rules match the
  * command's text, so they apply to commands the fast path never reads
@@ -971,11 +1005,16 @@ export function escalateCommand(command: string, rules: CommandRules): Escalatio
   }
   const segments = commandSegments(command);
   let deciding: Escalation | null = null;
+  let npmSegments: CommandSegments | undefined;
   for (const rule of rules.rules) {
     if (rule.outcome === "allow") {
       continue;
     }
-    const matches = rule.patterns.map((pattern) => pattern(command, segments));
+    const matching =
+      rule.source === "default" && (rule.id === "npm-install" || rule.id === "npm-exec")
+        ? (npmSegments ??= npmAskSegments(command, segments))
+        : segments;
+    const matches = rule.patterns.map((pattern) => pattern(command, matching));
     // Text inside quotes may be a command run elsewhere (`ssh host "…"`) or
     // just words (a commit message): enough to rule out a fast path, never
     // to block or ask.

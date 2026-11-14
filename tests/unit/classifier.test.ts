@@ -21,7 +21,7 @@ await test("parseClassifierDecision supports strict and wrapped JSON", () => {
 await test("ai reviewer allows classifier allow and denies classifier deny", async () => {
   const store = new SessionApprovalStore();
   const allow = await evaluateToolCall(
-    { toolName: "bash", input: { command: "npm install" } },
+    { toolName: "bash", input: { command: "make build" } },
     ctx(),
     config({ reviewer: "ai" }),
     store,
@@ -200,7 +200,7 @@ await test("classifier receives latest user request for current approval", async
 
 await test("ai without UI denies classifier failure", async () => {
   const result = await evaluateToolCall(
-    { toolName: "bash", input: { command: "npm install" } },
+    { toolName: "bash", input: { command: "make build" } },
     ctx({ hasUI: false }),
     config({ reviewer: "ai" }),
     new SessionApprovalStore(),
@@ -218,7 +218,7 @@ await test("ai without UI denies classifier failure", async () => {
 
 await test("classifier surfaces provider errorMessage over generic no-text", async () => {
   const result = await evaluateToolCall(
-    { toolName: "bash", input: { command: "npm install" } },
+    { toolName: "bash", input: { command: "make build" } },
     ctx({ hasUI: false }),
     config({ reviewer: "ai" }),
     new SessionApprovalStore(),
@@ -244,7 +244,7 @@ await test("classifier surfaces provider errorMessage over generic no-text", asy
 
 await test("classifier still reports no text when response has no errorMessage", async () => {
   const result = await evaluateToolCall(
-    { toolName: "bash", input: { command: "npm install" } },
+    { toolName: "bash", input: { command: "make build" } },
     ctx({ hasUI: false }),
     config({ reviewer: "ai" }),
     new SessionApprovalStore(),
@@ -411,7 +411,7 @@ await test("ai reviewer end-to-end allow with injected custom provider auth", as
   // decision pipeline, not just classifyAction in isolation.
   let capturedApiKey: unknown;
   const result = await evaluateToolCall(
-    { toolName: "bash", input: { command: "npm install" } },
+    { toolName: "bash", input: { command: "make build" } },
     ctx({
       modelRegistry: {
         find: (provider, id) => ({ id, api: "openai-completions", provider, baseUrl: "https://my-proxy.example/v1" }),

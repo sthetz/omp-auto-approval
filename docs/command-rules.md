@@ -22,7 +22,7 @@ Program entries say what may skip review by reading options and operands. A `rul
 
 ```jsonc
 "rules": [
-  { "id": "npm-test", "prefix": "npm test", "outcome": "allow" },
+  { "id": "project-tests", "prefix": "python -m pytest", "outcome": "allow" },
   { "id": "kube-secrets", "match": "kubectl get|describe *[Ss][Ee][Cc][Rr][Ee][Tt]*", "outcome": "review",
     "why": "Secret values must not reach the model unreviewed." },
   { "id": "kube-interactive", "match": "kubectl exec|port-forward|cp|edit|apply|rollout", "outcome": "ask" },
@@ -64,3 +64,7 @@ An allow rule's `prefix` is the start of a command as written, quotes included a
 - an argument is expanded by the shell, since its final form is unknown: an unquoted glob or brace, `~user`, or `~` after `=` or `:` in a `name=value` word, which bash expands (`dd if=~/key`). `cat secrets*` is reviewed, `find . -name '*.ts'` is not.
 
 A command a program entry rejects can still be allowed by a rule, under these checks. A prefix for a program whose arguments are a script or command line (`sed`, `awk`, `xargs`, `parallel`; read-only `sed` scripts are covered by its entry), or a bare shell, interpreter or wrapper (`bash`, `python`, `node`, `env`, `sudo`, `timeout`, …), which would allow any code, is an error. Name a specific invocation instead, such as `"python -m pytest"` or `"npm test"`. A `*` glued to a word leaves it unfinished, so `pyth*` or `e*` never lets a shell, interpreter or wrapper through, and `python -*` is a bare `python`. Beyond those checks, a rule still trusts the program: `npm test` runs whatever the `test` script says.
+
+The default `npm-install` and `npm-exec` ask rules take precedence over user allow prefixes, including `npm test`. Disabling one explicitly lets your own policy decide those calls again, but also removes that rule's other protections; add replacements for any operations you still want to require approval.
+
+The built-in npm program uses the named operand check `npm-information`: exact version flags, and bounded local prefix/root/pkg get queries with pinned startup settings (see [npm fast paths](fast-paths.md#npm)). Disable `program:npm` to remove those fast paths. Only the default `npm-install`/`npm-exec` asks ignore literal field operands of a direct `npm pkg get`; user patterns still match the original command.

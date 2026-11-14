@@ -83,6 +83,7 @@
         "literals",
         "none",
         "any",
+        "npm-information",
         "printf-format",
         "grep-operands",
         "diff-operands",

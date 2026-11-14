@@ -1,6 +1,6 @@
-import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   canonicalPath,
   itemAt,
@@ -10,7 +10,7 @@ import {
   type ReadRoots,
 } from "./common.js";
 import { boundedGlobMatches, isTreeClean } from "./path-expansion.js";
-import { defaultRules, type CommandRules } from "./command-rules.js";
+import { defaultRules, isNpmPackageGet, type CommandRules } from "./command-rules.js";
 import { allowPrefixProblem, prefixAllowsProgram } from "./allow-prefix.js";
 import { safeByProgramRule, type RuleContext } from "./program-rules.js";
 import { isSensitivePath } from "./sensitive-paths.js";
@@ -338,6 +338,108 @@ interface Check {
   used: { id: string; source: string }[];
 }
 
+/**
+ * The nearest npm project, without following discovery into an unreviewed
+ * parent or guessing implicit workspace membership. npm itself is pinned to
+ * this prefix below, so later config cannot redirect package.json reads.
+ */
+function npmProject(place: Place): string | null {
+  const directory = canonicalPath(place.directory, place.directory);
+  if (directory === null || directoryWithin(directory, place) === null) {
+    return null;
+  }
+  let project: string | null = null;
+  let current = directory;
+  // Bound both discovery and the JSON we inspect for workspace declarations.
+  for (let depth = 0; depth < 128; depth += 1) {
+    const inside = relativePathWithin(current, place.workspace) !== null;
+    const manifest = join(current, "package.json");
+    try {
+      const file = lstatSync(manifest);
+      if (!inside || !isInsideReadRoots(manifest, place.roots) || statSync(manifest).size > 1024 * 1024) {
+        return null;
+      }
+      if (!file.isFile() && !file.isSymbolicLink()) {
+        return null;
+      }
+      const pkg: unknown = JSON.parse(readFileSync(manifest, "utf8").replace(/^\uFEFF/, ""));
+      if (project !== null && pkg !== null && typeof pkg === "object" && "workspaces" in pkg && pkg.workspaces) {
+        return null;
+      }
+      project ??= current;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        return null;
+      }
+      // A dangling manifest link is not an absent manifest.
+      try {
+        lstatSync(manifest);
+        return null;
+      } catch (missing) {
+        if ((missing as NodeJS.ErrnoException).code !== "ENOENT") {
+          return null;
+        }
+      }
+    }
+    if (project === null) {
+      try {
+        if (statSync(join(current, "node_modules")).isDirectory()) {
+          if (!inside) {
+            return null;
+          }
+          project = current;
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          return null;
+        }
+      }
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return project ?? directory;
+    }
+    current = parent;
+  }
+  return null;
+}
+
+function pinNpmInformation(args: ShellWord[], check: Check, place: Place): boolean {
+  if (args.some((word) => word.expands)) {
+    return false;
+  }
+  const first = args[0];
+  if (args.length === 1 && (first?.text === "--version" || first?.text === "-v")) {
+    return true;
+  }
+  const paths = args.length === 1 && (first?.text === "prefix" || first?.text === "root");
+  const get = isNpmPackageGet(args);
+  if ((!paths && !get) || !first || process.platform === "win32") {
+    return false;
+  }
+  const project = npmProject(place);
+  if (project === null) {
+    return false;
+  }
+  // CLI settings override npmrc/environment defaults. /dev/null is not a
+  // directory: cache/log setup and cleanup cannot write through it. npm's
+  // installed runtime/config remain trusted, as for the version fast path.
+  const options = [
+    `--prefix=${project}`,
+    "--global=false",
+    "--location=project",
+    "--workspaces=false",
+    "--offline",
+    "--no-update-notifier",
+    "--cache=/dev/null",
+    "--logs-dir=/dev/null",
+    "--logs-max=0",
+    "--no-timing",
+  ];
+  check.pins.push({ start: first.start, end: first.start, text: `${options.map(shellQuote).join(" ")} ` });
+  return true;
+}
+
 /** What a program table may ask about the place a command runs in (see RuleContext). */
 function ruleContext(check: Check, place = check.place): RuleContext {
   const readable = (absolute: string) => isInsideReadRoots(absolute, place.roots);
@@ -390,6 +492,7 @@ function ruleContext(check: Check, place = check.place): RuleContext {
     workspaceDirectory: (text) => directoryWithin(text, place),
     within: (directory) => ruleContext(check, { ...place, directory }),
     command: (words) => isSafeCommand(words, check),
+    npmInformation: (args) => pinNpmInformation(args, check, place),
   };
 }
 

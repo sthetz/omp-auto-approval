@@ -66,6 +66,8 @@ export interface RuleContext {
   // Whether a command that this one runs (`timeout 5 git status`) is safe
   // on its own; its program is then pinned like the outer one.
   command(words: ShellWord[]): boolean;
+  // Validate and pin npm's local information queries and startup options.
+  npmInformation(args: ShellWord[]): boolean;
 }
 
 // The parts of an entry that option parsing reads.
@@ -581,6 +583,7 @@ const OPERAND_CHECK_FUNCTIONS: Record<OperandCheckName, OperandCheck> = {
     command.operands.every((word) => !word.expands && (!rule.pattern || rule.pattern.test(word.text))),
   none: (command) => command.operands.length === 0,
   any: () => true,
+  "npm-information": (command, context) => context.npmInformation(command.operands),
   "printf-format": checkPrintf,
   "grep-operands": checkGrep,
   "diff-operands": checkDiff,

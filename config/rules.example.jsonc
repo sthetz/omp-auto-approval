@@ -76,11 +76,11 @@
   // They match the command's text, also inside loops and `sh -c '…'`, and a
   // program named by a variable (`$k delete --all`) counts as any program.
   "rules": [
-    // An allow rule: a command that starts with "npm test" skips review.
-    // The checks in code still apply (no options that run programs or write
-    // files, no files outside the read roots), but npm runs whatever the
-    // project's test script says.
-    { "id": "npm-test", "prefix": "npm test", "outcome": "allow" },
+    // An allow rule: this exact test runner prefix skips review. The checks
+    // in code still apply (no unsafe options or files outside the read roots).
+    // It trusts the project's tests to execute code. npm test instead still
+    // asks under the default npm-exec rule, even with an allow prefix.
+    { "id": "project-tests", "prefix": "python -m pytest", "outcome": "allow" },
     // Words: the program, then words that follow it in order. `a|b` lists
     // alternatives; `--privileged` also matches `--privileged=true`, so a
     // value needs both spellings: `--network=host` and `--network host`.

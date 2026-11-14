@@ -59,6 +59,7 @@
 //     "jq-filter", "duration-then-command"
 //     "git-operands", "git-branch-list", "git-tag-list", "git-remote",
 //     "git-stash-list"
+//     "npm-information"  Bounded local npm queries with pinned startup settings.
 //   Each is described in src/command-rules.ts and implemented in
 //   src/program-rules.ts.
 //
@@ -663,9 +664,9 @@
       "operands": "none"
     },
 
-    // Exact version flags and local prefix/root/pkg get queries. The named
-    // check bounds project discovery and pins npm's startup options to
-    // disable networking, update checks, logging and timing.
+    // Exact version flags and bounded local metadata/dependency queries.
+    // The named check bounds project/tree reads and pins npm's startup
+    // options to disable networking, update checks, logging and timing.
     "npm": {
       "opensNoFiles": true,
       "arguments": "literal-words",

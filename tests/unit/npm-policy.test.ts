@@ -82,14 +82,11 @@ await test("exact npm version flags fast-path; unrelated informational calls and
   }
   for (const command of [
     "npm",
-    "npm ls",
-    "npm list --json",
     "npm info helper",
     "npm info package",
     "npm info crypto",
     "npm info update-notifier",
     "npm view helper",
-    "npm explain helper",
     "npm config get registry",
     "npm --help",
     "npm --versions",

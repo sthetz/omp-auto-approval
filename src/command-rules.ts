@@ -12,6 +12,7 @@ import { configPath, extensionRoot } from "./extension-config.js";
 import { parseJsonc } from "./jsonc.js";
 import { dictionary, group, itemAt } from "./common.js";
 import { recognizeShell, type ShellWord } from "./shell-syntax.js";
+import { npmDependencyFilters } from "./npm-dependencies.js";
 
 /**
  * Command rules: which programs, options and operands the bash fast path
@@ -53,7 +54,7 @@ export const OPERAND_CHECKS = {
   none: [],
   // Any operands; for programs that open no files and take literal words.
   any: [],
-  // Exact npm version flags or bounded local prefix/root/pkg get queries.
+  // Exact npm version flags or bounded local metadata/dependency queries.
   "npm-information": [],
   // printf's format, which must not start with `-`, then its arguments.
   "printf-format": [],
@@ -964,7 +965,7 @@ export function isNpmPackageGet(args: readonly ShellWord[]): boolean {
   );
 }
 
-/** Only the built-in npm asks ignore fields of a proven, direct pkg get. */
+/** Only the built-in npm asks ignore proven literal package fields/filters. */
 function npmAskSegments(command: string, segments: CommandSegments): CommandSegments {
   const script = recognizeShell(command);
   if (!script) {
@@ -973,8 +974,11 @@ function npmAskSegments(command: string, segments: CommandSegments): CommandSegm
   let text = command;
   for (const simple of script.pipelines.flat().reverse()) {
     const [program, ...args] = simple.words;
-    if (program?.text === "npm" && !program.expands && isNpmPackageGet(args) && args.length > 2) {
-      text = text.slice(0, itemAt(args, 2).start) + text.slice(itemAt(args, args.length - 1).end);
+    if (program?.text === "npm" && !program.expands) {
+      const data = isNpmPackageGet(args) ? args.slice(2) : npmDependencyFilters(args);
+      for (const word of [...(data ?? [])].reverse()) {
+        text = text.slice(0, word.start) + text.slice(word.end);
+      }
     }
   }
   return text === command ? segments : commandSegments(text);

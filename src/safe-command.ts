@@ -14,6 +14,7 @@ import { defaultRules, isNpmPackageGet, type CommandRules } from "./command-rule
 import { allowPrefixProblem, prefixAllowsProgram } from "./allow-prefix.js";
 import { safeByProgramRule, type RuleContext } from "./program-rules.js";
 import { isSensitivePath } from "./sensitive-paths.js";
+import { npmDependencyFilters, npmDependencyTreeIsSafe } from "./npm-dependencies.js";
 import { recognizeShell, type ShellCommand, type ShellRedirect, type ShellWord } from "./shell-syntax.js";
 import type { CallgateConfig } from "./types.js";
 
@@ -414,11 +415,19 @@ function pinNpmInformation(args: ShellWord[], check: Check, place: Place): boole
   }
   const paths = args.length === 1 && (first?.text === "prefix" || first?.text === "root");
   const get = isNpmPackageGet(args);
-  if ((!paths && !get) || !first || process.platform === "win32") {
+  const filters = npmDependencyFilters(args);
+  if ((!paths && !get && filters === null) || !first || process.platform === "win32") {
     return false;
   }
   const project = npmProject(place);
   if (project === null) {
+    return false;
+  }
+  if (
+    filters !== null &&
+    (!filters.every((word) => namesNoUnreadableFile(word.text, place)) ||
+      !npmDependencyTreeIsSafe(project, place.workspace))
+  ) {
     return false;
   }
   // CLI settings override npmrc/environment defaults. /dev/null is not a
@@ -436,6 +445,10 @@ function pinNpmInformation(args: ShellWord[], check: Check, place: Place): boole
     "--logs-max=0",
     "--no-timing",
   ];
+  if (filters !== null) {
+    // npmrc must not switch ls to virtual-tree reads behind the caller's back.
+    options.push("--package-lock-only=false");
+  }
   check.pins.push({ start: first.start, end: first.start, text: `${options.map(shellQuote).join(" ")} ` });
   return true;
 }

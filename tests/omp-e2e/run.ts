@@ -70,6 +70,8 @@ interface Scenario {
   interrupts?: boolean;
   /** Files to create before OMP starts, relative to the workspace (`../x` is next to it). */
   files?: Record<string, string>;
+  /** Links to create after files; each target is relative to its link's parent. */
+  links?: Record<string, string>;
   /** A program the scenario needs on PATH, such as a language server; skipped without it. */
   requires?: string;
   /** Problems found, or an empty list. */
@@ -234,6 +236,128 @@ const SCENARIOS: Scenario[] = [
         "npm pkg set did not stay reviewed",
       );
       expect(problems, result.model.classifier.length === 1, "local queries reached the classifier");
+      return problems;
+    },
+  },
+  {
+    name: "npm dependency queries inspect local and linked metadata without executing package code",
+    reviewer: "ai",
+    verdict: "deny",
+    requires: "npm",
+    steps: [
+      bash("npm ls --json --all"),
+      bash("npm list --depth=0"),
+      bash("npm explain beta --json"),
+      bash("npm ls version --json"),
+      bash("npm ls --global"),
+      bash("npm ls --package-lock-only"),
+    ],
+    files: {
+      "package.json": JSON.stringify({
+        name: "npm-dependency-probe",
+        version: "1.0.0",
+        dependencies: { alpha: "^1", beta: "file:local/beta" },
+      }),
+      "node_modules/alpha/package.json": JSON.stringify({ name: "alpha", version: "1.0.0" }),
+      "local/beta/package.json": JSON.stringify({
+        name: "beta",
+        version: "1.0.0",
+        dependencies: { alpha: "^1" },
+        scripts: { install: "echo executed > script-ran.txt" },
+      }),
+      ".npmrc": [
+        "global=true",
+        "package-lock-only=true",
+        "cache=${HOME}/npm-cache-probe",
+        "logs-dir=${HOME}/npm-log-probe",
+        "timing=true",
+        "update-notifier=true",
+        "registry=http://127.0.0.1:9",
+        "",
+      ].join("\n"),
+    },
+    links: { "node_modules/beta": "../local/beta" },
+    check(result) {
+      const problems: string[] = [];
+      const lines = decisions(result);
+      for (const line of lines.slice(0, 4)) {
+        expect(
+          problems,
+          line.route === "safe_command" && line.outcome === "allow",
+          "npm dependency query was reviewed",
+        );
+      }
+      const texts = result.model.toolResults.flat();
+      for (const name of ["npm-dependency-probe", "alpha", "beta"]) {
+        expect(
+          problems,
+          texts.some((text) => text.includes(name)),
+          `the real npm query did not return ${name}`,
+        );
+      }
+      for (const line of lines.slice(4)) {
+        expect(problems, line.route === "classifier" && line.outcome === "deny", "unsupported npm mode was allowed");
+      }
+      expect(problems, result.model.classifier.length === 2, "npm dependency query reached the classifier");
+      const home = join(result.workspace, "..", "home");
+      expect(problems, !existsSync(join(home, "npm-cache-probe")), "npm initialized the configured cache");
+      expect(problems, !existsSync(join(home, "npm-log-probe")), "npm wrote configured logs or timing");
+      expect(
+        problems,
+        !existsSync(join(result.workspace, "local/beta/script-ran.txt")),
+        "npm executed a dependency install script",
+      );
+      return problems;
+    },
+  },
+  {
+    name: "npm dependency queries with escaping directory links stay reviewed even at depth zero",
+    reviewer: "ai",
+    verdict: "deny",
+    requires: "npm",
+    steps: [bash("npm ls --depth=0"), bash("npm explain alpha")],
+    files: {
+      "package.json": '{"name":"npm-boundary-probe","version":"1.0.0"}',
+      "node_modules/alpha/package.json": '{"name":"alpha","version":"1.0.0"}',
+      "../outside/package.json": '{"name":"UNREVIEWED-NPM-PACKAGE","version":"1.0.0"}',
+    },
+    links: { "node_modules/beta": "../../outside" },
+    check(result) {
+      const problems: string[] = [];
+      for (const line of decisions(result)) {
+        expect(problems, line.route === "classifier" && line.outcome === "deny", "escaping npm tree was fast-pathed");
+      }
+      expect(
+        problems,
+        !result.model.toolResults.flat().some((text) => text.includes("UNREVIEWED-NPM-PACKAGE")),
+        "the external dependency metadata reached the agent",
+      );
+      return problems;
+    },
+  },
+  {
+    name: "npm dependency queries with escaping hidden-lock targets stay reviewed",
+    reviewer: "ai",
+    verdict: "deny",
+    requires: "npm",
+    steps: [bash("npm ls --json")],
+    files: {
+      "package.json": '{"name":"npm-lock-probe","version":"1.0.0"}',
+      "node_modules/.package-lock.json": JSON.stringify({
+        lockfileVersion: 3,
+        packages: { "node_modules/alpha": { link: true, resolved: "../outside" } },
+      }),
+      "../outside/package.json": '{"name":"UNREVIEWED-LOCK-PACKAGE","version":"1.0.0"}',
+    },
+    check(result) {
+      const problems: string[] = [];
+      const [line] = decisions(result);
+      expect(problems, line?.route === "classifier" && line.outcome === "deny", "escaping lock target was fast-pathed");
+      expect(
+        problems,
+        !result.model.toolResults.flat().some((text) => text.includes("UNREVIEWED-LOCK-PACKAGE")),
+        "the external lock target reached the agent",
+      );
       return problems;
     },
   },
@@ -863,6 +987,10 @@ async function runScenario(omp: string, scenario: Scenario, keep: boolean): Prom
   for (const [path, content] of Object.entries(scenario.files ?? {})) {
     mkdirSync(join(workspace, path, ".."), { recursive: true });
     writeFileSync(join(workspace, path), content);
+  }
+  for (const [path, target] of Object.entries(scenario.links ?? {})) {
+    mkdirSync(join(workspace, path, ".."), { recursive: true });
+    symlinkSync(target, join(workspace, path));
   }
   writeFileSync(join(state, "config.jsonc"), JSON.stringify({ reviewer: scenario.reviewer }));
   const rulesPath = join(state, "rules.jsonc");

@@ -1,10 +1,11 @@
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import {
   canonicalPath,
   getString,
   isRecord,
+  itemAt,
   relativePathWithin,
   resolvePathForCwd,
   sha256,
@@ -166,14 +167,97 @@ function parseJsonStringArray(value: string): string[] | null {
   }
 }
 
+// Match OMP's filesystem splitter (packages/tui/src/tools/read.ts), not an
+// arbitrary colon suffix. Bounds are validated by the host; recognition also
+// includes invalid bounds so a malformed selector cannot hide a sensitive base.
+const READ_RANGE_CHUNK = String.raw`(?:L?\d+(?:(?:\.\.|[-+])L?(?:\d+)?)?(?<=[\d.-])|-\d+)`;
+const READ_RANGE_LIST = new RegExp(`^${READ_RANGE_CHUNK}(?:,${READ_RANGE_CHUNK})*$`, "i");
+const READ_SELECTOR = new RegExp(`^(?:${READ_RANGE_CHUNK}(?:,${READ_RANGE_CHUNK})*|raw|conflicts|img)$`, "i");
+const CONTAINER_PATH =
+  /\.(?:tar\.(?:gz|bz2|xz|zst|z)|zip|jar|war|ear|apk|whl|ipa|xpi|vsix|nupkg|cbz|tar|tgz|tbz2?|txz|tzst|asar|rar|cbr|7z|iso|cab|cpio|rpm|ar|a|lib|deb|lzh|lha|arj|gz|bz2|xz|zst|z|lzma|sqlite3?|db3?)(?=:|$)/gi;
+
+function splitReadSelector(value: string, foldLists: boolean): string {
+  const colon = value.lastIndexOf(":");
+  const suffix = value.slice(colon + 1);
+  if (colon <= 0 || !READ_SELECTOR.test(suffix)) return value;
+  let base = value.slice(0, colon);
+  let list = READ_RANGE_LIST.test(suffix) ? suffix : undefined;
+  let rawSuffix = false;
+  if (/^raw$/i.test(suffix)) {
+    const innerColon = base.lastIndexOf(":");
+    const inner = base.slice(innerColon + 1);
+    if (innerColon > 0 && READ_RANGE_LIST.test(inner)) {
+      list = inner;
+      rawSuffix = true;
+      base = base.slice(0, innerColon);
+    }
+  }
+  if (list === undefined) return base;
+  if (foldLists) {
+    const chunks = list.split(",").reverse();
+    const originalBase = base;
+    let dashed = false;
+    while (true) {
+      const innerColon = base.lastIndexOf(":");
+      if (innerColon < 1) break;
+      const head = base.slice(innerColon + 1);
+      if (head.endsWith(",")) {
+        const repeated = head.slice(0, -1);
+        if (!READ_RANGE_LIST.test(repeated)) break;
+        chunks.push(...repeated.split(",").reverse());
+      } else {
+        const preceding = head.split(",");
+        const start = itemAt(preceding, preceding.length - 1);
+        preceding.pop();
+        const end = itemAt(chunks, chunks.length - 1);
+        if (!/^\d+$/.test(start) || !/^\d+$/.test(end)) break;
+        if (preceding.length > 0 && !READ_RANGE_LIST.test(preceding.join(","))) break;
+        chunks[chunks.length - 1] = `${start}-${end}`;
+        chunks.push(...preceding.reverse());
+        dashed = true;
+      }
+      base = base.slice(0, innerColon);
+    }
+    if (dashed && chunks.length === 1) base = originalBase;
+  }
+  if (!rawSuffix) {
+    const innerColon = base.lastIndexOf(":");
+    if (innerColon > 0 && /^raw$/i.test(base.slice(innerColon + 1))) base = base.slice(0, innerColon);
+  }
+  return base;
+}
+
+function readResourceCandidates(value: string): string[] {
+  // read/grep prefer existing literals, including dangling links; other tools
+  // split numerics differently. Authorize every interpretation, never just the
+  // currently existing one. Keep the unfolded list spelling for literal probes.
+  return [...new Set([value, splitReadSelector(value, true), splitReadSelector(value, false)])];
+}
+
+function filesystemSpellings(value: string, cwd: string): string[] {
+  const raw = resolvePathForCwd(value, cwd);
+  // OMP resolveToCwd preserves absolute inputs but path.resolve normalizes
+  // relative ones. Other consumers open the raw spelling; both must be safe.
+  return isAbsolute(value) ? [raw] : [...new Set([raw, resolve(cwd, value)])];
+}
+
+function isSafeReadResource(value: string, roots: ReadRoots): boolean {
+  return filesystemSpellings(value, roots.cwd).every((absolute) =>
+    [roots.cwd, ...roots.extra].some((root) => {
+      const relative = relativePathWithin(absolute, root);
+      return relative !== null && !isSensitivePath(relative);
+    }),
+  );
+}
+
 /**
  * A read target that may skip review: a session-local internal URL, or a local
  * path inside the workspace or a configured read root that is not
  * credential-like below that directory. OMP reads URLs (`http(s)://`,
  * `www.`), internal schemes (`ssh://`, `mcp://`, ...), strips `@` and `:`
  * prefixes, unquotes `"…"`, and accepts JSON-array strings as several scopes.
- * Apart from `~/` expansion, every form other than a plain path or a JSON
- * array of plain paths is left to review instead of being re-implemented here.
+ * Recognized read selectors are checked before sensitive-path checks. Literal
+ * colon names and every plausible selector/container interpretation must pass.
  */
 export function isReadTarget(value: unknown, roots: ReadRoots, depth = 0): boolean {
   if (Array.isArray(value)) {
@@ -192,31 +276,34 @@ export function isReadTarget(value: unknown, roots: ReadRoots, depth = 0): boole
   }
   const scheme = trimmed.match(/^([a-z][a-z0-9+.-]*):\/\//i)?.[1]?.toLowerCase();
   if (scheme) {
-    return LOCAL_READ_SCHEMES.has(scheme);
+    // These exact host documentation topics do not dispatch a device.
+    return LOCAL_READ_SCHEMES.has(scheme) || trimmed === "xd://read/sources" || trimmed === "xd://read/urls";
   }
   // OMP expands `~` and `~/…` to the home directory; `~user` stays reviewed.
   if (trimmed === "~" || trimmed.startsWith("~/")) {
-    trimmed = join(homedir(), trimmed.slice(1));
+    trimmed = homedir() + trimmed.slice(1);
   }
   if (/^[@:"'~]/.test(trimmed) || /^www\./i.test(trimmed) || /[?#]/.test(trimmed) || trimmed.includes("://")) {
     return false;
   }
-  // A colon before the first path separator may name a scheme (`https:/x`,
-  // `ssh:host`) rather than a file; Windows drive letters are the exception.
-  const separator = trimmed.search(/[\\/]/);
-  const beforeSeparator = separator < 0 ? trimmed : trimmed.slice(0, separator);
-  if (beforeSeparator.includes(":") && !/^[a-z]:$/i.test(beforeSeparator) && !/\.[^:]*:/.test(beforeSeparator)) {
-    return false;
-  }
-  // `path:selector` reads lines from `path`; check both spellings.
-  const withoutSelector = trimmed.replace(/:[^:\\/]*$/, "");
-  return [trimmed, withoutSelector].every((candidate) => {
-    // Resolve against the session cwd first: that is where OMP resolves it.
-    const absolute = resolvePathForCwd(candidate, roots.cwd);
-    return [roots.cwd, ...roots.extra].some((root) => {
-      const relative = relativePathWithin(absolute, root);
-      return relative !== null && !isSensitivePath(relative);
-    });
+  // URL shorthands are not literal filenames; ordinary unknown colons are.
+  if (/^(?:https?|ssh|mcp|vault|cfg|proc|xd):/i.test(trimmed)) return false;
+  return readResourceCandidates(trimmed).every((candidate) => {
+    if (!isSafeReadResource(candidate, roots)) return false;
+    // Archive and SQLite syntax can select resources after multiple colons.
+    // Check every container prefix, not only the longest one the host probes.
+    for (const match of candidate.matchAll(CONTAINER_PATH)) {
+      const end = match.index + match[0].length;
+      if (!isSafeReadResource(candidate.slice(0, end), roots)) return false;
+      const member = candidate.slice(end).replace(/^:+/, "");
+      for (const interpretation of readResourceCandidates(member)) {
+        // Colons delimit SQLite table/key selectors as well as archive names.
+        // Treat each component as potentially credential-bearing.
+        if (interpretation.split(/[\\/]/).includes("..") || interpretation.split(":").some(isSensitivePath))
+          return false;
+      }
+    }
+    return true;
   });
 }
 
@@ -413,19 +500,25 @@ export function isWorkspaceWriteFastPath(input: unknown, cwd: string, protectedF
  * program.
  */
 export function workspaceWriteTarget(cwd: string, protectedFiles: string[] = []): (destination: unknown) => boolean {
-  const protectedPaths = new Set(protectedFiles.map((path) => canonicalPath(path, cwd)));
+  const protectedPaths = new Set(
+    protectedFiles.flatMap((path) => filesystemSpellings(path, cwd).map((spelling) => canonicalPath(spelling, cwd))),
+  );
   return (destination) => {
-    if (typeof destination !== "string" || !isPlainPath(destination)) {
+    if (protectedPaths.has(null) || typeof destination !== "string" || !isPlainPath(destination)) {
       return false;
     }
-    const relative = relativePathWithin(destination, cwd);
-    return (
-      relative !== null &&
-      !protectedPaths.has(canonicalPath(destination, cwd)) &&
-      !isProtectedWorkspacePath(relative) &&
-      !isSensitivePath(relative) &&
-      !isExecutableFile(destination, cwd)
-    );
+    return filesystemSpellings(destination, cwd).every((spelling) => {
+      const relative = relativePathWithin(spelling, cwd);
+      const canonical = canonicalPath(spelling, cwd);
+      return (
+        relative !== null &&
+        canonical !== null &&
+        !protectedPaths.has(canonical) &&
+        !isProtectedWorkspacePath(relative) &&
+        !isSensitivePath(relative) &&
+        !isExecutableFile(spelling, cwd)
+      );
+    });
   };
 }
 

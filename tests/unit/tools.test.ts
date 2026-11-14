@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { isWorkspaceWriteFastPath, resolveReadRoots } from "../../src/tool-routing.js";
+import { isWorkspaceWriteFastPath, resolveReadRoots, workspaceWriteTarget } from "../../src/tool-routing.js";
 import { logPath, normalizeConfig } from "../../src/extension-config.js";
 import { evaluateToolCall, reviewToolResult } from "../../src/omp-host.js";
 import { unreadableLspLocation } from "../../src/lsp-results.js";
@@ -290,6 +290,7 @@ await test("read-only routing ignores self-declared tool metadata", async () => 
 
 await test("name-based fast paths apply only to the host's builtin tools", async () => {
   const cases = [
+    { toolName: "read", input: { path: "xd://read/sources" } },
     { toolName: "read", input: { path: "a.ts" } },
     { toolName: "grep", input: { pattern: "x" } },
     { toolName: "todo", input: { op: "done", task: "x" } },
@@ -380,6 +381,28 @@ await test("read fast path allows non-sensitive workspace targets and session-lo
   }
 });
 
+await test("read documentation topics bypass review without exempting devices or writes", async () => {
+  const run = (toolName: string, path: string) =>
+    evaluateToolCall({ toolName, input: { path, content: "{}" } }, ctx(), config(), new SessionApprovalStore(), {
+      tools: [{ name: toolName, sourceInfo: { source: "builtin" } }],
+      ...classifierDenyOptions(),
+    });
+  for (const path of ["xd://read/sources", "xd://read/urls"]) {
+    assert.deepEqual(await run("read", path), {}, path);
+    assert.deepEqual(await run("write", path), { block: true, reason: CLASSIFIER_DENY_REASON }, path);
+  }
+  for (const path of [
+    "xd://bash",
+    "xd://read/unknown",
+    "xd://read/sources/../other",
+    "xd://read/sources?path=/etc/passwd",
+    "xd://read/sources#other",
+    "xd://read/sources:raw",
+  ]) {
+    assert.deepEqual(await run("read", path), { block: true, reason: CLASSIFIER_DENY_REASON }, path);
+  }
+});
+
 await test("read fast path reviews outside, sensitive, remote, and rewritten targets", async () => {
   const root = mkdtempSync(join(tmpdir(), "omp-callgate-read-"));
   const workspace = join(root, "workspace");
@@ -455,6 +478,170 @@ await test("read fast path reviews outside, sensitive, remote, and rewritten tar
       assert.deepEqual(result, { block: true, reason: CLASSIFIER_DENY_REASON }, JSON.stringify(event));
       assert.equal(classifierCalls, 1, JSON.stringify(event));
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test("read selector routing checks compound, literal, and container resources", async () => {
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-selectors-"));
+  const workspace = join(root, "workspace");
+  const outside = join(root, "outside");
+  mkdirSync(workspace);
+  mkdirSync(outside);
+  writeFileSync(join(workspace, ".env"), "TOKEN=x\n");
+  writeFileSync(join(workspace, "notes.txt"), "safe\n");
+  for (const literal of [
+    "log:unknown",
+    ".npmrc:literal",
+    "guide.txt:raw:literal",
+    "literal.txt:2",
+    "literal.txt:raw",
+  ]) {
+    writeFileSync(join(workspace, literal), "literal safe content\n");
+  }
+  symlinkSync(".env", join(workspace, "folded.txt:1-3,"));
+  symlinkSync(".env", join(workspace, "notes.txt:2"));
+  symlinkSync(".env", join(workspace, "notes.txt:raw:2-4"));
+  symlinkSync(join(outside, "missing"), join(workspace, "notes.txt:1-2"));
+  symlinkSync(".env", join(workspace, "archive.zip"));
+  symlinkSync(".env", join(workspace, "database.db"));
+  const run = (path: string, toolName = "read") =>
+    evaluateToolCall(
+      { toolName, input: { path, pattern: "safe" } },
+      ctx({ cwd: workspace }),
+      config(),
+      new SessionApprovalStore(),
+      classifierDenyOptions(),
+    );
+  try {
+    for (const path of [
+      "guide.txt:raw:2-4",
+      "guide.txt:2-4:raw",
+      "guide.txt:RAW:L2..L4",
+      "guide.txt:2+3",
+      "guide.txt:2-",
+      "guide.txt:2..",
+      "guide.txt:L2",
+      "guide.txt:2,4-6,-8",
+      "guide.txt:raw:-8",
+      "guide.txt:-8:raw",
+      "guide.txt:1-3,:-8",
+      "guide.txt:2:4,8:10",
+      "guide.txt:img",
+      "guide.txt:conflicts",
+      ".env.example",
+      "config.example:raw:2-4",
+      "server.key.example:raw",
+      "log:unknown",
+      ".npmrc:literal",
+      "guide.txt:raw:literal",
+      "guide.txt:2+",
+      "literal.txt:2",
+      "literal.txt:raw",
+      "bundle.zip:src/guide.txt:raw:2-4",
+      "bundle.tar.gz:src/guide.txt:2,4",
+      "public.sqlite:items:some-key",
+      "public.db3:items:42",
+    ]) {
+      assert.deepEqual(await run(path), {}, path);
+    }
+    for (const path of [
+      ".env:raw:2-4",
+      ".env:2-4:raw",
+      ".env:RAW:L2..L4",
+      ".env:2+3",
+      ".env:2-",
+      ".env:2..",
+      ".env:L2",
+      ".env:2,4-6,-8",
+      ".env:raw:-8",
+      ".env:-8:raw",
+      ".env:1-3,:-8",
+      ".env:2:4,8:10",
+      ".env:img",
+      ".env:conflicts",
+      "folded.txt:1-3,:-8",
+      ".npmrc:raw:2-4",
+      "server.key:2-4:raw",
+      "notes.txt:2",
+      "notes.txt:1-2",
+      "notes.txt:raw:2-4",
+      "archive.zip:src/guide.txt:raw:2-4",
+      "database.db:items:some-key",
+      "bundle.zip:.env:raw:2-4",
+      "bundle.zip:secrets/token.txt:2-4:raw",
+      "bundle.tar.gz:src/server.key:2,4",
+      "bundle.zip:../guide.txt",
+      "bundle.zip:nested.zip:.npmrc:raw",
+      "public.sqlite:credentials:42",
+      "public.db:items:secrets",
+      "public.db:items?limit=2",
+      "public.db?q=SELECT+1",
+      "../outside/bundle.zip:guide.txt:raw:2-4",
+      "../outside/public.db:items:42",
+    ]) {
+      for (const toolName of ["read", "grep"]) {
+        assert.deepEqual(
+          await run(path, toolName),
+          { block: true, reason: CLASSIFIER_DENY_REASON },
+          `${toolName} ${path}`,
+        );
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test("read routing preserves absolute and home-expanded symlink traversal", async () => {
+  const root = mkdtempSync(join(homedir(), ".omp-callgate-selectors-"));
+  const workspace = join(root, "workspace");
+  const outside = join(root, "outside");
+  mkdirSync(workspace);
+  mkdirSync(join(outside, "nested"), { recursive: true });
+  symlinkSync(join(outside, "nested"), join(workspace, "jump"));
+  mkdirSync(join(workspace, "deep", "nested"), { recursive: true });
+  symlinkSync(join(workspace, "deep", "nested"), join(workspace, "internal"));
+  const run = (path: string) =>
+    evaluateToolCall(
+      { toolName: "read", input: { path } },
+      ctx({ cwd: workspace }),
+      config(),
+      new SessionApprovalStore(),
+      classifierDenyOptions(),
+    );
+  try {
+    const absolute = `${workspace}/jump/../notes.txt:raw:2-4`;
+    const homeExpanded = `~${absolute.slice(homedir().length)}`;
+    for (const path of [absolute, homeExpanded, "jump/../notes.txt:2-4:raw"]) {
+      assert.deepEqual(await run(path), { block: true, reason: CLASSIFIER_DENY_REASON }, path);
+    }
+    assert.deepEqual(await run(`${workspace}/ordinary/../guide.txt:raw:2-4`), {});
+    // The host normalizes relative paths, but preserves absolute inputs.
+    const relative = "internal/../../notes.txt";
+    assert.deepEqual(await run(`${workspace}/${relative}:raw:2-4`), {});
+    assert.deepEqual(await run(`${relative}:raw:2-4`), { block: true, reason: CLASSIFIER_DENY_REASON });
+    const writable = workspaceWriteTarget(workspace);
+    assert.equal(writable(`${workspace}/${relative}`), true);
+    assert.equal(writable(relative), false);
+    const protectedTarget = workspaceWriteTarget(workspace, ["internal/../protected.txt"]);
+    assert.equal(protectedTarget("deep/protected.txt"), false);
+    assert.equal(protectedTarget("protected.txt"), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test("unresolvable protected paths close the entire write predicate", () => {
+  const root = mkdtempSync(join(tmpdir(), "omp-callgate-protected-"));
+  symlinkSync("loop", join(root, "loop"));
+  try {
+    const writable = workspaceWriteTarget(root, ["loop"]);
+    assert.equal(writable("notes.txt"), false);
+    assert.equal(writable("other.txt"), false);
+    assert.equal(isWorkspaceWriteFastPath({ path: "notes.txt", content: "safe" }, root, ["loop"]), false);
+    assert.equal(workspaceWriteTarget(root, ["protected.txt"])("notes.txt"), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

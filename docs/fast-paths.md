@@ -9,12 +9,18 @@ There are four: [workspace reads](#workspace-reads), [workspace writes](#workspa
 The host's own read-only tools (`read`, `grep`, `find`, `glob`, `ast_grep`, `ls`, …) when every path they name is inside the working directory or a `readRoots` directory (after resolving symlinks) and is not credential-like. These always go to the session reviewer:
 
 - paths outside the working directory and `readRoots`;
-- URLs (`http(s)://`, `www.`) and remote or sensitive internal URLs (`ssh://`, `mcp://`, `pr://`, `issue://`, `mr://`, `vault://`, `cfg://`, `proc://`, …). Only session-local URLs (`skill://`, `rule://`, `agent://`, `artifact://`, `memory://`, `local://`, `omp://`) skip review;
+- URLs (`http(s)://`, `www.`) and remote or sensitive internal URLs (`ssh://`, `mcp://`, `pr://`, `issue://`, `mr://`, `vault://`, `cfg://`, `proc://`, …). Session-local URLs (`skill://`, `rule://`, `agent://`, `artifact://`, `memory://`, `local://`, `omp://`) skip review, as do the exact documentation URLs described below;
 - credential-like files and directories anywhere in the tree: `.env` and `.env.*` (except `.example`, `.sample`, `.template`, `.dist`, `.defaults`), `.envrc`, `.npmrc`, `.pypirc`, `.netrc`, `.pgpass`, `.git-credentials`, `.htpasswd`, `kubeconfig`, `id_rsa`/`id_ed25519`-style keys, `credentials.*`, `secret(s).*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.kdbx`, `*.tfstate`, `*.tfvars`, and anything under `.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, `.password-store`, `secrets`, `.secrets` or `credentials`;
 - path forms that OMP rewrites before use (a leading `@`, `:` or `"`, `~user`, `file://`, `?query`, `#fragment`);
 - searches with `gitignore: false`. OMP's `grep` searches hidden files but honours `.gitignore`, which normally keeps `.env` out of a workspace-wide search. A secret file that is *not* gitignored can still appear in grep results.
 
 `web_search` always goes to the session reviewer, because its query is sent to a third party and could carry data out of the session.
+
+The exact host documentation URLs `xd://read/sources` and `xd://read/urls` also skip read review. They return documentation, not tool execution. Other `xd://` addresses remain reviewed, and this exception never authorizes writes to devices.
+
+Filesystem boundaries are resolved component by component: a symlink is followed before a later `..`, and a dangling link is checked against the destination a write would create, including missing parent directories. Resolution errors, non-directory ancestors, symlink loops and traversal limits require review. Absolute paths and home-expanded paths keep their filesystem spelling; relative tool paths must pass both raw traversal and OMP's normalized interpretation.
+
+Recognized selectors are parsed before sensitivity checks, including `:raw:2-4`, `:2-4:raw`, comma-separated ranges, tails and OMP's colon-separated range-list forms. Both literal filenames and possible selector interpretations must be safe, since OMP can prefer an existing colon-containing filename. An unrecognized suffix remains part of the filename. Archive members and SQLite selectors also check the underlying container and credential-like member/table/key names; query-bearing paths remain reviewed.
 
 Tools are matched by name only when the host reports them as its own (`sourceInfo.source` is `builtin`). An extension, SDK or MCP tool that reuses a read-only name is reviewed. Self-declared metadata (`isReadOnly`, `readOnlyHint`, MCP `annotations.readOnlyHint`) is ignored, as the MCP specification says these hints are untrusted.
 

@@ -1,6 +1,7 @@
 import { readdirSync, type Dirent } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { isAbsolute, relative } from "node:path";
 import { isSensitivePath } from "./sensitive-paths.js";
+import { resolvePathForCwd } from "./common.js";
 
 /**
  * What a shell glob or a recursive read could reach, worked out without
@@ -72,7 +73,10 @@ export function globMatches(pattern: string, base: string, home?: string): GlobM
     const next: GlobMatch[] = [];
     for (const match of matches) {
       if (!regex) {
-        next.push({ absolute: join(match.absolute, segment), word: `${match.word}${separator}${segment}` });
+        next.push({
+          absolute: resolvePathForCwd(segment, match.absolute),
+          word: `${match.word}${separator}${segment}`,
+        });
         continue;
       }
       let names: string[];
@@ -87,7 +91,7 @@ export function globMatches(pattern: string, base: string, home?: string): GlobM
       }
       for (const name of [".", "..", ...names]) {
         if (regex.test(name)) {
-          next.push({ absolute: join(match.absolute, name), word: `${match.word}${separator}${name}` });
+          next.push({ absolute: resolvePathForCwd(name, match.absolute), word: `${match.word}${separator}${name}` });
         }
       }
     }
@@ -175,7 +179,7 @@ export function isTreeClean(
       return false;
     }
     for (const entry of entries) {
-      const path = join(directory, entry.name);
+      const path = resolvePathForCwd(entry.name, directory);
       const inside = relative(root, path);
       if (entry.isSymbolicLink()) {
         continue;

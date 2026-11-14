@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
+import { lstatSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
+import { dirname, isAbsolute, parse, sep } from "node:path";
 
 /** An empty record with no prototype, so that a key such as `__proto__` is just a key. */
 export function dictionary<T>(): Record<string, T> {
@@ -70,8 +70,11 @@ export function truncateInline(value: string, maxLength = 240): string {
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
 }
 
+/** Make a path absolute without collapsing `link/..` before following the link. */
 export function resolvePathForCwd(pathValue: string, cwd: string): string {
-  return normalize(isAbsolute(pathValue) ? pathValue : resolve(cwd, pathValue));
+  return isAbsolute(pathValue)
+    ? pathValue
+    : `${isAbsolute(cwd) ? cwd : `${process.cwd()}${sep}${cwd}`}${sep}${pathValue}`;
 }
 
 export function isPathWithin(pathValue: string, root: string): boolean {
@@ -80,11 +83,14 @@ export function isPathWithin(pathValue: string, root: string): boolean {
 
 /**
  * Canonical path of `pathValue` relative to `root` (symlinks resolved), or
- * null when it escapes `root`. The root itself is "".
+ * null when it escapes `root` or resolution fails. The root itself is "".
  */
 export function relativePathWithin(pathValue: string, root: string): string | null {
   const resolvedPath = resolveExistingPathForBoundary(pathValue, root);
   const resolvedRoot = resolveExistingPathForBoundary(root, root);
+  if (resolvedPath === null || resolvedRoot === null) {
+    return null;
+  }
   if (resolvedPath === resolvedRoot) {
     return "";
   }
@@ -92,30 +98,66 @@ export function relativePathWithin(pathValue: string, root: string): string | nu
   return resolvedPath.startsWith(prefix) ? resolvedPath.slice(prefix.length) : null;
 }
 
-/** `pathValue` from `cwd`, with symbolic links in its existing part resolved. */
-export function canonicalPath(pathValue: string, cwd: string): string {
+/** Filesystem destination from `cwd`, or null when resolution cannot be established. */
+export function canonicalPath(pathValue: string, cwd: string): string | null {
   return resolveExistingPathForBoundary(pathValue, cwd);
 }
 
-function resolveExistingPathForBoundary(pathValue: string, cwd: string): string {
-  const resolvedPath = resolvePathForCwd(pathValue, cwd);
-  if (existsSync(resolvedPath)) {
-    return normalize(realpathSync(resolvedPath));
+function resolveExistingPathForBoundary(pathValue: string, cwd: string): string | null {
+  const absolute = resolvePathForCwd(pathValue, cwd);
+  const root = parse(absolute).root;
+  const separator = sep === "/" ? /\/+/ : /[\\/]+/;
+  const pending = absolute.slice(root.length).split(separator).filter(Boolean).reverse();
+  if (absolute.endsWith(sep)) {
+    pending.unshift(".");
   }
-
-  let current = resolvedPath;
-  const tail: string[] = [];
-  while (true) {
-    if (existsSync(current)) {
-      return normalize(resolve(realpathSync(current), ...tail.reverse()));
+  let current = root;
+  let links = 0;
+  let steps = 0;
+  while (pending.length) {
+    if (++steps > 4096) {
+      return null;
     }
-    const parent = dirname(current);
-    if (parent === current) {
-      return resolvedPath;
+    const component = itemAt(pending, pending.length - 1);
+    pending.pop();
+    if (component === ".") {
+      continue;
     }
-    tail.push(current.slice(parent.length).replace(/^[/\\]/, ""));
-    current = parent;
+    if (component === "..") {
+      current = dirname(current);
+      continue;
+    }
+    const candidate = current.endsWith(sep) ? `${current}${component}` : `${current}${sep}${component}`;
+    try {
+      const stats = lstatSync(candidate);
+      if (stats.isSymbolicLink()) {
+        if (++links > 40) {
+          return null;
+        }
+        const target = readlinkSync(candidate);
+        const targetRoot = parse(target).root;
+        if (isAbsolute(target)) {
+          current = targetRoot;
+        }
+        if (target.endsWith(sep)) {
+          pending.push(".");
+        }
+        pending.push(...target.slice(targetRoot.length).split(separator).filter(Boolean).reverse());
+        continue;
+      }
+      if (pending.length && !stats.isDirectory()) {
+        return null;
+      }
+    } catch (error) {
+      // Missing destinations (and their parents) are valid for writes. Other
+      // failures, including loops, permissions and non-directories, are unknown.
+      if (!isRecord(error) || error.code !== "ENOENT") {
+        return null;
+      }
+    }
+    current = candidate;
   }
+  return current;
 }
 
 /** Directories reads may target without review: the workspace plus `readRoots`. */
@@ -128,7 +170,7 @@ export interface ReadRoots {
 export function resolveReadRoots(cwd: string, readRoots: string[]): ReadRoots {
   const extra = readRoots
     .map((root) => root.trim())
-    .map((root) => (root === "~" || root.startsWith("~/") ? join(homedir(), root.slice(1)) : root))
+    .map((root) => (root === "~" || root.startsWith("~/") ? `${homedir()}${root.slice(1)}` : root))
     .filter((root) => isAbsolute(root));
   return { cwd, extra };
 }

@@ -1,7 +1,14 @@
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
-import { itemAt, relativePathWithin, resolvePathForCwd, resolveReadRoots, type ReadRoots } from "./common.js";
+import { delimiter, isAbsolute, resolve } from "node:path";
+import {
+  canonicalPath,
+  itemAt,
+  relativePathWithin,
+  resolvePathForCwd,
+  resolveReadRoots,
+  type ReadRoots,
+} from "./common.js";
 import { boundedGlobMatches, isTreeClean } from "./path-expansion.js";
 import { defaultRules, type CommandRules } from "./command-rules.js";
 import { allowPrefixProblem, prefixAllowsProgram } from "./allow-prefix.js";
@@ -155,7 +162,9 @@ function namesNoUnreadableFile(text: string, place: Place): boolean {
         return true;
       }
       const absolute = resolvePathForCwd(candidate, place.directory);
-      return !existsSync(absolute) || isInsideReadRoots(absolute, place.roots);
+      return existsSync(absolute)
+        ? isInsideReadRoots(absolute, place.roots)
+        : canonicalPath(absolute, place.directory) !== null;
     })
   );
 }
@@ -173,7 +182,7 @@ function isAllowedArgumentSafe(word: ShellWord, check: Check): boolean {
   if (
     !expandsHome(word, check) ||
     /[*?[{]/.test(word.text) ||
-    !isInsideReadRoots(join(homedir(), word.text.slice(1)), check.place.roots)
+    !isInsideReadRoots(`${homedir()}${word.text.slice(1)}`, check.place.roots)
   ) {
     return false;
   }
@@ -251,11 +260,19 @@ function shellQuote(word: string): string {
  * there without review.
  */
 function resolveStartupProgram(program: string, workspace: string, searchPath: string): string | null {
+  const root = canonicalPath(workspace, workspace);
+  if (root === null) {
+    return null;
+  }
   for (const directory of searchPath.split(delimiter)) {
-    if (!isAbsolute(directory) || relativePathWithin(directory, workspace) !== null) {
+    if (!isAbsolute(directory)) {
       continue;
     }
-    const candidate = join(directory, program);
+    const resolvedDirectory = canonicalPath(directory, workspace);
+    if (resolvedDirectory === null || relativePathWithin(resolvedDirectory, root) !== null) {
+      continue;
+    }
+    const candidate = resolvePathForCwd(program, directory);
     try {
       if (!statSync(candidate).isFile()) {
         continue;
@@ -264,7 +281,8 @@ function resolveStartupProgram(program: string, workspace: string, searchPath: s
     } catch {
       continue;
     }
-    if (relativePathWithin(candidate, workspace) === null) {
+    const resolvedCandidate = canonicalPath(candidate, workspace);
+    if (resolvedCandidate !== null && relativePathWithin(resolvedCandidate, root) === null) {
       return candidate;
     }
   }
@@ -290,6 +308,13 @@ function directoryWithin(text: string, place: Place): string | null {
     return null;
   }
   const directory = resolvePathForCwd(text, place.directory);
+  // Bash's logical `cd` collapses `..`; a raw filesystem open need not.
+  // Do not strip a cd whose two interpretations select different directories.
+  const physical = canonicalPath(directory, place.directory);
+  const logical = resolve(directory);
+  if (physical === null || canonicalPath(logical, place.directory) !== physical) {
+    return null;
+  }
   try {
     if (!statSync(directory).isDirectory()) {
       return null;
@@ -297,7 +322,7 @@ function directoryWithin(text: string, place: Place): string | null {
   } catch {
     return null;
   }
-  return relativePathWithin(directory, place.workspace) === null ? null : directory;
+  return relativePathWithin(directory, place.workspace) === null ? null : logical;
 }
 
 /** A command being planned, and the rewrites its plan makes so far. */
@@ -332,7 +357,7 @@ function ruleContext(check: Check, place = check.place): RuleContext {
         return null;
       }
       if (home && !/[*?[{]/.test(text)) {
-        const absolute = join(homedir(), text.slice(1));
+        const absolute = `${homedir()}${text.slice(1)}`;
         if (!readable(absolute)) {
           return null;
         }

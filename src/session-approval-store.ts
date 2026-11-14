@@ -29,7 +29,6 @@ export class SessionApprovalStore {
 
   approveExact(actionHash: string): void {
     this.approvedExactActions.add(actionHash);
-    this.recordNonDenial();
   }
 
   isExactApproved(actionHash: string): boolean {

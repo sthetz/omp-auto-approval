@@ -144,6 +144,15 @@ function failureDenyReason(reason: string): string {
   return `The approval classifier could not approve this action: ${reason}`;
 }
 
+/** Optional host diagnostics may be skipped, but never bypass their review. */
+function isOptionalIssueReport(call: CanonicalToolCall, state: DecisionState): boolean {
+  return (
+    call.toolName === "write" &&
+    toRecord(call.input).path === "xd://report_issue" &&
+    isBuiltinTool(findToolDefinition(call.toolName, state.tools), state.tools.length > 0)
+  );
+}
+
 function bashCommand(toolName: string, input: unknown): string | undefined {
   return toolName === "bash" ? getString(toRecord(input).command) : undefined;
 }
@@ -428,7 +437,11 @@ export function decide(call: CanonicalToolCall, state: DecisionState): Decision 
       auditReason: classifier.reason,
     };
   }
-  if (state.canAsk && state.consecutiveDenials + 1 >= state.config.maxConsecutiveDenials) {
+  if (
+    state.canAsk &&
+    state.consecutiveDenials + 1 >= state.config.maxConsecutiveDenials &&
+    !isOptionalIssueReport(call, state)
+  ) {
     return humanDecision(call, state, subject, staticVerdict);
   }
   return {
@@ -597,6 +610,12 @@ async function applyFinal(
   started: number,
 ): Promise<Decision> {
   const { state } = decision;
+  const optionalReport = isOptionalIssueReport(decision.call, state);
+  const humanStopped =
+    decision.route === "human" &&
+    decision.outcome === "deny" &&
+    decision.humanVerdict?.decision.approved === false &&
+    decision.humanVerdict.decision.state === "stop";
   const pinnedInputChanged =
     decision.outcome === "allow" &&
     decision.plan !== null &&
@@ -622,7 +641,7 @@ async function applyFinal(
       store.noteChange(callId);
     }
   }
-  if (decision.outcome === "allow" && !dispatchesLsp) {
+  if (decision.outcome === "allow" && !dispatchesLsp && !optionalReport) {
     store.recordNonDenial();
   }
   if (decision.outcome === "allow" && decision.staticVerdict?.route === "safe_command" && decision.plan) {
@@ -636,7 +655,23 @@ async function applyFinal(
   }
 
   const automatic = decision.automaticDenial;
-  if (automatic) {
+  if (optionalReport && decision.outcome === "deny" && !humanStopped) {
+    // Keep the denial and audit reason, but optional telemetry must neither
+    // advance nor clear the user's existing denial streak.
+    decision = {
+      ...decision,
+      auditReason: decision.auditReason ?? decision.reason,
+      reason: [
+        "Optional OMP issue reporting was blocked; this report was not submitted.",
+        decision.reason,
+        "Continue the user's task without sending this report.",
+        "Do not retry reporting or use another mechanism unless the user explicitly authorizes it.",
+        "Mention the skipped report and why it was blocked in your final response.",
+      ]
+        .filter(Boolean)
+        .join(" "),
+    };
+  } else if (automatic) {
     const denials = store.recordDenial();
     const stopped = denials >= state.config.maxConsecutiveDenials;
     decision = {
@@ -661,12 +696,7 @@ async function applyFinal(
     }
   } else if (decision.recordDenial) {
     store.recordDenial();
-  } else if (
-    decision.route === "human" &&
-    decision.outcome === "deny" &&
-    decision.humanVerdict?.decision.approved === false &&
-    decision.humanVerdict.decision.state === "stop"
-  ) {
+  } else if (humanStopped) {
     // The user ended the turn; the next one starts with a clean count.
     store.recordNonDenial();
     ctx.abort?.();
@@ -757,12 +787,8 @@ export async function apply(
       rule: decision.staticVerdict?.escalation?.rule ?? undefined,
       timeoutSeconds: decision.state.config.approvalTimeoutSeconds,
     });
-    if (human.approved) {
-      if (human.persistence === "exact") {
-        store.approveExact(decision.subject.actionHash);
-      } else {
-        store.recordNonDenial();
-      }
+    if (human.approved && human.persistence === "exact") {
+      store.approveExact(decision.subject.actionHash);
     }
     return apply(
       decide(decision.call, {

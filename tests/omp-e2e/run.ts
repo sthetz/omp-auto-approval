@@ -174,6 +174,43 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
+    name: "optional report denial leaves the task running near the denial threshold",
+    reviewer: "ai",
+    verdict: "deny",
+    steps: [
+      bash("git push --force origin main"),
+      bash("git push -f origin main"),
+      { name: "write", arguments: { path: "xd://report_issue", content: "read: unexpected result" } },
+      { name: "write", arguments: { path: "continued.txt", content: "task continued\n" } },
+    ],
+    check(result) {
+      const problems: string[] = [];
+      const [, , report, work] = decisions(result);
+      expect(
+        problems,
+        report?.route === "classifier" && report.outcome === "deny",
+        `report route ${report?.route}/${report?.outcome}, wanted classifier/deny`,
+      );
+      expect(
+        problems,
+        work?.route === "workspace_write" && work.outcome === "allow",
+        `next write route ${work?.route}/${work?.outcome}, wanted workspace_write/allow`,
+      );
+      expect(
+        problems,
+        existsSync(join(result.workspace, "continued.txt")) &&
+          readFileSync(join(result.workspace, "continued.txt"), "utf8") === "task continued\n",
+        "the task did not continue after the optional report was blocked",
+      );
+      expect(
+        problems,
+        result.model.toolResults.flat().some((text) => text.includes("fake-deny")),
+        "the agent did not receive the reason reporting was blocked",
+      );
+      return problems;
+    },
+  },
+  {
     name: "a built-in block rule blocks without the classifier",
     reviewer: "manual",
     verdict: "allow",

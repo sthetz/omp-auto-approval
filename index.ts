@@ -45,6 +45,10 @@ export const SYSTEM_PROMPT_NOTE = [
   "If a call is blocked, do not retry it in another form or route around the block",
   "(another tool, an encoded or rewritten command, a script that does the same thing).",
   "Tell the user what was blocked and why, and wait for their guidance.",
+  "Exception: if the gate identifies a blocked builtin write to exactly xd://report_issue as optional reporting,",
+  "continue the user's task without sending the report; mention the skipped report and its reason in your final response.",
+  "Do not retry reporting, even through another mechanism, unless the user explicitly authorizes it.",
+  "This exception never overrides an explicit user decision to stop the turn.",
 ].join(" ");
 
 const ROUTE_EXPLANATIONS: Record<Decision["route"], string> = {

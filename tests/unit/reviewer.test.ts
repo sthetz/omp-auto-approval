@@ -18,7 +18,7 @@ await test("off runs review without a classifier but still enforces block and as
   const store = new SessionApprovalStore();
   assert.deepEqual(
     await evaluateToolCall(
-      { toolName: "bash", input: { command: "npm install" } },
+      { toolName: "bash", input: { command: "make build" } },
       ctx(),
       config({ reviewer: "off" }),
       store,

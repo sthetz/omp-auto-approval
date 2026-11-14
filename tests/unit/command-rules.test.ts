@@ -262,7 +262,7 @@ await test("config/rules.example.jsonc loads and does what its comments say", ()
       "cat -n notes.txt",
       "git worktree list",
       "git worktree list --porcelain",
-      "npm test",
+      "python -m pytest",
     ]) {
       assert.equal(safe(command), true, command);
     }
@@ -901,7 +901,7 @@ await test("the built-in rules block, ask about, or review commands rarely right
     ["npm publish", "ask publish"],
     ["cargo publish --dry-run", "ask publish"],
     ["docker push registry/app:1", "ask publish"],
-    ["npm install", null],
+    ["npm install", "ask npm-install"],
     ["sudo reboot", "ask privilege"],
     ["shutdown -h now", "ask power"],
     ["systemctl reboot", "ask power"],

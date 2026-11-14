@@ -100,7 +100,7 @@ Bash commands are checked against rules before anything else. The built-in ones 
 ```jsonc
 {
   "rules": [
-    { "id": "npm-test", "prefix": "npm test", "outcome": "allow" },
+    { "id": "project-tests", "prefix": "python -m pytest", "outcome": "allow" },
     { "id": "kube-interactive", "match": "kubectl exec|port-forward|edit|apply", "outcome": "ask",
       "why": "Changes the cluster." },
     { "id": "no-prod-db", "match": "psql *prod*", "outcome": "block" }
@@ -133,12 +133,16 @@ These cover commands that are rarely right for an agent to run on its own, in an
 | `git-discard` | ask | `git reset --hard`, `git clean -f`, `git checkout .`, `git restore .`, `git stash drop`/`clear` |
 | `git-overwrite-remote` | ask | `git push --force-with-lease`, `--delete`, `:branch`; `git branch -D` |
 | `privilege` | ask | `sudo`, `doas`, `su`, `pkexec` |
+| `npm-install` | ask | npm installs/CI, updates, removals, rebuilds, dedupe, prune, link, shrinkwrap and `audit fix`, including aliases |
+| `npm-exec` | ask | `npx`; npm exec/init, scripts and lifecycle commands, pack/version, editors, help viewers and browser launchers |
 | `publish` | ask | `npm`/`pnpm`/`yarn`/`bun publish`, `cargo publish`, `twine upload`, `poetry`/`uv publish`, `gem push`, `docker`/`podman push`, `gh release create`, … |
 | `power` | ask | `shutdown`, `reboot`, `poweroff`, `halt`, `systemctl reboot` and the like |
 | `database-drop` | ask | `DROP` or `TRUNCATE` of a database, schema or table through `psql`, `mysql`, `sqlite3`, … |
 | `infrastructure` | review | `terraform`/`tofu apply`/`destroy`, `pulumi up`/`destroy`, `kubectl delete`/`drain`, `helm uninstall` |
 
 `infrastructure` is reviewed rather than asked about, since infrastructure work runs these often and the session reviewer can judge it in context. To change a built-in rule, disable it and add your own: `"disable": ["infrastructure"], "rules": [{ "id": "infrastructure-ask", "match": "kubectl delete|drain", "outcome": "ask" }]`.
+
+The npm rules ask even with `--ignore-scripts`, `--offline`, `--dry-run`, a global install or a temporary `--prefix`. An allow prefix such as `npm test`, an AI allow, reviewer `off`, or a bash exemption cannot override them. Explicit exact-action session approvals still work; these are ordinary ask rules, not once-only confirmation floors. To choose a different policy, disable the relevant rule and supply your own. Exactly `npm --version` and `npm -v`, plus bounded local `npm prefix`, `npm root`, `npm pkg get`, `npm ls`/`npm list` and `npm explain` queries, have [fast paths](docs/fast-paths.md#npm); other informational npm calls remain with the reviewer. These new rules cover npm and npx, not every package manager.
 
 ## Other tools
 

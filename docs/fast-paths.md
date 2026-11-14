@@ -91,6 +91,32 @@ The read-only git commands are `status`, `log`, `diff`, `show`, `rev-parse`, `gr
 - has an option naming an existing file outside the working directory and `readRoots`, such as an order file glued to `-O` (`git diff -O/path/order`);
 - contains an unquoted glob (`git diff -- secrets*`).
 
+### npm
+
+`npm --version` and `npm -v`, with exactly one version flag and no extra arguments, skip review. As with other safe commands, npm is pinned to its installation outside the workspace. This trusts the installed npm/Node runtime and permits its incidental compile-cache writes; it is not a zero-writes guarantee. It does not authorize package downloads or lifecycle-script execution.
+
+On Unix, the exact local forms `npm prefix`, `npm root` and `npm pkg get [field …]` also skip review. Fields are literal package.json queries, not filenames or scripts; quote wildcard queries, for example `npm pkg get 'scripts.*'`. No caller-supplied options or command abbreviations qualify.
+
+For these local queries, callgate checks the nearest package.json/node_modules project and pins it with `--prefix`, local mode and workspaces disabled. A leading `cd src &&` still works. Escaping, credential-like or dangling manifest symlinks, invalid/oversized manifests, ancestor projects outside the workspace, and parent workspace declarations that could change implicit project selection require review. Explicit global/workspace selections and Windows calls remain reviewed.
+
+The pinned command adds `--offline --no-update-notifier --cache=/dev/null --logs-dir=/dev/null --logs-max=0 --no-timing`. This prevents npm's normal cache/log/timing writes, old-log cleanup and update requests, even when npmrc enables them. It does not isolate npm's installed runtime or configuration: npm still loads its configuration, and Node may initialize its compile cache. Configured global/workspace modes are deliberately overridden for these local-only queries; an explicit request for those modes is reviewed instead.
+
+`npm ls` / `npm list` and `npm explain <filter …>` also skip review when their dependency-tree reads can be bounded to the workspace:
+
+- Listing accepts literal package filters, `--json`, `--all`/`-a`, `--long`/`-l`, `--parseable`/`-p`, `--link`, `--unicode`/`--no-unicode`, a nonnegative integer `--depth`, and `--omit`/`--include` values `dev`, `optional` or `peer`. Value options accept both `--depth=0` and `--depth 0`.
+- Explain requires at least one literal package name, version filter or installed-package location, and accepts `--json`.
+- Options must follow the exact subcommand. Unknown options, grouped short flags, abbreviations, explicit global/workspace selection and `--package-lock-only` stay reviewed. The pinned command adds `--package-lock-only=false` so configuration cannot silently switch listing to a virtual tree.
+
+The dependency check follows package/scoped-package directories, nested node_modules, in-workspace links and the ancestor node_modules that can satisfy linked packages' dependencies. It checks package manifests, root lockfiles, hidden-lockfile locations and link targets, and inferred bin-directory traversal. Escaping, sensitive, dangling or unreadable paths require review, even with `--depth=0`: npm loads the tree before filtering its output. External links remain reviewed even under a configured read root. Root workspace declarations also require review because npm can expand them despite `--workspaces=false`. Traversal is capped at 20,000 items and 32 MiB of metadata, with a 16 MiB per-file limit; exceeding a bound means review, not a partial approval.
+
+The built-in npm install/execution asks treat fields of a literal, direct `npm pkg get` and filters of supported direct dependency queries as data: `npm pkg get name version` does not request a version change, nor does `npm ls version`. Other commands in the same call still match normally, and user rules retain their original matching and precedence.
+
+Other informational npm commands remain with the selected reviewer. For example, `npm view` sends a network request, and `npm config` can expose credentials. Additional arguments, combined flags, `npm --versions` and `npm version` do not qualify for the version fast path; `npm version` instead matches the execution ask below.
+
+The default `npm-install` rule instead requires human authorization for dependency changes, including installs/CI, updates, removals, rebuilds and `audit fix`. `npm-exec` asks for package/script execution and commands that can run lifecycle scripts or configured external programs, including all `npx` invocations, npm exec/init, run/test/start/stop/restart, pack/version, edit/explore, help and browser launchers. Known npm aliases, abbreviations and camelCase spellings are included. Flags such as `--ignore-scripts`, `--offline` and `--dry-run` do not bypass these asks.
+
+These remain text-based tripwires, not a sandbox or a complete npm argument parser. A matching argument can conservatively trigger an ask, and code hidden inside another script can evade command matching. Existing user-chosen exact-action session approvals still apply.
+
 ### Programs run by absolute path
 
 OMP runs every bash call in one persistent shell per session, so an earlier call can leave an alias, a function, or a workspace directory on PATH that turns `git status` into something else. A fast-pathed command is therefore rewritten to run every program by absolute path, looked up on the PATH OMP started with, skipping directories inside the workspace: `git status` runs as `/run/current-system/sw/bin/git status`. A leading `~` is written out as OMP's home directory too, since bash expands it from the shell's `HOME`, which an earlier call can change. If a program isn't found there, the command is reviewed. The rewritten command appears in the transcript and in the audit log as `pinnedCommand`, with `pinnedCwd` when a leading `cd` moved it. A command wrapped in `bash -lc` is reviewed, since the wrapper's own `bash` would be looked up on that PATH. A bash call whose `cwd` is outside the working directory is reviewed; one inside it has its paths checked from there. Variables exported by an earlier call (`GIT_EXTERNAL_DIFF`, `LD_PRELOAD`, …) still reach the pinned program, but setting them takes a reviewed call.

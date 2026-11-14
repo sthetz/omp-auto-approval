@@ -59,6 +59,7 @@
 //     "jq-filter", "duration-then-command"
 //     "git-operands", "git-branch-list", "git-tag-list", "git-remote",
 //     "git-stash-list"
+//     "npm-information"  Bounded local npm queries with pinned startup settings.
 //   Each is described in src/command-rules.ts and implemented in
 //   src/program-rules.ts.
 //
@@ -663,6 +664,15 @@
       "operands": "none"
     },
 
+    // Exact version flags and bounded local metadata/dependency queries.
+    // The named check bounds project/tree reads and pins npm's startup
+    // options to disable networking, update checks, logging and timing.
+    "npm": {
+      "opensNoFiles": true,
+      "arguments": "literal-words",
+      "operands": "npm-information"
+    },
+
     "git": {
       // Before the subcommand. Not -c (sets any configuration, such as a
       // pager or an external diff program), --git-dir, --work-tree or
@@ -746,6 +756,44 @@
       "match": ["sudo", "doas", "su", "pkexec"],
       "outcome": "ask",
       "why": "Runs a command as another user, usually root."
+    },
+    // Include npm's aliases, abbreviations and camelCase command spellings.
+    // Use literal alternatives, not broad globs that match package names
+    // in informational queries such as `npm info helper`.
+    // --ignore-scripts, --offline, --dry-run, global and temporary installs
+    // still need human authorization.
+    {
+      "id": "npm-install",
+      "match": [
+        "npm add|i|in|ins|inst|insta|instal|install|isnt|isnta|isntal|isntall",
+        "npm ci|ic|clean-install|cleanInstall|install-cl|install-cle|install-clea|install-clean|installClean|isntall-|isntall-c|isntall-cl|isntall-cle|isntall-clea|isntall-clean|isntallClean",
+        "npm it|install-t|install-te|install-tes|install-test|installTest",
+        "npm cit|si|sit|install-ci|install-ci-|install-ci-t|install-ci-te|install-ci-tes|install-ci-test|installCiTest|clean-install-|clean-install-t|clean-install-te|clean-install-tes|clean-install-test|cleanInstallTest",
+        "npm clean-installT|clean-installTe|clean-installTes|clean-installTest|cleanInstall-|cleanInstall-t|cleanInstall-te|cleanInstall-tes|cleanInstall-test|cleanInstallT|cleanInstallTe|cleanInstallTes",
+        "npm install-ciT|install-ciTe|install-ciTes|install-ciTest|installCi|installCi-|installCi-t|installCi-te|installCi-tes|installCi-test|installCiT|installCiTe|installCiTes|installCl|installCle|installClea|installT|installTe|installTes",
+        "npm isntallC|isntallCl|isntallCle|isntallClea",
+        "npm up|upd|upda|updat|update|upg|upgr|upgra|upgrad|upgrade|ud|udp|udpa|udpat|udpate",
+        "npm r|rm|rem|remo|remov|remove|un|uni|unin|unins|uninst|uninsta|uninstal|uninstall|unl|unli|unlin|unlink",
+        "npm rb|reb|rebu|rebui|rebuil|rebuild|dd|ddp|ded|dedu|dedup|dedupe|pru|prun|prune|lin|link|ln",
+        "npm shr|shri|shrin|shrink|shrinkw|shrinkwr|shrinkwra|shrinkwrap",
+        "npm aud|audi|audit fix"
+      ],
+      "outcome": "ask",
+      "why": "Changes packages or dependency state and may execute lifecycle scripts. Human approval is required even with --ignore-scripts."
+    },
+    {
+      "id": "npm-exec",
+      "match": [
+        "npx",
+        "npm exe|exec|x|ini|init|inn|inni|innit|cr|cre|crea|creat|create",
+        "npm run|run-|run-s|run-sc|run-scr|run-scri|run-scrip|run-script|runScript|rum|ur|urn",
+        "npm runS|runSc|runScr|runScri|runScrip",
+        "npm t|ts|tst|tes|test|start|sto|stop|res|rest|resta|restar|restart|build",
+        "npm pa|pac|pack|vers|versi|versio|version|veri|veris|veriso|verison|ed|edi|edit|explo|explor|explore",
+        "npm help|help-|help-s|help-se|help-sea|help-sear|help-searc|help-search|helpS|helpSe|helpSea|helpSear|helpSearc|helpSearch|hl|hle|hlep|docs|hom|home|b|bu|bug|bugs|iss|issu|issue|issues|rep|repo|fu|fun|fund"
+      ],
+      "outcome": "ask",
+      "why": "Can fetch or execute package code, lifecycle scripts, or configured external programs."
     },
     {
       "id": "publish",

@@ -1,6 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
 import { group, itemAt, resolvePathForCwd } from "./common.js";
 
 /**
@@ -217,7 +216,7 @@ function sourcedFile(word: string, directory: string): string | null {
     return null;
   }
   const path =
-    word === "~" || word.startsWith("~/") ? join(homedir(), word.slice(1)) : resolvePathForCwd(word, directory);
+    word === "~" || word.startsWith("~/") ? `${homedir()}${word.slice(1)}` : resolvePathForCwd(word, directory);
   return path;
 }
 

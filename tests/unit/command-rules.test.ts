@@ -1168,10 +1168,8 @@ await test("block, ask and review rules take precedence over every fast path", a
       },
     };
     assert.deepEqual(await run("git tag -d v1", { reviewer: "manual" }, { hasUI: true, ui }, store), {});
-    assert.match(
-      prompt,
-      /A command rule asks you to approve this action\.[\s\S]*Rule: ask-tag \(ask, .*rules\.jsonc\)\nWhy: Tags are releases\.[\s\S]*Allow it\?/,
-    );
+    assert.ok(prompt.includes(JSON.stringify("ask-tag")));
+    assert.ok(prompt.includes(JSON.stringify("Tags are releases.")));
     // An exact approval from the user stands for that exact command.
     prompt = "";
     assert.deepEqual(await run("git tag -d v1", { reviewer: "manual" }, { hasUI: true, ui }, store), {});

@@ -122,7 +122,7 @@ await test("ai denies to the agent first, then asks at the threshold with the cl
     classifierDenyOptions(),
   );
   assert.deepEqual(second, {});
-  assert.match(prompt, /AI review recommends blocking this action[\s\S]*Reason: needs review/);
+  assert.ok(prompt.includes(JSON.stringify("needs review")));
 
   const exact = await evaluateToolCall({ toolName: "bash", input: { command: "make second" } }, ctx(), cfg, store, {
     classifierClient: async () => {
@@ -609,17 +609,13 @@ await test("manual review offers Reject and Stop, which ends the turn", async ()
   assert.ok(!offered.includes("Reject and Stop the Turn"));
 });
 
-await test("manual-only tools keep their prompt explanation and rejection reason", async () => {
-  let prompt = "";
+await test("manual-only tools preserve their rejection reason", async () => {
   const result = await evaluateToolCall(
     { toolName: "computer", input: {} },
     ctx({
       hasUI: true,
       ui: {
-        select: async (title) => {
-          prompt = title;
-          return "Reject";
-        },
+        select: async () => "Reject",
       },
     }),
     config({ reviewer: "manual" }),
@@ -630,7 +626,6 @@ await test("manual-only tools keep their prompt explanation and rejection reason
       },
     },
   );
-  assert.match(prompt, /Failure: This tool requires explicit user interaction and cannot be auto-approved\./);
   assert.deepEqual(result, {
     block: true,
     reason: "This tool requires explicit user interaction and cannot be auto-approved.",

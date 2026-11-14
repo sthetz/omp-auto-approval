@@ -53,6 +53,8 @@ When you are asked, the prompt shows the action, the classifier's reason or the 
 
 The cursor starts on **Reject**, and no answer within `approvalTimeoutSeconds` (default 30) rejects.
 
+Supplied text in approval prompts is quoted, with terminal controls, Unicode format controls (including direction overrides), and line separators shown as literal escapes. Filenames and commands retain visible `\n`, `\r` and `\t` rather than having them collapsed into spaces. Long fields are bounded and marked `[truncated]`. This formatting is display-only: execution arguments, classifier inputs, and exact-action approval hashes are unchanged.
+
 A short note in the system prompt asks the agent to report a blocked call to you instead of retrying it in another form. Calls that run normally reset the consecutive denial count; your rejections and automatic denials increment it, and switching reviewers does not reset it. At `maxConsecutiveDenials` (default 3), an `ai` classifier denial shows you the approval prompt with the classifier's reason when a UI is available. Any other automatic denial at the threshold stops the turn; ordinary user rejections only increment the counter.
 
 Optional OMP QA reporting is an exception to stopping, not to authorization. A denied builtin `write` to exactly `xd://report_issue` stays blocked and audited, but the agent is instructed to continue your task and mention the skipped report and its reason in the final response. Reporting must not be retried, including through another mechanism, unless you explicitly authorize it. These reporting calls neither increment nor reset the denial counter and do not trigger the classifier-denial threshold prompt. An explicit **Reject and Stop the Turn** still stops the turn.
